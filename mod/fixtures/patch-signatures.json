@@ -1,0 +1,25 @@
+{
+  "reference": {
+    "beatblockExeSha256": "c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b",
+    "objectArchiveSha256": "e2e05a97902b879f2fc83442c36eb0abfab6d84d2373a8a3906d176227b1725f",
+    "stateArchiveSha256": "28bec969ddcd2f0a41cc5f0cf29dccab63c997cbb3010b5249bc37bc9a32a94f"
+  },
+  "patchPatterns": [
+    "st:setUpdate(function(self,dt)",
+    "self:pauseGame()",
+    "function st:restartLevel()",
+    "function st:quitLevel()",
+    "function st:goToResults(forceScore,scoreMax,fadeTime)",
+    "if self.pauseTimer <= 0 then",
+    "love.graphics.setCanvas(self.canv)",
+    "self.gm:endOnTopShader()",
+    "function st:playLevel(filename, variant)",
+    "self.options:addOption('retry',function()",
+    "self.mainMenu:addOption('credits',function()"
+  ],
+  "gameManagerHooks": [
+    "function GameManager:addToScore",
+    "function GameManager:handleMiss",
+    "function GameManager:addMineToTotal"
+  ]
+}

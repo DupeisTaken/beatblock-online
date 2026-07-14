@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-14T18:25:21.611Z",
+  "passed": true,
+  "capabilities": {
+    "inviteRedemption": true,
+    "rotatingRefresh": true,
+    "oneTimeBrowserHandoff": true,
+    "maximumLobby": true,
+    "playerCapacityRejected": true,
+    "spectatorCapacityRejected": true,
+    "chartVerificationAndReadyCheck": true,
+    "synchronizedStartScheduled": true,
+    "authoritativeResults": true,
+    "duplicateIdempotent": true,
+    "reconnectAtCapacity": true
+  },
+  "workload": {
+    "players": 16,
+    "spectators": 32,
+    "eventsPerPlayer": 240,
+    "totalEvents": 3840
+  },
+  "metrics": {
+    "concurrentJoinMs": 3.9732999999999947,
+    "scoreEventsPerSecond": 4101.697312256021,
+    "ingestMeanMs": 2.1701415885416613,
+    "ingestP95Ms": 3.3541999999999916,
+    "ingestP99Ms": 4.31110000000001,
+    "eventLoopDelayP95Ms": 0.000511,
+    "heapUsedMb": 22.35338592529297
+  },
+  "thresholds": {
+    "exactEventCount": 3840,
+    "ingestP95Ms": 250
+  }
+}

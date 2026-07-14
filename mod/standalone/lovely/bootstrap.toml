@@ -1,0 +1,15 @@
+[manifest]
+version = "1.0.0"
+dump_lua = true
+priority = 101
+
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = "cs = bs.load(project.initState)"
+position = "before"
+payload = '''
+BBT = require('bbt.core')
+BBT.init('standalone', '{{lovely_hack::patch_dir}}')
+'''
+match_indent = true

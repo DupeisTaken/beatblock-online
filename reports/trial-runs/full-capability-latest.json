@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-14T18:25:30.352Z",
+  "passed": true,
+  "environment": {
+    "platform": "win32",
+    "architecture": "x64",
+    "node": "v24.16.0"
+  },
+  "runs": [
+    {
+      "name": "TypeScript unit and stress tests",
+      "passed": true,
+      "durationMs": 2908
+    },
+    {
+      "name": "Protocol/build verification",
+      "passed": true,
+      "durationMs": 5631
+    },
+    {
+      "name": "In-game mod conformance and packaging",
+      "passed": true,
+      "durationMs": 2957
+    },
+    {
+      "name": "Rust companion and Beatblock Lua runtime tests",
+      "passed": true,
+      "durationMs": 15890
+    },
+    {
+      "name": "Server maximum-capacity benchmark",
+      "passed": true,
+      "durationMs": 1657
+    },
+    {
+      "name": "Companion I/O benchmark",
+      "passed": true,
+      "durationMs": 8704
+    }
+  ],
+  "server": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-07-14T18:25:21.611Z",
+    "passed": true,
+    "capabilities": {
+      "inviteRedemption": true,
+      "rotatingRefresh": true,
+      "oneTimeBrowserHandoff": true,
+      "maximumLobby": true,
+      "playerCapacityRejected": true,
+      "spectatorCapacityRejected": true,
+      "chartVerificationAndReadyCheck": true,
+      "synchronizedStartScheduled": true,
+      "authoritativeResults": true,
+      "duplicateIdempotent": true,
+      "reconnectAtCapacity": true
+    },
+    "workload": {
+      "players": 16,
+      "spectators": 32,
+      "eventsPerPlayer": 240,
+      "totalEvents": 3840
+    },
+    "metrics": {
+      "concurrentJoinMs": 3.9732999999999947,
+      "scoreEventsPerSecond": 4101.697312256021,
+      "ingestMeanMs": 2.1701415885416613,
+      "ingestP95Ms": 3.3541999999999916,
+      "ingestP99Ms": 4.31110000000001,
+      "eventLoopDelayP95Ms": 0.000511,
+      "heapUsedMb": 22.35338592529297
+    },
+    "thresholds": {
+      "exactEventCount": 3840,
+      "ingestP95Ms": 250
+    }
+  },
+  "companion": {
+    "generatedAtMs": 1784053530326,
+    "metrics": {
+      "chartCacheSpeedup": 36.052029136316335,
+      "chartCachedMs": 0.3844,
+      "chartColdMs": 13.8584,
+      "exportMeanMs": 18.85634719999999,
+      "exportP95Ms": 20.5564,
+      "journalEventsPerSecond": 4278.104515633434,
+      "journalRecoveredEvents": 5000
+    },
+    "passed": true,
+    "schemaVersion": 1,
+    "thresholds": {
+      "cacheHitFasterThanCold": true,
+      "exportP95Ms": 100,
+      "journalEventsPerSecond": 100
+    },
+    "workload": {
+      "chartBytes": 4194304,
+      "journalEvents": 5000,
+      "snapshots": 250
+    }
+  }
+}

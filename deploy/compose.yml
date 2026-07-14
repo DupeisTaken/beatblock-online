@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: beatblock_together
+      POSTGRES_USER: bbt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bbt -d beatblock_together']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: server
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      PUBLIC_URL: https://${DOMAIN:?set DOMAIN}
+      DATABASE_URL: postgres://bbt:${POSTGRES_PASSWORD}@postgres:5432/beatblock_together
+      TOKEN_SECRET: ${TOKEN_SECRET:?set TOKEN_SECRET}
+      INVITE_SECRET: ${INVITE_SECRET:?set INVITE_SECRET}
+      SUPPORTED_GAME_BUILDS: ${SUPPORTED_GAME_BUILDS:-c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b}
+      RUN_EVENT_RETENTION_DAYS: ${RUN_EVENT_RETENTION_DAYS:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

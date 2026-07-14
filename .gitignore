@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+.env
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+target/
+.tools/
+companion-data/
+exports/
+.dev-mods/
+.test/
+.reference/
+mod/releases/

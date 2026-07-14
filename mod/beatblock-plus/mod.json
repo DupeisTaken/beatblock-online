@@ -1,0 +1,10 @@
+{
+  "id": "beatblock-together",
+  "name": "Beatblock Together",
+  "author": "Beatblock Together contributors",
+  "description": "Invite-only online competition, telemetry, and OBS integration.",
+  "version": "0.1.0-alpha.1",
+  "config": {
+    "showConnectionIndicator": true
+  }
+}

@@ -1,0 +1,119 @@
+[manifest]
+version = "1.0.0"
+dump_lua = true
+priority = 100
+
+[[patches]]
+[patches.module]
+source = "bbt/core.lua"
+before = "main.lua"
+name = "bbt.core"
+
+[[patches]]
+[patches.module]
+source = "bbt/online_state.lua"
+before = "main.lua"
+name = "bbt.online_state"
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "st:setUpdate(function(self,dt)"
+position = "after"
+payload = "if BBT then BBT.update(dt) end"
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "self:pauseGame()"
+position = "before"
+payload = "if BBT then BBT.onPause() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "function st:restartLevel()"
+position = "after"
+payload = "if BBT then BBT.onRetry() end"
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "function st:quitLevel()"
+position = "after"
+payload = "if BBT then BBT.onQuit() end"
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "function st:goToResults(forceScore,scoreMax,fadeTime)"
+position = "after"
+payload = "if BBT then BBT.onResults() end"
+match_indent = true
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "if self.pauseTimer <= 0 then"
+position = "after"
+payload = "if BBT and BBT.shouldHoldStart() then return end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "love.graphics.setCanvas(self.canv)"
+position = "after"
+payload = "if self.startPending and BBT then BBT.drawCountdown() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "self.gm:endOnTopShader()"
+position = "after"
+payload = "if BBT then BBT.drawRaceHud() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/SongSelect.lua"
+pattern = "function st:playLevel(filename, variant)"
+position = "after"
+payload = "if BBT and BBT.selectingOnlineChart then BBT.onChartSelected(self, filename, variant); return end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Results.lua"
+pattern = "self.options:addOption('retry',function()"
+position = "after"
+payload = "if BBT and BBT.context.lobbyId ~= 'offline' then BBT.lastError = 'Retry is disabled during online races'; return end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Menu.lua"
+pattern = "self.mainMenu:addOption('credits',function()"
+position = "before"
+payload = '''
+self.mainMenu:addOption('Online', function()
+  local bbtMenuMusicManager = self.menuMusicManager
+  cs = bs.load('Online')
+  bbtMenuMusicManager:clearOnBeatHooks()
+  self:leave()
+  cs.menuMusicManager = bbtMenuMusicManager
+  cs:init()
+end, 51)
+'''
+match_indent = true

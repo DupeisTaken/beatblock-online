@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm generate:protocol
+      - run: pnpm validate:patches
+      - run: pnpm package:mods
+      - run: pnpm test:mod
+
+  companion:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: companion
+      - run: cargo fmt --manifest-path companion/Cargo.toml --check
+      - run: cargo test --manifest-path companion/Cargo.toml
+      - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
+      - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
+      - run: powershell -NoProfile -File scripts/test-install-mod.ps1
