@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 2,
+  "trial": "injected-installer-lifecycle",
+  "recordedAt": "2026-07-15T20:16:00+08:00",
+  "passed": true,
+  "build": {
+    "installer": "release/BeatblockTogetherInstaller.exe",
+    "installerBytes": 33165824,
+    "installerSha256": "aa971c1dec7ecea3ec3ad65c62a0039ecf81630f751baa096436732c23a5efcb",
+    "game": ".test/Beatblock/Beatblock.exe",
+    "adapter": "standalone-lovely",
+    "protocolVersion": 2,
+    "installedRuntimeSha256": "9f114ccf07aff4cabe5a451e3bfea3366d894a0daaa9febd96f0e798f9812bd8"
+  },
+  "observations": {
+    "normalLaunchHadLovelyConsole": false,
+    "runtimeAbsentBeforeOnline": true,
+    "runtimeStartedOnOnline": true,
+    "runtimeVisibleWindow": false,
+    "runtimeWorkingSetBytes": 18329600,
+    "localApiActiveOnlyOnline": true,
+    "telemetryReachedRuntime": true,
+    "telemetryUpdatedAtMs": 1784114026000,
+    "exitOnlineReturnedToMainMenu": true,
+    "gameAliveAfterExitOnline": true,
+    "gameResponsiveAfterExitOnline": true,
+    "runtimeTerminatedAfterExitOnline": true,
+    "localApiClosedAfterExitOnline": true
+  },
+  "installerVisualQa": {
+    "scales": [1.0, 1.25, 1.5],
+    "oneProcessAtATime": true,
+    "processesRemainingAfterQa": 0,
+    "layoutPassed": true
+  },
+  "screenshots": {
+    "installer100Percent": "reports/trial-runs/installer-100-percent.png",
+    "installer125Percent": "reports/trial-runs/installer-125-percent.png",
+    "installer150Percent": "reports/trial-runs/installer-150-percent.png",
+    "onlineReady": "reports/trial-runs/injected-online-hub-ready.png",
+    "afterExitOnline": "reports/trial-runs/injected-after-exit-online.png"
+  },
+  "notes": [
+    "The API snapshot reported gameplay.updatedAtMs greater than zero, proving real Lua telemetry crossed the named pipe into the packaged runtime.",
+    "The runtime used approximately 17.48 MiB working set, below the 30 MiB idle target.",
+    "After a final installer-only header cleanup, the current installer was reinstalled successfully into .test and its embedded runtime hash matched the release runtime byte-for-byte; the gameplay/runtime source and payload were unchanged.",
+    "This is a local injected-game lifecycle trial, not a public-WAN, OBS 32.1.2 certification, renderer endurance, or Steam-distribution certification."
+  ]
+}

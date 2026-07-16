@@ -1,23 +1,20 @@
-# Protocol v1
+# Direct-host protocol v2
 
-Every IPC, gateway, and local event uses this envelope:
+Reliable messages use:
 
 ```json
 {
-  "version": 1,
-  "type": "run.score_delta",
-  "sequence": 418,
-  "timestampMs": 1784098142382,
-  "payload": {}
+  "version": 2,
+  "type": "room.ready_request",
+  "sequence": 42,
+  "runTimeUs": 82431000,
+  "requestId": "game-7",
+  "payload": { "ready": true, "requestId": "game-7" }
 }
 ```
 
-Unknown versions, malformed required fields, and unknown remote message types receive explicit errors. Competitive score payloads include a separate zero-based `runSequence` used for journal reconciliation.
+Every in-game control request receives `control.ack` or `control.error` with its request ID. Runtime startup/error events are `runtime.ready` and `runtime.error`. Version 1 is rejected; the named pipe is `\\.\pipe\beatblock-together-v2`.
 
-Remote messages are `client.hello`, `gateway.ready`, `gateway.disconnected`, `clock.ping`, `clock.pong`, `lobby.subscribe`, `lobby.snapshot`, `run.started`, `run.score_delta`, `run.invalid`, `run.finished`, and `gameplay.snapshot`. Local snapshots run at 20-30 Hz; remote rankings target 10 Hz.
+Control groups cover room admission/roles/kick, setlist editing, renderer A-D configuration, history delete/prune, settings, diagnostics, token rotation, export/log opening, restart, and session shutdown. `runtime.snapshot` publishes complete sanitized room, renderer, history, settings, and diagnostics state to Lua.
 
-The in-game mod sends local commands to the companion as ordinary envelopes: `lobby.create_request`, `lobby.join_request`, `lobby.chart_select_request`, `lobby.chart_verify_request`, `lobby.ready_request`, `lobby.start_request`, `lobby.leave_request`, and `lobby.close_request`. The companion performs credentialed HTTP and filesystem work off the gameplay thread, then returns `lobby.snapshot`, `lobby.context`, `chart.verification`, or `companion.error` through IPC.
-
-`run.started` includes the selected package hash, variant name, and Beatblock-derived maximum hit count. A mismatch against the locked lobby chart invalidates the run before score ingestion.
-
-Generate the executable JSON Schema bundle at `protocol/schemas/v1/protocol.json` with `pnpm generate:protocol`. Protocol major versions never silently downgrade.
+High-rate 32-byte datagrams contain version, session/sequence, run timestamp, beat, processed paddle angle, held taps, and flags. Reliable score mutations remain authoritative. The executable schema is [protocol.json](../protocol/schemas/v2/protocol.json).

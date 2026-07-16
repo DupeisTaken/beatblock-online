@@ -1,51 +1,31 @@
-# Architecture
-
-## Data path
+# Installer-only architecture
 
 ```text
-Beatblock scoring mutation
-  -> shared Lua hook
-  -> LÖVE thread channel
-  -> named pipe (LuaSocket loopback fallback)
-  -> Rust companion journal
-  -> WSS gateway
-  -> Fastify lobby/scoring service
-  -> PostgreSQL + authenticated spectators
+BeatblockTogetherInstaller.exe (maintenance only, exits)
+    -> Lovely + one adapter + hidden runtime + optional OBS plugin
 
-Rust companion
-  -> loopback HTTP/WebSocket
-  -> OBS browser sources / local applications
-  -> atomic text and JSON exports
+Steam -> Beatblock -> adaptive Online dashboard -> LÖVE channel -> named pipe v2
+                                      -> BeatblockTogetherRuntime.exe
+                                         -> direct QUIC room
+                                         -> SQLite/history
+                                         -> API + atomic exports
+                                         -> renderer A-D supervision
 ```
 
-Beatblock is the player control plane. Its Online state owns lobby creation/joining, chart selection, local verification, readiness, countdown, race HUD, and results. The loopback webpage is limited to account setup, diagnostics, OBS configuration, and authenticated spectator handoff.
+The installer never hosts, joins, renders, exports, or stays in the tray. The runtime has no Slint/tray dependency, console, or visible window. It is launched lazily with Beatblock's parent PID, is single-instance per user, and exits with **Exit Online** or the parent process.
 
-The gameplay thread only calculates small snapshots and pushes strings into a LÖVE channel. Pipe, socket, credential, HTTP, journal, and export work occurs outside that thread.
+Keeping QUIC, SQLite, hashing, archive validation, renderer supervision, and OBS transport out of Beatblock prevents that work from blocking its frame loop and isolates native failures. A runtime crash during a competitive run invalidates the run; recovery is attempted once with bounded backoff.
 
-## Competitive lifecycle
+The room lifecycle is `forming -> chart_locked -> ready -> countdown -> playing -> results -> set_complete -> closed`. The host derives accuracy from ordered score mutations and stores a two-minute recovery snapshot.
 
-`forming -> chart_locked -> ready -> countdown -> playing -> results -> closed`
+The runtime/API never publishes passwords, API tokens, absolute chart paths, or unrelated process data to room snapshots. Protocol-v1 clients receive an explicit compatibility failure.
 
-Only organizers and operators create lobbies. A competitor can ready only when the complete canonical package hash and selected variant match and the client proof identifies the supported game build, an alpha-compatible client, and an allowed mod inventory. The mod calculates expected maximum hits using Beatblock's own `Event.hitCount` functions. The server verifies the hash, variant, and max hits again when `run.started` arrives. It schedules a start five seconds in the future; clients calibrate server epoch time against LÖVE's monotonic clock and hold Beatblock's actual `startPending` gate until the scheduled time.
+## Supported-build IPC details
 
-## Scoring
+The gameplay hooks only enqueue compact Lua tables. A dedicated LÖVE thread owns all IPC and therefore keeps pipe, network, export, hashing, and storage work off the gameplay thread. On the supported reference build it uses LuaJIT FFI with `CreateFileW`/`ReadFile`/`WriteFile` against `\\.\pipe\beatblock-together-v2`. Writes are completed in a loop, outbound work is capped at 16 messages per pass, and carriage returns/newlines introduced by Beatblock's JSON encoder are removed before newline framing.
 
-The server validates monotonic cumulative totals and computes accuracy itself:
+The dashboard derives a UI-only normalized view from protocol-v2 room, participant, renderer, history, and diagnostics snapshots. `dashboard_model.lua` owns phase selection, roster totals and scrolling, focus transitions, and next-action precedence without changing the wire protocol. CI executes this pure module with Beatblock's bundled Lua 5.1 runtime.
 
-```text
-floor((((currentMaxHits - misses - barelies / 4) / currentMaxHits) * 100) * 100) / 100
-```
+The runtime returns only runtime-owned snapshots, acknowledgements, rankings, compatibility errors, and diagnostics. Client telemetry is never echoed back to the same game. Explicit session shutdown discards unsent live snapshots and makes `runtime.session_end` the final queued control message.
 
-Run score events have a run-local sequence. Duplicate events are idempotent and gaps invalidate the alpha run. The companion appends competitive run messages to NDJSON before queuing remote transmission and resends journals after reconnect.
-
-## Chart canonicalization
-
-Directories and ZIPs are reduced to normalized `/` paths and raw bytes. Entries are sorted bytewise; archive timestamps and known OS junk are excluded. Each path length, path, content length, and content is fed into SHA-256 under a versioned domain prefix.
-
-## Supported reference
-
-- `Beatblock.exe`: `c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b`
-- `packed/obj.zip`: `e2e05a97902b879f2fc83442c36eb0abfab6d84d2373a8a3906d176227b1725f`
-- `packed/states.zip`: `28bec969ddcd2f0a41cc5f0cf29dccab63c997cbb3010b5249bc37bc9a32a94f`
-
-Additional builds are supplied through `SUPPORTED_GAME_BUILDS` after their patches pass the fixture validation suite.
+Runtime launch happens from the worker through `WinExec`, rather than a LuaJIT-owned `CreateProcessW` structure, because the supplied LÖVE 12 build crashed or stalled in those worker-thread variants during physical injection testing. Both installed binaries use the Windows GUI subsystem, so this compatibility choice still creates no terminal or visible runtime window. LuaSocket remains packaged as the isolated loopback fallback for environments where FFI cannot load; the supported build uses the named pipe.
