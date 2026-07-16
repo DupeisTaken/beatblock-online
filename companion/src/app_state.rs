@@ -53,7 +53,8 @@ impl AppState {
         let runtime_db = data_dir.join("runtime.sqlite3");
         let legacy_db = data_dir.join("manager.sqlite3");
         if !runtime_db.exists() && legacy_db.exists() {
-            std::fs::copy(&legacy_db, &runtime_db).context("migrate Manager history to runtime storage")?;
+            std::fs::copy(&legacy_db, &runtime_db)
+                .context("migrate Manager history to runtime storage")?;
         }
         let storage = Arc::new(Storage::open(runtime_db)?);
         let recovered = storage.recover_room(unix_ms())?;
@@ -572,9 +573,13 @@ impl AppState {
         Ok(())
     }
 
-    pub fn require_host_control(&self) -> Result<()> { self.require_host() }
+    pub fn require_host_control(&self) -> Result<()> {
+        self.require_host()
+    }
 
-    pub async fn publish_room(&self) -> Result<()> { self.broadcast_room().await }
+    pub async fn publish_room(&self) -> Result<()> {
+        self.broadcast_room().await
+    }
 
     fn validate(&self, message: &Envelope) -> Result<()> {
         if message.version != PROTOCOL_VERSION {

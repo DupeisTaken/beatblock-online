@@ -106,14 +106,22 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         }
         "room.admission_set" => {
             let id = required(&message.payload, "sessionId")?;
-            let admit = message.payload.get("admit").and_then(Value::as_bool).unwrap_or(true);
+            let admit = message
+                .payload
+                .get("admit")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let role = parse_role(message.payload.get("role"))?;
             state.admit(id, admit, role).await
         }
         "room.role_set" => {
             state.require_host_control()?;
             let id = required(&message.payload, "sessionId")?;
-            state.room.write().await.set_role(id, parse_role(message.payload.get("role"))?)?;
+            state
+                .room
+                .write()
+                .await
+                .set_role(id, parse_role(message.payload.get("role"))?)?;
             state.publish_room().await
         }
         "room.kick" => {
@@ -124,7 +132,11 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         }
         "setlist.remove" => {
             state.require_host_control()?;
-            state.room.write().await.remove_setlist(required_index(&message.payload, "index")?)?;
+            state
+                .room
+                .write()
+                .await
+                .remove_setlist(required_index(&message.payload, "index")?)?;
             state.publish_room().await
         }
         "setlist.move" => {
@@ -146,17 +158,28 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         }
         "renderer.stop" => {
             state.require_host_control()?;
-            state.renderer.stop_slot(required(&message.payload, "slot")?);
+            state
+                .renderer
+                .stop_slot(required(&message.payload, "slot")?);
             publish_snapshots(state).await
         }
         "history.list" => publish_snapshots(state).await,
         "history.delete" => {
-            state.storage.delete_history(required(&message.payload, "roomId")?)?;
+            state
+                .storage
+                .delete_history(required(&message.payload, "roomId")?)?;
             publish_snapshots(state).await
         }
         "history.prune" => {
-            let days = message.payload.get("days").and_then(Value::as_u64).unwrap_or(30).clamp(1, 365);
-            state.storage.prune_raw_events(crate::room::unix_ms().saturating_sub(days * 86_400_000))?;
+            let days = message
+                .payload
+                .get("days")
+                .and_then(Value::as_u64)
+                .unwrap_or(30)
+                .clamp(1, 365);
+            state
+                .storage
+                .prune_raw_events(crate::room::unix_ms().saturating_sub(days * 86_400_000))?;
             publish_snapshots(state).await
         }
         "settings.update" => update_settings(state, &message.payload).await,
@@ -170,13 +193,20 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         "paths.open_exports" => open::that(state.data_dir.join("exports")).map_err(Into::into),
         "paths.open_logs" => open::that(state.data_dir.join("logs")).map_err(Into::into),
         "runtime.session_end" => {
-            if state.is_host.load(std::sync::atomic::Ordering::Relaxed) { let _ = state.close_room().await; }
-            else { state.network.shutdown().await; }
-            state.shutdown_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+            if state.is_host.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = state.close_room().await;
+            } else {
+                state.network.shutdown().await;
+            }
+            state
+                .shutdown_requested
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
         "runtime.restart_request" => {
-            state.shutdown_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+            state
+                .shutdown_requested
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
         _ => return Ok(false),
@@ -198,16 +228,31 @@ fn parse_role(value: Option<&Value>) -> Result<ParticipantRole> {
 }
 
 fn required_index(payload: &Value, field: &str) -> Result<usize> {
-    payload.get(field).and_then(Value::as_u64).map(|value| value as usize).with_context(|| format!("{field} is required"))
+    payload
+        .get(field)
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .with_context(|| format!("{field} is required"))
 }
 
 async fn update_settings(state: &AppState, payload: &Value) -> Result<()> {
     let mut config = state.config.write().await;
-    if let Some(name) = payload.get("displayName").and_then(Value::as_str) { config.display_name = name.trim().to_owned(); }
-    if let Some(port) = payload.get("hostPort").and_then(Value::as_u64) { config.host_port = u16::try_from(port)?; }
-    if let Some(delay) = payload.get("spectatorDelayMs").and_then(Value::as_u64) { config.spectator_delay_ms = (delay as u32).clamp(250, 1500); }
-    if let Some(enabled) = payload.get("hudEnabled").and_then(Value::as_bool) { config.hud_enabled = enabled; }
-    std::fs::write(state.data_dir.join("config.json"), serde_json::to_vec_pretty(&*config)?)?;
+    if let Some(name) = payload.get("displayName").and_then(Value::as_str) {
+        config.display_name = name.trim().to_owned();
+    }
+    if let Some(port) = payload.get("hostPort").and_then(Value::as_u64) {
+        config.host_port = u16::try_from(port)?;
+    }
+    if let Some(delay) = payload.get("spectatorDelayMs").and_then(Value::as_u64) {
+        config.spectator_delay_ms = (delay as u32).clamp(250, 1500);
+    }
+    if let Some(enabled) = payload.get("hudEnabled").and_then(Value::as_bool) {
+        config.hud_enabled = enabled;
+    }
+    std::fs::write(
+        state.data_dir.join("config.json"),
+        serde_json::to_vec_pretty(&*config)?,
+    )?;
     drop(config);
     publish_snapshots(state).await
 }

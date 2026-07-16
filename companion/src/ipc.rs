@@ -60,8 +60,16 @@ pub async fn run_named_pipe(state: AppState) -> Result<()> {
 
 fn publish_ipc_error(state: &AppState, message: String) {
     tracing::warn!(%message, "IPC message rejected");
-    let code = if message.contains("unsupported protocol version") { "protocol.incompatible" } else { "protocol.malformed" };
-    let _ = state.events.send(Envelope::new("runtime.error", 0, serde_json::json!({"code":code,"message":message})));
+    let code = if message.contains("unsupported protocol version") {
+        "protocol.incompatible"
+    } else {
+        "protocol.malformed"
+    };
+    let _ = state.events.send(Envelope::new(
+        "runtime.error",
+        0,
+        serde_json::json!({"code":code,"message":message}),
+    ));
 }
 
 async fn write_ready<W: tokio::io::AsyncWrite + Unpin>(

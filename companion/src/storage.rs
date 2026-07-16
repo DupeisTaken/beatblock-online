@@ -148,7 +148,10 @@ impl Storage {
     pub fn delete_history(&self, room_id: &str) -> Result<bool> {
         let connection = self.connection.lock().expect("storage mutex poisoned");
         connection.execute("DELETE FROM run_events WHERE room_id=?1", params![room_id])?;
-        Ok(connection.execute("DELETE FROM match_history WHERE room_id=?1", params![room_id])? == 1)
+        Ok(connection.execute(
+            "DELETE FROM match_history WHERE room_id=?1",
+            params![room_id],
+        )? == 1)
     }
 }
 

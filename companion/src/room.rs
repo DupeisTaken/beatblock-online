@@ -160,31 +160,49 @@ impl RoomEngine {
     /// Host-side roster mutations used by the in-game Room page.
     pub fn set_role(&mut self, session_id: &str, role: ParticipantRole) -> Result<()> {
         let participant = self.participant_mut(session_id)?;
-        participant.role = if role == ParticipantRole::Host { ParticipantRole::Player } else { role };
+        participant.role = if role == ParticipantRole::Host {
+            ParticipantRole::Player
+        } else {
+            role
+        };
         participant.ready = false;
         self.touch();
         Ok(())
     }
 
     pub fn kick(&mut self, session_id: &str) -> Result<()> {
-        if session_id == self.snapshot.host_session_id { bail!("the host cannot kick itself"); }
+        if session_id == self.snapshot.host_session_id {
+            bail!("the host cannot kick itself");
+        }
         let before = self.snapshot.participants.len();
-        self.snapshot.participants.retain(|participant| participant.session_id != session_id);
-        if before == self.snapshot.participants.len() { bail!("participant was not found"); }
+        self.snapshot
+            .participants
+            .retain(|participant| participant.session_id != session_id);
+        if before == self.snapshot.participants.len() {
+            bail!("participant was not found");
+        }
         self.touch();
         Ok(())
     }
 
     pub fn remove_setlist(&mut self, index: usize) -> Result<()> {
-        if index >= self.snapshot.setlist.len() { bail!("setlist index is out of range"); }
+        if index >= self.snapshot.setlist.len() {
+            bail!("setlist index is out of range");
+        }
         self.snapshot.setlist.remove(index);
-        self.snapshot.current_setlist_index = if self.snapshot.setlist.is_empty() { None } else { Some(index.min(self.snapshot.setlist.len() - 1)) };
+        self.snapshot.current_setlist_index = if self.snapshot.setlist.is_empty() {
+            None
+        } else {
+            Some(index.min(self.snapshot.setlist.len() - 1))
+        };
         self.touch();
         Ok(())
     }
 
     pub fn move_setlist(&mut self, from: usize, to: usize) -> Result<()> {
-        if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() { bail!("setlist index is out of range"); }
+        if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() {
+            bail!("setlist index is out of range");
+        }
         let entry = self.snapshot.setlist.remove(from);
         self.snapshot.setlist.insert(to, entry);
         self.snapshot.current_setlist_index = Some(to);
@@ -193,8 +211,13 @@ impl RoomEngine {
     }
 
     pub fn advance_setlist(&mut self) -> Result<()> {
-        let index = self.snapshot.current_setlist_index.context("setlist is not active")?;
-        if let Some(entry) = self.snapshot.setlist.get_mut(index) { entry.completed = true; }
+        let index = self
+            .snapshot
+            .current_setlist_index
+            .context("setlist is not active")?;
+        if let Some(entry) = self.snapshot.setlist.get_mut(index) {
+            entry.completed = true;
+        }
         let next = index + 1;
         if next >= self.snapshot.setlist.len() {
             self.snapshot.lifecycle = RoomLifecycle::SetComplete;

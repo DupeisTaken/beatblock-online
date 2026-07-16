@@ -39,7 +39,15 @@ struct LockChartRequest {
 }
 
 fn authorized(state: &AppState, token: &Option<String>) -> Result<(), StatusCode> {
-    if token.as_deref() == Some(state.local_token.read().expect("token lock poisoned").as_str()) {
+    if token.as_deref()
+        == Some(
+            state
+                .local_token
+                .read()
+                .expect("token lock poisoned")
+                .as_str(),
+        )
+    {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
