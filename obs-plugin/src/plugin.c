@@ -176,25 +176,6 @@ static void video_render(void *data, gs_effect_t *effect)
         gs_draw_sprite(ctx->texture, 0, ctx->width, ctx->height);
 }
 
-struct bbt_audio { obs_source_t *source; };
-
-static const char *audio_name(void *unused)
-{
-    UNUSED_PARAMETER(unused);
-    return obs_module_text("SharedAudio");
-}
-
-static void *audio_create(obs_data_t *settings, obs_source_t *source)
-{
-    UNUSED_PARAMETER(settings);
-    struct bbt_audio *ctx = bzalloc(sizeof(*ctx));
-    ctx->source = source;
-    blog(LOG_INFO, "[Beatblock Together] Shared Audio follows the featured in-game renderer; song-only fallback is reported in Online diagnostics.");
-    return ctx;
-}
-
-static void audio_destroy(void *data) { bfree(data); }
-
 static struct obs_source_info video_info = {
     .id = "beatblock_together_player_stream",
     .type = OBS_SOURCE_TYPE_INPUT,
@@ -212,20 +193,9 @@ static struct obs_source_info video_info = {
     .icon_type = OBS_ICON_TYPE_GAME_CAPTURE,
 };
 
-static struct obs_source_info audio_info = {
-    .id = "beatblock_together_shared_audio",
-    .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_AUDIO,
-    .get_name = audio_name,
-    .create = audio_create,
-    .destroy = audio_destroy,
-    .icon_type = OBS_ICON_TYPE_AUDIO_INPUT,
-};
-
 bool obs_module_load(void)
 {
     obs_register_source(&video_info);
-    obs_register_source(&audio_info);
-    blog(LOG_INFO, "[Beatblock Together] OBS sources registered");
+    blog(LOG_INFO, "[Beatblock Together] OBS player stream source registered");
     return true;
 }

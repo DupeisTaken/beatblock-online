@@ -18,7 +18,7 @@ The persistent header shows room name, runtime link, and lifecycle. The chart st
 Open **Setlist** from the bottom utility bar.
 
 - **Select Atom Map** uses Beatblock's official selector and never redistributes official content.
-- **Select Custom** locks a custom chart for verification or the separately gated host-transfer flow.
+- **Select Custom** locks a custom chart for local hash, variant, and note-count verification. Host file transfer is intentionally unavailable in this release; every competitor installs the chart locally.
 - **Add Official/Custom** creates an ordered set. Move or remove the selected entry before it is played.
 - After Results, **Advance Setlist** locks the next entry and returns everyone to verification.
 

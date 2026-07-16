@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const executable = resolve(root, 'companion/target/release/BeatblockTogetherRuntime.exe');
+const executable = resolve(root, 'companion/target/release/BeatblockOnlineRuntime.exe');
 const data = resolve(root, '.test/runtime-lifecycle-data');
 const reportPath = resolve(root, 'reports/trial-runs/runtime-lifecycle-latest.json');
 await rm(data, { recursive: true, force: true });

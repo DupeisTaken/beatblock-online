@@ -8,7 +8,7 @@ Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choo
 
 The player source reads the corresponding triple-buffered RGBA frame ring. Assigning a participant to that stable slot happens inside Beatblock under **Spectate + OBS**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, or its renderer has not published a frame. Check the in-game slot status before repairing the plugin.
 
-**Beatblock Together Shared Audio** currently reserves the featured-audio source contract but intentionally emits no audio until process-specific capture and the song-only fallback pass certification. Use OBS Application Audio Capture for the featured renderer during this alpha.
+The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Together does not register a silent placeholder audio source.
 
 Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode renders the chart process; clean mode draws deterministic essential notes, paddle, taps, holds, mines, and outcomes without custom backgrounds/VFX. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
 

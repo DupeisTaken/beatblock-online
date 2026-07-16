@@ -55,7 +55,7 @@ license = false
 eula = false
 
 [[bin]]
-name = "BeatblockTogetherRuntime"
+name = "BeatblockOnlineRuntime"
 path = "src/main.rs"
 
 [[bin]]

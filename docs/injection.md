@@ -4,10 +4,10 @@
 
 Run `BeatblockTogetherInstaller.exe`. Its four Unity Mod Manager-style tabs are installation-only:
 
-- **Install:** a selected-target card, Automatic/standalone/BeatblockPlus method, optional OBS source, real operation progress, Install/Update, Repair, Uninstall, Restore Game Files, and postflight Launch Beatblock verification.
+- **Install:** a selected-target card, Automatic/standalone/BeatblockPlus method, optional OBS source, private/public firewall scope, explicit uncertified-build override, real operation progress, Install/Update, Repair, Uninstall, Restore Game Files, and postflight Launch Beatblock verification.
 - **Components:** a colored table for the game build, adapter, shared Lua payload, Lovely, runtime, renderer, optional OBS plugin, and firewall. Text labels accompany every color, and one **Repair Required Components** action fixes managed files.
 - **Log:** bounded log with Copy and Save.
-- **Settings:** update channel/check, backup folder, private/public firewall profile, data-retaining uninstall, and developer-only unknown-build override.
+- **Settings:** update channel/check and backup folder. Destructive data removal is shown in the Uninstall confirmation instead of being hidden in persistent settings.
 
 The path in the field is always the path being described and modified. Selection priority is the current field, then the managed manifest target, then Steam discovery. Any folder with `Beatblock.exe`, the required LÖVE/Lua libraries, and the expected `packed` archives is structurally valid—including repository/reference copies and paths containing spaces or Unicode. The installer validates the supported `Beatblock.exe` SHA-256 `c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b`; other fingerprints require **Developer: allow an uncertified Beatblock build** and remain blocked from competitive rooms.
 
@@ -36,7 +36,7 @@ Installed layout:
   lovely\bootstrap.toml       (standalone only)
   mod.json + main.lua ...     (BeatblockPlus only)
 %LOCALAPPDATA%\BeatblockTogether\...
-  runtime\BeatblockTogetherRuntime.exe
+  runtime\BeatblockOnlineRuntime.exe
   installer\BeatblockTogetherInstaller.exe
 ```
 

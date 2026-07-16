@@ -56,6 +56,8 @@ struct AuthHello {
     display_name: String,
     role: ParticipantRole,
     spake_message: String,
+    #[serde(default)]
+    resume_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +80,8 @@ struct AuthWelcome {
     accepted: bool,
     session_id: String,
     message: String,
+    #[serde(default)]
+    resume_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -89,6 +93,8 @@ pub struct NetworkHub {
     server_connection: Arc<RwLock<Option<Connection>>>,
     endpoint: Arc<Mutex<Option<Endpoint>>>,
     password_failures: Arc<RwLock<HashMap<IpAddr, VecDeque<Instant>>>>,
+    resume_sessions: Arc<RwLock<HashMap<String, String>>>,
+    client_resume_token: Arc<RwLock<Option<String>>>,
 }
 
 impl NetworkHub {
@@ -101,11 +107,15 @@ impl NetworkHub {
             server_connection: Arc::new(RwLock::new(None)),
             endpoint: Arc::new(Mutex::new(None)),
             password_failures: Arc::new(RwLock::new(HashMap::new())),
+            resume_sessions: Arc::new(RwLock::new(HashMap::new())),
+            client_resume_token: Arc::new(RwLock::new(None)),
         }
     }
 
     pub async fn start_host(&self, port: u16, password: String) -> Result<SocketAddr> {
         self.shutdown().await;
+        self.resume_sessions.write().await.clear();
+        *self.client_resume_token.write().await = None;
         if password.chars().count() < 4 || password.chars().count() > 128 {
             bail!("room password must contain 4-128 characters");
         }
@@ -123,7 +133,7 @@ impl NetworkHub {
         )?;
         let mut address = endpoint.local_addr()?;
         if address.ip().is_unspecified() {
-            address.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            address.set_ip(local_ip_address::local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         }
         *self.endpoint.lock().expect("endpoint mutex poisoned") = Some(endpoint.clone());
         let hub = self.clone();
@@ -180,6 +190,7 @@ impl NetworkHub {
                 display_name: display_name.trim().into(),
                 role,
                 spake_message: BASE64.encode(outbound),
+                resume_token: self.client_resume_token.read().await.clone(),
             },
         )
         .await?;
@@ -196,6 +207,7 @@ impl NetworkHub {
         if !welcome.accepted {
             bail!(welcome.message);
         }
+        *self.client_resume_token.write().await = welcome.resume_token.clone();
         let (outgoing_tx, outgoing_rx) = mpsc::channel(4096);
         *self.server_writer.write().await = Some(outgoing_tx);
         *self.server_connection.write().await = Some(connection.clone());
@@ -271,6 +283,23 @@ impl NetworkHub {
         self.peers.read().await.len()
     }
 
+    pub async fn disconnect_peer(&self, session_id: &str, reason: &str, allow_resume: bool) {
+        if !allow_resume {
+            self.resume_sessions
+                .write()
+                .await
+                .retain(|_, mapped_session| mapped_session != session_id);
+        }
+        self.peers.write().await.remove(session_id);
+        if let Some(connection) = self.peer_connections.write().await.remove(session_id) {
+            connection.close(1u32.into(), reason.as_bytes());
+        }
+    }
+
+    pub async fn clear_client_resume(&self) {
+        *self.client_resume_token.write().await = None;
+    }
+
     async fn accept_peer(&self, connection: Connection, password: &str) -> Result<()> {
         let remote_address = connection.remote_address();
         {
@@ -295,6 +324,7 @@ impl NetworkHub {
                     accepted: false,
                     session_id: String::new(),
                     message: "Incompatible protocol version".into(),
+                    resume_token: None,
                 },
             )
             .await?;
@@ -334,6 +364,7 @@ impl NetworkHub {
                     accepted: false,
                     session_id: String::new(),
                     message: "Incorrect room password".into(),
+                    resume_token: None,
                 },
             )
             .await?;
@@ -343,13 +374,40 @@ impl NetworkHub {
             .write()
             .await
             .remove(&remote_address.ip());
-        let session_id = Uuid::new_v4().to_string();
+        let (session_id, resume_token) = if let Some(token) = hello.resume_token.as_ref() {
+            let session = self.resume_sessions.read().await.get(token).cloned();
+            if let Some(session) = session {
+                if self.peer_connections.read().await.contains_key(&session) {
+                    write_frame(
+                        &mut send,
+                        &AuthWelcome {
+                            accepted: false,
+                            session_id: String::new(),
+                            message: "This room session is already connected".into(),
+                            resume_token: None,
+                        },
+                    )
+                    .await?;
+                    bail!("duplicate resume attempt for {session}");
+                }
+                (session, token.clone())
+            } else {
+                (Uuid::new_v4().to_string(), random_resume_token())
+            }
+        } else {
+            (Uuid::new_v4().to_string(), random_resume_token())
+        };
+        self.resume_sessions
+            .write()
+            .await
+            .insert(resume_token.clone(), session_id.clone());
         write_frame(
             &mut send,
             &AuthWelcome {
                 accepted: true,
                 session_id: session_id.clone(),
                 message: "Authenticated; awaiting room admission policy".into(),
+                resume_token: Some(resume_token),
             },
         )
         .await?;
@@ -436,11 +494,15 @@ impl NetworkHub {
             reliable.abort();
             peers.write().await.remove(&session_id);
             peer_connections.write().await.remove(&session_id);
+            let reason = match connection.close_reason() {
+                Some(quinn::ConnectionError::ApplicationClosed(close)) => {
+                    String::from_utf8_lossy(&close.reason).into_owned()
+                }
+                Some(error) => error.to_string(),
+                None => "QUIC connection closed".into(),
+            };
             let _ = events
-                .send(NetworkEvent::Disconnected {
-                    session_id,
-                    reason: "QUIC connection closed".into(),
-                })
+                .send(NetworkEvent::Disconnected { session_id, reason })
                 .await;
         });
     }
@@ -484,6 +546,11 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0u8, |difference, (left, right)| difference | (left ^ right))
         == 0
+}
+
+fn random_resume_token() -> String {
+    let token: [u8; 32] = rand::random();
+    BASE64.encode(token)
 }
 
 fn insecure_client_config() -> Result<quinn::ClientConfig> {
@@ -597,6 +664,45 @@ mod tests {
             .unwrap();
         assert!(matches!(control, NetworkEvent::Envelope { .. }));
         let _ = client_events.recv().await;
+
+        client.shutdown().await;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(3), host_events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, NetworkEvent::Disconnected { .. }) {
+                break;
+            }
+        }
+        let resumed = client
+            .join(address, "correct horse", "Player", ParticipantRole::Player)
+            .await
+            .unwrap();
+        assert_eq!(resumed, session, "reconnect must preserve room identity");
+        loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(3), client_events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            if matches!(event, NetworkEvent::Authenticated { hosting: false, .. }) {
+                break;
+            }
+        }
+        host.disconnect_peer(&session, "Removed from the room by the host", false)
+            .await;
+        let close_reason = loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(3), client_events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            if let NetworkEvent::Disconnected { reason, .. } = event {
+                break reason;
+            }
+        };
+        assert_eq!(close_reason, "Removed from the room by the host");
         host.shutdown().await;
         client.shutdown().await;
     }

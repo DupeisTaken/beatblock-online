@@ -14,4 +14,9 @@ pub mod network;
 pub mod renderer;
 pub mod room;
 pub mod storage;
-pub mod transfer;
+
+// Archive-transfer code is quarantined to its security tests until an
+// authenticated transport and explicit in-game consent flow are implemented.
+// Production advertises verify-only charts and cannot call this module.
+#[cfg(test)]
+mod transfer;

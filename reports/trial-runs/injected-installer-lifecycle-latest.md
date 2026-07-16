@@ -8,9 +8,9 @@ The final packaged standalone-Lovely payload was installed into the disposable `
 
 The runtime working set was 18,329,600 bytes (17.48 MiB), below the 30 MiB idle target. The API reported `gameplay.updatedAtMs = 1784114026000`, which is direct evidence that telemetry reached the Rust runtime rather than merely proving that the API port opened.
 
-Activating the Online hub's exit path returned Beatblock to its main menu. Beatblock remained alive and responsive; `BeatblockTogetherRuntime.exe` terminated and port 8974 stopped listening within the eight-second observation window.
+Activating the Online hub's exit path returned Beatblock to its main menu. Beatblock remained alive and responsive; `BeatblockOnlineRuntime.exe` terminated and port 8974 stopped listening within the eight-second observation window.
 
-The final installer-only header cleanup did not change the mod or runtime source. The current installer was reinstalled successfully into `.test`; its installed runtime SHA-256 (`9f114ccf07aff4cabe5a451e3bfea3366d894a0daaa9febd96f0e798f9812bd8`) matches the release runtime byte-for-byte. The installer was then opened one process at a time at Slint scale factors 1.0, 1.25, and 1.5 and closed after each capture. No installer process remained.
+The final installer-only header cleanup did not change the mod or runtime source. After the runtime rename, the self-contained installer was rebuilt with `BeatblockOnlineRuntime.exe`; transactional installer tests verify the new installed path, legacy-path cleanup, and rollback behavior. The installer was then opened one process at a time at Slint scale factors 1.0, 1.25, and 1.5 and closed after each capture. No installer process remained.
 
 ## Evidence
 

@@ -92,6 +92,10 @@ function BBT.send(kind, payload)
 end
 
 function BBT.command(kind, payload)
+  if BBT.pendingRequestId and kind ~= 'runtime.session_end' then
+    BBT.lastError = 'Please wait for the current Online action to finish.'
+    return nil
+  end
   BBT.lastError = nil
   payload = payload or {}
   BBT.requestSequence = BBT.requestSequence + 1
@@ -99,6 +103,7 @@ function BBT.command(kind, payload)
   payload.requestId = requestId
   BBT.pendingRequestId = requestId
   BBT.send(kind, payload)
+  return requestId
 end
 
 -- The native engine is deliberately lazy: normal Beatblock menus never start it.
@@ -107,6 +112,7 @@ function BBT.startOnlineRuntime()
   BBT.sessionActive = true
   BBT.companionConnected = false
   BBT.runtimeStarting = true
+  BBT.pendingRequestId = nil
   love.thread.getChannel('bbt_ipc_control'):clear()
   love.thread.getChannel('bbt_outbound'):clear()
   love.thread.getChannel('bbt_inbound'):clear()
@@ -140,6 +146,7 @@ function BBT.exitOnline()
   -- expendable once the user explicitly leaves Online.
   love.thread.getChannel('bbt_outbound'):clear()
   BBT.command('runtime.session_end', {})
+  BBT.pendingRequestId = nil
   BBT.sessionActive = false
   BBT.connected = false
   BBT.companionConnected = false
@@ -443,8 +450,10 @@ local function handleCommand(raw)
     BBT.context.sessionId = message.payload.sessionId or BBT.context.sessionId
     BBT.context.role = message.payload.role or BBT.context.role
     BBT.companionConnected = true
-    BBT.connected = message.payload.connection == 'hosting' or message.payload.connection == 'connected'
+    BBT.connectionStatus = message.payload.connection or 'offline'
+    BBT.connected = BBT.connectionStatus == 'hosting' or BBT.connectionStatus == 'connected'
     BBT.runtimeStarting = false
+    BBT.runtimeLaunchStatus = nil
     if message.payload.runtimeTimeMs then
       BBT.serverMonotonicOffsetMs = message.payload.runtimeTimeMs - monotonicMs()
       BBT.clockSynchronized = true
@@ -459,6 +468,13 @@ local function handleCommand(raw)
   elseif message.type == 'room.snapshot' or message.type == 'lobby.snapshot' then
     BBT.lastLobby = message.payload
     BBT.connected = message.payload.lifecycle ~= 'closed' and message.payload.id ~= 'offline'
+    if BBT.connected then
+      local player=BBT.currentPlayer()
+      BBT.connectionStatus=player and player.sessionId==message.payload.hostSessionId and 'hosting' or 'connected'
+      if player then BBT.context.sessionId=player.sessionId end
+    else
+      BBT.connectionStatus='offline'
+    end
     BBT.context.lobbyId = message.payload.id or BBT.context.lobbyId
     BBT.context.lobbyName = message.payload.name or BBT.context.lobbyName
     BBT.scheduledStartTimeMs = message.payload.scheduledStartTimeMs or BBT.scheduledStartTimeMs
@@ -484,6 +500,8 @@ local function handleCommand(raw)
     BBT.renderers = message.payload.renderers or {}
     BBT.history = message.payload.history or {}
     BBT.settings = message.payload.settings or BBT.settings
+    BBT.connectionStatus = message.payload.connection or BBT.connectionStatus
+    BBT.connected = BBT.connectionStatus == 'hosting' or BBT.connectionStatus == 'connected'
     if BBT.settings and BBT.settings.hudEnabled ~= nil then BBT.hudEnabled = BBT.settings.hudEnabled == true end
     BBT.diagnostics = message.payload.diagnostics or BBT.diagnostics
   elseif message.type == 'renderer.snapshot' then
@@ -491,10 +509,16 @@ local function handleCommand(raw)
     BBT.diagnostics = BBT.diagnostics or {}
     BBT.diagnostics.rendererBudgetWarning = message.payload.budgetWarning
   elseif message.type == 'control.ack' then
-    if message.payload.requestId == BBT.pendingRequestId then BBT.pendingRequestId = nil end
+    if message.payload.requestId == BBT.pendingRequestId then
+      BBT.lastCompletedRequestId = BBT.pendingRequestId
+      BBT.pendingRequestId = nil
+    end
   elseif message.type == 'runtime.error' or message.type == 'control.error' then
     BBT.lastError = message.payload.message or 'The runtime rejected the command'
     if message.type == 'runtime.error' then BBT.runtimeStarting = false end
+    if message.payload.requestId == BBT.pendingRequestId or message.type == 'runtime.error' then
+      BBT.pendingRequestId = nil
+    end
   elseif message.type == 'runtime.launch_status' then
     BBT.runtimeLaunchStatus = message.payload.phase
   elseif message.type == 'clock.pong' then

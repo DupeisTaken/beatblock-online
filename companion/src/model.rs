@@ -162,7 +162,6 @@ pub enum AdmissionMode {
 #[serde(rename_all = "snake_case")]
 pub enum ChartTransferMode {
     VerifyOnly,
-    HostTransfer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

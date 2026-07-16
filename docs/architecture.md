@@ -5,7 +5,7 @@ BeatblockTogetherInstaller.exe (maintenance only, exits)
     -> Lovely + one adapter + hidden runtime + optional OBS plugin
 
 Steam -> Beatblock -> adaptive Online dashboard -> LÖVE channel -> named pipe v2
-                                      -> BeatblockTogetherRuntime.exe
+                                      -> BeatblockOnlineRuntime.exe
                                          -> direct QUIC room
                                          -> SQLite/history
                                          -> API + atomic exports
@@ -14,9 +14,9 @@ Steam -> Beatblock -> adaptive Online dashboard -> LÖVE channel -> named pipe v
 
 The installer never hosts, joins, renders, exports, or stays in the tray. The runtime has no Slint/tray dependency, console, or visible window. It is launched lazily with Beatblock's parent PID, is single-instance per user, and exits with **Exit Online** or the parent process.
 
-Keeping QUIC, SQLite, hashing, archive validation, renderer supervision, and OBS transport out of Beatblock prevents that work from blocking its frame loop and isolates native failures. A runtime crash during a competitive run invalidates the run; recovery is attempted once with bounded backoff.
+Keeping QUIC, SQLite, hashing, renderer supervision, and OBS transport out of Beatblock prevents that work from blocking its frame loop and isolates native failures. A participant connection retries with a bounded 30-second grace; a runtime restart returns to Offline instead of presenting a serialized room without live ownership or network credentials.
 
-The room lifecycle is `forming -> chart_locked -> ready -> countdown -> playing -> results -> set_complete -> closed`. The host derives accuracy from ordered score mutations and stores a two-minute recovery snapshot.
+The room lifecycle is `forming -> chart_locked -> ready -> countdown -> playing -> results -> set_complete -> closed`. The host derives accuracy from ordered score mutations and stores a two-minute diagnostic snapshot, but only a live authenticated network session can own or resume a room.
 
 The runtime/API never publishes passwords, API tokens, absolute chart paths, or unrelated process data to room snapshots. Protocol-v1 clients receive an explicit compatibility failure.
 

@@ -123,7 +123,6 @@ fn for_game(mut event: Envelope) -> Option<Envelope> {
             | "renderer.snapshot"
             | "history.snapshot"
             | "diagnostics.snapshot"
-            | "transfer.progress"
     );
     if !allowed {
         return None;

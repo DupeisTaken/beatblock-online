@@ -57,21 +57,31 @@ fn main() {
     // The public release is one installer download. The release packager builds
     // the lean runtime first and passes its exact artifact into this payload.
     let runtime_output =
-        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("BeatblockTogetherRuntime.exe");
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("BeatblockOnlineRuntime.exe");
     let runtime = env::var_os("BBT_RUNTIME_EXE")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .or_else(|| {
-            let path = PathBuf::from("target/release/BeatblockTogetherRuntime.exe");
+            let path = PathBuf::from("target/release/BeatblockOnlineRuntime.exe");
             path.is_file().then_some(path)
         });
     if let Some(source) = runtime {
         fs::copy(&source, &runtime_output).expect("copy runtime payload");
         println!("cargo:rerun-if-changed={}", source.display());
+    } else if env::var_os("CARGO_FEATURE_INSTALLER_UI").is_none() {
+        // Library tests exercise transactional installer behavior without
+        // building the Windows GUI bundle first. Keep the placeholder scoped
+        // to non-installer builds; real installer binaries still fail closed
+        // when the separately built runtime artifact is missing.
+        fs::write(
+            runtime_output,
+            b"MZ\0Beatblock Together test-only runtime payload",
+        )
+        .expect("write test runtime payload");
     } else {
         fs::write(runtime_output, []).expect("write empty runtime payload");
         println!(
-            "cargo:warning=Runtime payload is unavailable; build BeatblockTogetherRuntime first"
+            "cargo:warning=Runtime payload is unavailable; build BeatblockOnlineRuntime first"
         );
     }
     println!("cargo:rerun-if-env-changed=BBT_RUNTIME_EXE");

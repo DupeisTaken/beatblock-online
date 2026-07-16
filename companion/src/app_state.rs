@@ -25,6 +25,68 @@ use std::{
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 #[derive(Clone)]
+struct ReconnectRequest {
+    address: SocketAddr,
+    password: String,
+    display_name: String,
+    role: ParticipantRole,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("bbt-app-{label}-{}", rand::random::<u64>()))
+    }
+
+    #[tokio::test]
+    async fn pending_peer_has_no_gameplay_or_renderer_authority() {
+        let root = temporary("admission");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room = RoomEngine::host(
+            "Approval".into(),
+            "Host".into(),
+            AdmissionMode::HostApproval,
+        );
+        let pending = room
+            .request_join("Pending", ParticipantRole::Player)
+            .unwrap();
+        *state.room.write().await = room;
+        assert!(state.require_admitted_peer(&pending).await.is_err());
+        state
+            .room
+            .write()
+            .await
+            .admit(&pending, true, ParticipantRole::Player)
+            .unwrap();
+        assert!(state.require_admitted_peer(&pending).await.is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_snapshot_never_reappears_as_a_live_ghost_room() {
+        let root = temporary("recovery");
+        std::fs::create_dir_all(&root).unwrap();
+        {
+            let storage = Storage::open(root.join("runtime.sqlite3")).unwrap();
+            let room = RoomEngine::host(
+                "Recovered".into(),
+                "Host".into(),
+                AdmissionMode::PasswordOnly,
+            );
+            storage.save_room(&room.snapshot, 120_000).unwrap();
+        }
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        assert_eq!(state.room.blocking_read().snapshot.id, "offline");
+        assert!(!state.is_host.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[derive(Clone)]
 pub struct AppState {
     pub local_token: Arc<std::sync::RwLock<String>>,
     pub gameplay: Arc<RwLock<GameplayState>>,
@@ -40,9 +102,12 @@ pub struct AppState {
     pub is_host: Arc<AtomicBool>,
     pub local_session_id: Arc<RwLock<Option<String>>>,
     pub connection_status: Arc<RwLock<String>>,
+    pub host_join_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub nat_method: Arc<RwLock<Option<String>>>,
     pub shutdown_requested: Arc<AtomicBool>,
     pub selected_chart_path: Arc<RwLock<Option<String>>>,
     pub chart_paths: Arc<RwLock<HashMap<String, String>>>,
+    reconnect_request: Arc<RwLock<Option<ReconnectRequest>>>,
 }
 
 impl AppState {
@@ -59,11 +124,11 @@ impl AppState {
                 .context("migrate Manager history to runtime storage")?;
         }
         let storage = Arc::new(Storage::open(runtime_db)?);
-        let recovered = storage.recover_room(unix_ms())?;
-        let mut room = RoomEngine::offline();
-        if let Some(snapshot) = recovered {
-            room.snapshot = snapshot;
-        }
+        // A serialized room is useful for history, but it is not a live room:
+        // QUIC credentials and ownership are intentionally never persisted.
+        // Surfacing it as active after a crash created an unusable ghost room.
+        let _recovered_for_history = storage.recover_room(unix_ms())?;
+        let room = RoomEngine::offline();
         let lobby = serde_json::to_value(&room.snapshot)?;
         let (events, _) = broadcast::channel(8192);
         let (network_events_tx, network_events_rx) = mpsc::channel(8192);
@@ -90,9 +155,12 @@ impl AppState {
                 is_host: Arc::new(AtomicBool::new(false)),
                 local_session_id: Arc::new(RwLock::new(None)),
                 connection_status: Arc::new(RwLock::new("offline".into())),
+                host_join_address: Arc::new(RwLock::new(None)),
+                nat_method: Arc::new(RwLock::new(None)),
                 shutdown_requested: Arc::new(AtomicBool::new(false)),
                 selected_chart_path: Arc::new(RwLock::new(None)),
                 chart_paths: Arc::new(RwLock::new(HashMap::new())),
+                reconnect_request: Arc::new(RwLock::new(None)),
             },
             network_events_rx,
         ))
@@ -228,11 +296,16 @@ impl AppState {
                 ..
             } => {
                 if hosting {
-                    self.room.write().await.request_join_with_id(
+                    if let Err(error) = self.room.write().await.request_join_with_id(
                         session_id.clone(),
                         &display_name,
                         role,
-                    )?;
+                    ) {
+                        self.network
+                            .disconnect_peer(&session_id, &error.to_string(), false)
+                            .await;
+                        return Err(error);
+                    }
                     self.broadcast_room().await?;
                 } else {
                     *self.local_session_id.write().await = Some(session_id);
@@ -244,6 +317,7 @@ impl AppState {
                 envelope,
             } => {
                 if self.is_host.load(Ordering::Relaxed) {
+                    self.require_admitted_peer(&session_id).await?;
                     self.validate(&envelope)?;
                     self.apply_common(&envelope).await?;
                     if envelope.kind.starts_with("run.") {
@@ -277,11 +351,23 @@ impl AppState {
                     let _ = self.events.send(envelope);
                     self.broadcast_room().await?;
                 } else {
-                    self.apply_host_message(envelope).await?;
+                    if envelope.kind == "room.removed" {
+                        let reason = envelope
+                            .payload
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Removed from the room")
+                            .to_owned();
+                        self.leave_room().await?;
+                        self.emit_error(reason);
+                    } else {
+                        self.apply_host_message(envelope).await?;
+                    }
                 }
             }
             NetworkEvent::RenderSample { session_id, sample } => {
                 if self.is_host.load(Ordering::Relaxed) {
+                    self.require_admitted_peer(&session_id).await?;
                     self.renderer.push_sample(&session_id, sample);
                 }
             }
@@ -290,8 +376,36 @@ impl AppState {
                     self.room.write().await.disconnect(&session_id);
                     self.renderer.stop_participant(&session_id);
                     self.broadcast_room().await?;
+                    let state = self.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        if state.room.write().await.expire_disconnect(&session_id) {
+                            let _ = state.broadcast_room().await;
+                        }
+                    });
                 } else {
-                    *self.connection_status.write().await = "reconnecting".into();
+                    let normalized_reason = reason.to_ascii_lowercase();
+                    let terminal_disconnect = normalized_reason.contains("rejected")
+                        || normalized_reason.contains("removed from the room")
+                        || normalized_reason.contains("runtime stopped");
+                    if terminal_disconnect {
+                        self.leave_room().await?;
+                        self.emit_error(reason);
+                        return Ok(());
+                    }
+                    let connected_session = self.local_session_id.read().await.clone();
+                    let room_closed = self.room.read().await.snapshot.lifecycle
+                        == crate::model::RoomLifecycle::Closed;
+                    if connected_session.is_some()
+                        && !room_closed
+                        && self.reconnect_request.read().await.is_some()
+                    {
+                        *self.connection_status.write().await = "reconnecting".into();
+                        self.spawn_reconnect();
+                    } else {
+                        *self.connection_status.write().await = "offline".into();
+                    }
+                    self.publish_runtime_snapshot().await?;
                 }
                 self.emit_error(reason);
             }
@@ -380,15 +494,43 @@ impl AppState {
         port: u16,
         admission_mode: AdmissionMode,
     ) -> Result<SocketAddr> {
+        *self.reconnect_request.write().await = None;
+        *self.connection_status.write().await = "starting".into();
         let host_name = self.config.read().await.display_name.clone();
         let room = RoomEngine::host(room_name, host_name, admission_mode);
         let session_id = room.snapshot.host_session_id.clone();
-        let address = self.network.start_host(port, password).await?;
+        let local_address = match self.network.start_host(port, password).await {
+            Ok(address) => address,
+            Err(error) => {
+                *self.connection_status.write().await = "offline".into();
+                return Err(error);
+            }
+        };
+        let mapping = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::nat::map_host_port(local_address.port()),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
+        let address = mapping
+            .as_ref()
+            .map(|mapping| mapping.external_address)
+            .unwrap_or(local_address);
+        *self.host_join_address.write().await = Some(address);
+        *self.nat_method.write().await = mapping
+            .as_ref()
+            .map(|mapping| mapping.method.to_owned())
+            .or_else(|| Some("LAN / manual port forwarding".into()));
         *self.room.write().await = room;
         *self.local_session_id.write().await = Some(session_id);
         self.is_host.store(true, Ordering::Relaxed);
         *self.connection_status.write().await = "hosting".into();
         self.sync_room_state().await?;
+        self.spawn_nat_renewal(
+            local_address.port(),
+            self.room.read().await.snapshot.id.clone(),
+        );
         Ok(address)
     }
 
@@ -419,21 +561,91 @@ impl AppState {
     ) -> Result<String> {
         self.is_host.store(false, Ordering::Relaxed);
         *self.connection_status.write().await = "connecting".into();
-        let session = self
+        let session = match self
             .network
             .join(address, password, display_name, role)
-            .await?;
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                *self.connection_status.write().await = "offline".into();
+                return Err(error);
+            }
+        };
+        *self.reconnect_request.write().await = Some(ReconnectRequest {
+            address,
+            password: password.to_owned(),
+            display_name: display_name.to_owned(),
+            role,
+        });
         *self.local_session_id.write().await = Some(session.clone());
         Ok(session)
     }
 
     pub async fn admit(&self, session_id: &str, admit: bool, role: ParticipantRole) -> Result<()> {
         self.require_host()?;
-        self.room.write().await.admit(session_id, admit, role)?;
-        if !admit || role == ParticipantRole::Spectator {
+        if !admit {
+            let _ = self
+                .network
+                .send_to(
+                    session_id,
+                    Envelope::new(
+                        "room.removed",
+                        0,
+                        json!({"reason":"Join request rejected by host"}),
+                    ),
+                )
+                .await;
+            self.room.write().await.kick(session_id)?;
             self.renderer.stop_participant(session_id);
+            self.network
+                .disconnect_peer(session_id, "Join request rejected by host", false)
+                .await;
+        } else {
+            self.room.write().await.admit(session_id, true, role)?;
+            if role == ParticipantRole::Spectator {
+                self.renderer.stop_participant(session_id);
+            }
         }
         self.broadcast_room().await
+    }
+
+    pub async fn kick(&self, session_id: &str) -> Result<()> {
+        self.require_host()?;
+        let _ = self
+            .network
+            .send_to(
+                session_id,
+                Envelope::new(
+                    "room.removed",
+                    0,
+                    json!({"reason":"Removed from the room by the host"}),
+                ),
+            )
+            .await;
+        self.room.write().await.kick(session_id)?;
+        self.renderer.stop_participant(session_id);
+        self.network
+            .disconnect_peer(session_id, "Removed from the room by the host", false)
+            .await;
+        self.broadcast_room().await
+    }
+
+    pub async fn leave_room(&self) -> Result<()> {
+        self.network.shutdown().await;
+        *self.reconnect_request.write().await = None;
+        self.network.clear_client_resume().await;
+        self.renderer.stop_all();
+        self.is_host.store(false, Ordering::Relaxed);
+        *self.local_session_id.write().await = None;
+        *self.connection_status.write().await = "offline".into();
+        *self.host_join_address.write().await = None;
+        *self.nat_method.write().await = None;
+        *self.room.write().await = RoomEngine::offline();
+        *self.selected_chart_path.write().await = None;
+        self.chart_paths.write().await.clear();
+        self.sync_room_state().await?;
+        self.publish_runtime_snapshot().await
     }
 
     pub async fn lock_chart(&self, chart: ChartLock, append_to_setlist: bool) -> Result<()> {
@@ -536,7 +748,12 @@ impl AppState {
         self.broadcast_room().await?;
         self.renderer.stop_all();
         self.network.shutdown().await;
+        *self.reconnect_request.write().await = None;
+        self.is_host.store(false, Ordering::Relaxed);
+        *self.local_session_id.write().await = None;
         *self.connection_status.write().await = "offline".into();
+        *self.host_join_address.write().await = None;
+        *self.nat_method.write().await = None;
         Ok(())
     }
 
@@ -631,6 +848,60 @@ impl AppState {
         }
     }
 
+    fn spawn_nat_renewal(&self, port: u16, room_id: String) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+                if !state.is_host.load(Ordering::Relaxed)
+                    || state.room.read().await.snapshot.id != room_id
+                {
+                    break;
+                }
+                if let Ok(mapping) = crate::nat::map_host_port(port).await {
+                    *state.host_join_address.write().await = Some(mapping.external_address);
+                    *state.nat_method.write().await = Some(mapping.method.to_owned());
+                    let _ = state.publish_runtime_snapshot().await;
+                }
+            }
+        });
+    }
+
+    fn spawn_reconnect(&self) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            for delay in [1_u64, 2, 4, 7, 7, 7] {
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                if state.connection_status.read().await.as_str() != "reconnecting" {
+                    return;
+                }
+                let Some(request) = state.reconnect_request.read().await.clone() else {
+                    return;
+                };
+                match state
+                    .network
+                    .join(
+                        request.address,
+                        &request.password,
+                        &request.display_name,
+                        request.role,
+                    )
+                    .await
+                {
+                    Ok(session_id) => {
+                        *state.local_session_id.write().await = Some(session_id);
+                        *state.connection_status.write().await = "connected".into();
+                        let _ = state.publish_runtime_snapshot().await;
+                        return;
+                    }
+                    Err(error) => tracing::warn!(%error, "room reconnect attempt failed"),
+                }
+            }
+            state.emit_error("Could not reconnect within the 30-second room grace period".into());
+            let _ = state.leave_room().await;
+        });
+    }
+
     async fn broadcast_room(&self) -> Result<()> {
         self.sync_room_state().await?;
         let snapshot = self.room.read().await.snapshot.clone();
@@ -668,6 +939,20 @@ impl AppState {
         Ok(())
     }
 
+    async fn require_admitted_peer(&self, session_id: &str) -> Result<()> {
+        let room = self.room.read().await;
+        let participant = room
+            .snapshot
+            .participants
+            .iter()
+            .find(|participant| participant.session_id == session_id)
+            .context("network peer is not in the room roster")?;
+        if !participant.admitted || !participant.connected {
+            anyhow::bail!("network peer is awaiting host admission");
+        }
+        Ok(())
+    }
+
     pub fn require_host_control(&self) -> Result<()> {
         self.require_host()
     }
@@ -682,6 +967,8 @@ impl AppState {
             0,
             json!({
                 "connection":self.connection_status.read().await.clone(),
+                "joinAddress":self.host_join_address.read().await.clone(),
+                "natMethod":self.nat_method.read().await.clone(),
                 "hosting":self.is_host.load(Ordering::Relaxed),
                 "room":self.room.read().await.snapshot.clone(),
                 "renderers":self.renderer.slots(),

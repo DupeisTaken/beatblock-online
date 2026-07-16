@@ -91,12 +91,7 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state.start_room(force).await.map(|_| ())
         }
         "room.close_request" | "lobby.close_request" => state.close_room().await,
-        "room.leave_request" | "lobby.leave_request" => {
-            state.network.shutdown().await;
-            *state.connection_status.write().await = "offline".into();
-            *state.local_session_id.write().await = None;
-            Ok(())
-        }
+        "room.leave_request" | "lobby.leave_request" => state.leave_room().await,
         "room.chart_select_request"
         | "room.chart_verify_request"
         | "lobby.chart_select_request"
@@ -125,11 +120,8 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state.publish_room().await
         }
         "room.kick" => {
-            state.require_host_control()?;
             let id = required(&message.payload, "sessionId")?;
-            state.room.write().await.kick(id)?;
-            state.renderer.stop_participant(id);
-            state.publish_room().await
+            state.kick(id).await
         }
         "setlist.remove" => {
             state.require_host_control()?;
@@ -156,9 +148,11 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         }
         "renderer.stop" => {
             state.require_host_control()?;
-            state
-                .renderer
-                .stop_slot(required(&message.payload, "slot")?);
+            let slot = required(&message.payload, "slot")?;
+            if state.renderer.slot(slot).is_none() {
+                anyhow::bail!("unknown renderer slot");
+            }
+            state.renderer.stop_slot(slot);
             publish_snapshots(state).await
         }
         "history.list" => publish_snapshots(state).await,
@@ -276,6 +270,12 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
     )));
     drop(client);
     let selecting = message.kind.ends_with("select");
+    let expected_max_hits = message
+        .payload
+        .get("expectedMaxHits")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
     if selecting {
         *state.selected_chart_path.write().await = Some(chart_id.to_owned());
         state
@@ -290,12 +290,7 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
                         .unwrap_or(chart_id)
                         .to_owned(),
                     variant: variant.to_owned(),
-                    expected_max_hits: message
-                        .payload
-                        .get("expectedMaxHits")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1)
-                        .max(1),
+                    expected_max_hits,
                     official: true,
                     transfer_mode: ChartTransferMode::VerifyOnly,
                 },
@@ -307,33 +302,31 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
             )
             .await?;
     }
-    let expected = state
-        .room
-        .read()
-        .await
-        .snapshot
-        .chart
-        .as_ref()
-        .map(|chart| chart.hash.clone());
-    let verified = expected.as_deref().is_some_and(|expected| expected == hash);
-    let reason =
-        (!verified).then(|| "This Atom Map chart or variant does not match the host".to_owned());
+    let expected = state.room.read().await.snapshot.chart.clone();
+    let reason = chart_mismatch_reason(
+        expected.as_ref(),
+        &hash,
+        variant,
+        expected_max_hits,
+        "Atom Map",
+    );
+    let verified = reason.is_none();
     state.set_local_verified(verified, reason.clone()).await?;
     publish(state, "chart.verification", json!({"verified":verified,"hash":hash,"official":true,"chartId":chart_id,"variant":variant,"reason":reason})).await;
     Ok(())
 }
 
 async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
+    if message
+        .payload
+        .get("allowTransfer")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        anyhow::bail!("host chart transfer is not available; every player must install and verify the chart locally");
+    }
     let path = required(&message.payload, "path")?;
     let result = canonical_chart_hash_cached(path, state.data_dir.join("chart-cache"))?;
-    let expected = state
-        .room
-        .read()
-        .await
-        .snapshot
-        .chart
-        .as_ref()
-        .map(|chart| chart.hash.clone());
     let selecting = message.kind.ends_with("chart_select_request");
     let variant = message
         .payload
@@ -341,6 +334,12 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("Default")
         .to_owned();
+    let expected_max_hits = message
+        .payload
+        .get("expectedMaxHits")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
     if selecting {
         *state.selected_chart_path.write().await = Some(
             message
@@ -360,27 +359,13 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
                 .unwrap_or(&result.package_name)
                 .to_owned(),
             variant: variant.clone(),
-            expected_max_hits: message
-                .payload
-                .get("expectedMaxHits")
-                .and_then(Value::as_u64)
-                .unwrap_or(1)
-                .max(1),
+            expected_max_hits,
             official: message
                 .payload
                 .get("official")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            transfer_mode: if message
-                .payload
-                .get("allowTransfer")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                ChartTransferMode::HostTransfer
-            } else {
-                ChartTransferMode::VerifyOnly
-            },
+            transfer_mode: ChartTransferMode::VerifyOnly,
         };
         let append = message
             .payload
@@ -389,10 +374,18 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
             .unwrap_or(false);
         state.lock_chart(chart, append).await?;
     }
-    let verified = expected
-        .as_deref()
-        .map_or(selecting, |hash| hash == result.hash);
-    let reason = (!verified).then(|| "Selected chart package does not match the host".to_owned());
+    // Read the lock after a host selection. The previous implementation kept
+    // the pre-selection hash, which made changing an existing custom chart
+    // report a mismatch against the chart the host had just selected.
+    let expected = state.room.read().await.snapshot.chart.clone();
+    let reason = chart_mismatch_reason(
+        expected.as_ref(),
+        &result.hash,
+        &variant,
+        expected_max_hits,
+        "custom chart",
+    );
+    let verified = reason.is_none();
     state.set_local_verified(verified, reason.clone()).await?;
     publish(
         state,
@@ -407,6 +400,34 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
     )
     .await;
     Ok(())
+}
+
+fn chart_mismatch_reason(
+    expected: Option<&ChartLock>,
+    actual_hash: &str,
+    actual_variant: &str,
+    actual_max_hits: u64,
+    label: &str,
+) -> Option<String> {
+    let Some(expected) = expected else {
+        return Some("The host has not locked a chart".into());
+    };
+    if expected.hash != actual_hash {
+        return Some(format!("Selected {label} package does not match the host"));
+    }
+    if expected.variant != actual_variant {
+        return Some(format!(
+            "Selected {label} variant '{}' does not match host variant '{}'",
+            actual_variant, expected.variant
+        ));
+    }
+    if expected.expected_max_hits != actual_max_hits {
+        return Some(format!(
+            "Selected {label} note count {actual_max_hits} does not match host count {}",
+            expected.expected_max_hits
+        ));
+    }
+    None
 }
 
 async fn publish(state: &AppState, kind: &str, payload: Value) {

@@ -196,7 +196,7 @@ fn parent_alive(_pid: u32) -> bool {
 
 struct SingleInstance {
     #[cfg(windows)]
-    handle: windows_sys::Win32::Foundation::HANDLE,
+    handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
 }
 
 impl SingleInstance {
@@ -208,19 +208,33 @@ impl SingleInstance {
                 Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
                 System::Threading::CreateMutexW,
             };
-            let name = std::ffi::OsStr::new("Local\\BeatblockTogetherRuntime-v2")
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>();
-            let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-            if handle.is_null() {
-                anyhow::bail!("could not create the runtime instance mutex");
+            let legacy_runtime_stem = concat!("Beatblock", "TogetherRuntime");
+            let names = [
+                "Local\\BeatblockOnlineRuntime-v2".to_string(),
+                format!("Local\\{legacy_runtime_stem}-v2"),
+            ];
+            let mut handles = Vec::with_capacity(names.len());
+            for name in names {
+                let name = std::ffi::OsStr::new(&name)
+                    .encode_wide()
+                    .chain(Some(0))
+                    .collect::<Vec<_>>();
+                let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+                if handle.is_null() || unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    if !handle.is_null() {
+                        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+                    }
+                    for acquired in handles {
+                        unsafe { windows_sys::Win32::Foundation::CloseHandle(acquired) };
+                    }
+                    if handle.is_null() {
+                        anyhow::bail!("could not create the runtime instance mutex");
+                    }
+                    anyhow::bail!("Beatblock Online runtime is already active");
+                }
+                handles.push(handle);
             }
-            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-                anyhow::bail!("Beatblock Together runtime is already active");
-            }
-            Ok(Self { handle })
+            Ok(Self { handles })
         }
         #[cfg(not(windows))]
         Ok(Self {})
@@ -230,8 +244,8 @@ impl SingleInstance {
 impl Drop for SingleInstance {
     fn drop(&mut self) {
         #[cfg(windows)]
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        for handle in &self.handles {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(*handle) };
         }
     }
 }

@@ -5,7 +5,7 @@ Beatblock Together is a Windows direct-IP competition mod. One player hosts a pa
 ## Player quick start
 
 1. Download and run [BeatblockTogetherInstaller.exe](release/BeatblockTogetherInstaller.exe).
-2. Confirm the **Selected game** card points to the folder you intend to modify. A green **SUPPORTED** badge identifies the certified build; developer copies require the explicit uncertified-build override.
+2. Confirm the **Selected game** card points to the folder you intend to modify. The Install page shows the adapter, OBS source, Windows Firewall profile, and uncertified-build choices together before anything changes. A green **SUPPORTED** badge identifies the certified build.
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
 5. Open **Online**, then host a room or join with the host's `IP:port` and password.

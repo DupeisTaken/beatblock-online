@@ -91,6 +91,23 @@ impl RoomEngine {
         if self.snapshot.lifecycle == RoomLifecycle::Closed {
             bail!("room is closed");
         }
+        if let Some(participant) = self
+            .snapshot
+            .participants
+            .iter_mut()
+            .find(|participant| participant.session_id == session_id)
+        {
+            if participant.connected {
+                bail!("this room session is already connected");
+            }
+            // The network layer only reuses a session id after proving the
+            // opaque resume token issued during the original PAKE exchange.
+            participant.connected = true;
+            participant.ready = false;
+            participant.invalid_reason = None;
+            self.touch();
+            return Ok(session_id);
+        }
         let role = if requested == ParticipantRole::Host {
             ParticipantRole::Player
         } else {
@@ -142,14 +159,14 @@ impl RoomEngine {
     }
 
     pub fn admit(&mut self, session_id: &str, admit: bool, role: ParticipantRole) -> Result<()> {
+        let role = self.normalized_role(role);
+        if admit {
+            self.require_role_capacity(session_id, role)?;
+        }
         let participant = self.participant_mut(session_id)?;
         participant.admitted = admit;
         participant.connected = admit;
-        participant.role = if role == ParticipantRole::Host {
-            ParticipantRole::Player
-        } else {
-            role
-        };
+        participant.role = role;
         if !admit {
             participant.invalid_reason = Some("Join request rejected by host".into());
         }
@@ -159,12 +176,10 @@ impl RoomEngine {
 
     /// Host-side roster mutations used by the in-game Room page.
     pub fn set_role(&mut self, session_id: &str, role: ParticipantRole) -> Result<()> {
+        let role = self.normalized_role(role);
+        self.require_role_capacity(session_id, role)?;
         let participant = self.participant_mut(session_id)?;
-        participant.role = if role == ParticipantRole::Host {
-            ParticipantRole::Player
-        } else {
-            role
-        };
+        participant.role = role;
         participant.ready = false;
         self.touch();
         Ok(())
@@ -186,26 +201,56 @@ impl RoomEngine {
     }
 
     pub fn remove_setlist(&mut self, index: usize) -> Result<()> {
+        self.require_setlist_editable()?;
         if index >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
         }
+        let active_id = self
+            .snapshot
+            .current_setlist_index
+            .and_then(|active| self.snapshot.setlist.get(active))
+            .map(|entry| entry.id.clone());
+        let removed_active = self.snapshot.current_setlist_index == Some(index);
         self.snapshot.setlist.remove(index);
-        self.snapshot.current_setlist_index = if self.snapshot.setlist.is_empty() {
-            None
+        if self.snapshot.setlist.is_empty() {
+            self.snapshot.current_setlist_index = None;
+            self.snapshot.chart = None;
+            self.snapshot.lifecycle = RoomLifecycle::Forming;
+        } else if removed_active {
+            let replacement = index.min(self.snapshot.setlist.len() - 1);
+            self.snapshot.current_setlist_index = Some(replacement);
+            self.snapshot.chart = Some(self.snapshot.setlist[replacement].chart.clone());
+            self.reset_for_locked_chart();
         } else {
-            Some(index.min(self.snapshot.setlist.len() - 1))
-        };
+            self.snapshot.current_setlist_index = active_id.and_then(|id| {
+                self.snapshot
+                    .setlist
+                    .iter()
+                    .position(|entry| entry.id == id)
+            });
+        }
         self.touch();
         Ok(())
     }
 
     pub fn move_setlist(&mut self, from: usize, to: usize) -> Result<()> {
+        self.require_setlist_editable()?;
         if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
         }
+        let active_id = self
+            .snapshot
+            .current_setlist_index
+            .and_then(|active| self.snapshot.setlist.get(active))
+            .map(|entry| entry.id.clone());
         let entry = self.snapshot.setlist.remove(from);
         self.snapshot.setlist.insert(to, entry);
-        self.snapshot.current_setlist_index = Some(to);
+        self.snapshot.current_setlist_index = active_id.and_then(|id| {
+            self.snapshot
+                .setlist
+                .iter()
+                .position(|entry| entry.id == id)
+        });
         self.touch();
         Ok(())
     }
@@ -224,18 +269,17 @@ impl RoomEngine {
         } else {
             self.snapshot.current_setlist_index = Some(next);
             self.snapshot.chart = Some(self.snapshot.setlist[next].chart.clone());
-            self.snapshot.lifecycle = RoomLifecycle::ChartLocked;
-            for participant in &mut self.snapshot.participants {
-                participant.ready = participant.role == ParticipantRole::Spectator;
-                participant.verified = participant.role == ParticipantRole::Spectator;
-            }
+            self.reset_for_locked_chart();
         }
         self.touch();
         Ok(())
     }
 
     pub fn disconnect(&mut self, session_id: &str) {
-        let was_playing = self.snapshot.lifecycle == RoomLifecycle::Playing;
+        let was_playing = matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        );
         if let Ok(participant) = self.participant_mut(session_id) {
             participant.connected = false;
             participant.ready = false;
@@ -245,6 +289,31 @@ impl RoomEngine {
             }
             self.touch();
         }
+    }
+
+    pub fn expire_disconnect(&mut self, session_id: &str) -> bool {
+        let playing = matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        );
+        let expired = if let Ok(participant) = self.participant_mut(session_id) {
+            if playing && participant.admitted && !participant.connected {
+                participant.validity = RunValidity::Dnf;
+                participant.invalid_reason = Some("Disconnected for more than 30 seconds".into());
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if expired {
+            self.finalized_runs.insert(session_id.to_owned());
+            self.rank();
+            self.try_finish_chart();
+            self.touch();
+        }
+        expired
     }
 
     pub fn lock_chart(&mut self, chart: ChartLock, append_to_setlist: bool) -> Result<()> {
@@ -257,7 +326,6 @@ impl RoomEngine {
         if chart.hash.len() != 64 || !chart.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             bail!("chart hash must be a SHA-256 hex digest");
         }
-        self.snapshot.chart = Some(chart.clone());
         if append_to_setlist {
             self.snapshot.setlist.push(SetlistEntry {
                 id: Uuid::new_v4().to_string(),
@@ -266,15 +334,20 @@ impl RoomEngine {
             });
             if self.snapshot.current_setlist_index.is_none() {
                 self.snapshot.current_setlist_index = Some(0);
+                self.snapshot.chart = Some(self.snapshot.setlist[0].chart.clone());
+                self.reset_for_locked_chart();
             }
+            self.touch();
+            return Ok(());
         }
-        self.snapshot.lifecycle = RoomLifecycle::ChartLocked;
-        for participant in &mut self.snapshot.participants {
-            participant.ready = participant.role == ParticipantRole::Spectator;
-            participant.verified = participant.role == ParticipantRole::Spectator;
-            participant.validity = RunValidity::Pending;
-            participant.invalid_reason = None;
-        }
+
+        // Selecting a chart replaces an existing set with a single-chart run.
+        // Keeping a stale ordered set beside an unrelated active chart makes
+        // Results/Advance semantics ambiguous and previously skipped entries.
+        self.snapshot.setlist.clear();
+        self.snapshot.current_setlist_index = None;
+        self.snapshot.chart = Some(chart);
+        self.reset_for_locked_chart();
         self.touch();
         Ok(())
     }
@@ -494,13 +567,64 @@ impl RoomEngine {
             if let Some(entry) = self.snapshot.setlist.get_mut(index) {
                 entry.completed = true;
             }
-            let next = index + 1;
-            if let Some(entry) = self.snapshot.setlist.get(next) {
-                self.snapshot.current_setlist_index = Some(next);
-                self.snapshot.chart = Some(entry.chart.clone());
-            } else if !self.snapshot.setlist.is_empty() {
+            if index + 1 >= self.snapshot.setlist.len() && !self.snapshot.setlist.is_empty() {
                 self.snapshot.lifecycle = RoomLifecycle::SetComplete;
             }
+        }
+    }
+
+    fn require_setlist_editable(&self) -> Result<()> {
+        if matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            bail!("cannot edit the setlist during countdown or play");
+        }
+        Ok(())
+    }
+
+    fn normalized_role(&self, role: ParticipantRole) -> ParticipantRole {
+        if role == ParticipantRole::Host {
+            ParticipantRole::Player
+        } else {
+            role
+        }
+    }
+
+    fn require_role_capacity(&self, session_id: &str, role: ParticipantRole) -> Result<()> {
+        let count = self
+            .snapshot
+            .participants
+            .iter()
+            .filter(|participant| participant.session_id != session_id)
+            .filter(|participant| match role {
+                ParticipantRole::Player | ParticipantRole::Host => matches!(
+                    participant.role,
+                    ParticipantRole::Player | ParticipantRole::Host
+                ),
+                ParticipantRole::Spectator => participant.role == ParticipantRole::Spectator,
+            })
+            .count();
+        match role {
+            ParticipantRole::Player | ParticipantRole::Host if count >= MAX_PLAYERS => {
+                bail!("room has reached its 16 player limit")
+            }
+            ParticipantRole::Spectator if count >= MAX_SPECTATORS => {
+                bail!("room has reached its 32 spectator limit")
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn reset_for_locked_chart(&mut self) {
+        self.snapshot.lifecycle = RoomLifecycle::ChartLocked;
+        self.snapshot.scheduled_start_time_ms = None;
+        self.snapshot.force_start = false;
+        for participant in &mut self.snapshot.participants {
+            participant.ready = participant.role == ParticipantRole::Spectator;
+            participant.verified = participant.role == ParticipantRole::Spectator;
+            participant.validity = RunValidity::Pending;
+            participant.invalid_reason = None;
         }
     }
 
@@ -510,7 +634,9 @@ impl RoomEngine {
             .participants
             .iter()
             .enumerate()
-            .filter(|(_, p)| matches!(p.role, ParticipantRole::Player | ParticipantRole::Host))
+            .filter(|(_, p)| {
+                p.admitted && matches!(p.role, ParticipantRole::Player | ParticipantRole::Host)
+            })
             .map(|(index, p)| {
                 (
                     index,
@@ -600,6 +726,15 @@ mod tests {
         }
     }
 
+    fn named_chart(name: &str, hash_digit: char) -> ChartLock {
+        ChartLock {
+            hash: hash_digit.to_string().repeat(64),
+            package_name: name.into(),
+            song_name: name.into(),
+            ..chart()
+        }
+    }
+
     #[test]
     fn derives_accuracy_and_cumulative_set_total() {
         let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
@@ -628,5 +763,114 @@ mod tests {
         room.finish_run(&host, "run-gap").unwrap();
         assert_eq!(room.player(&host).unwrap().validity, RunValidity::Dnf);
         assert_eq!(room.player(&host).unwrap().set_total, 0.0);
+    }
+
+    #[test]
+    fn multi_chart_set_advances_exactly_once_after_results() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(named_chart("First", 'a'), true).unwrap();
+        room.lock_chart(named_chart("Second", 'b'), true).unwrap();
+
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+        room.ingest_score(
+            &host,
+            0,
+            &json!({"progress":1,"totals":{"hits":100,"misses":0,"barelies":0,"combo":100,"maxCombo":100,"currentMaxHits":100,"maxHits":100,"mineHits":0}}),
+        )
+        .unwrap();
+        room.finish_run(&host, "run-first").unwrap();
+
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+        assert!(room.snapshot.setlist[0].completed);
+        assert!(!room.snapshot.setlist[1].completed);
+
+        room.advance_setlist().unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
+        assert_eq!(room.snapshot.current_setlist_index, Some(1));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "Second");
+        assert!(!room.player(&host).unwrap().ready);
+        assert!(!room.player(&host).unwrap().verified);
+    }
+
+    #[test]
+    fn setlist_reordering_preserves_the_active_entry() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        room.lock_chart(named_chart("First", 'a'), true).unwrap();
+        room.lock_chart(named_chart("Second", 'b'), true).unwrap();
+        room.lock_chart(named_chart("Third", 'c'), true).unwrap();
+
+        room.move_setlist(2, 1).unwrap();
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+        room.remove_setlist(1).unwrap();
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+    }
+
+    #[test]
+    fn role_changes_cannot_overfill_player_capacity() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        for index in 1..MAX_PLAYERS {
+            room.request_join(&format!("Player {index}"), ParticipantRole::Player)
+                .unwrap();
+        }
+        let spectator = room
+            .request_join("Spectator", ParticipantRole::Spectator)
+            .unwrap();
+        let error = room
+            .set_role(&spectator, ParticipantRole::Player)
+            .unwrap_err();
+        assert!(error.to_string().contains("16 player limit"));
+        assert_eq!(
+            room.player(&spectator).unwrap().role,
+            ParticipantRole::Spectator
+        );
+    }
+
+    #[test]
+    fn authenticated_reconnect_restores_identity_before_disconnect_expiry() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.disconnect(&player);
+        assert!(!room.player(&player).unwrap().connected);
+
+        room.request_join_with_id(player.clone(), "Ignored rename", ParticipantRole::Spectator)
+            .unwrap();
+        let reconnected = room.player(&player).unwrap();
+        assert!(reconnected.connected);
+        assert_eq!(reconnected.display_name, "Player");
+        assert_eq!(reconnected.role, ParticipantRole::Player);
+    }
+
+    #[test]
+    fn disconnect_expiry_marks_dnf_and_allows_results_to_complete() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        for session in [&host, &player] {
+            room.set_verified(session, true, None).unwrap();
+            room.set_ready(session, true).unwrap();
+        }
+        room.schedule_start(false, 2_000).unwrap();
+        room.mark_playing();
+        room.finish_run(&host, "host-run").unwrap();
+        room.disconnect(&player);
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Playing);
+
+        assert!(room.expire_disconnect(&player));
+        assert_eq!(room.player(&player).unwrap().validity, RunValidity::Dnf);
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
     }
 }

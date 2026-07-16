@@ -12,7 +12,11 @@ static LOVELY_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lovely-
 static OBS_PLUGIN_PAYLOAD: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/beatblock-together-obs.dll"));
 static RUNTIME_PAYLOAD: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockTogetherRuntime.exe"));
+    include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockOnlineRuntime.exe"));
+const RUNTIME_FILE_NAME: &str = "BeatblockOnlineRuntime.exe";
+// Keep upgrade cleanup compatible without presenting the retired product name
+// as a current executable anywhere in the installer UI or documentation.
+const LEGACY_RUNTIME_FILE_NAME: &str = concat!("Beatblock", "TogetherRuntime.exe");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +61,22 @@ struct ObsInstallManifest {
     plugin: PathBuf,
     locale: PathBuf,
     plugin_sha256: String,
+}
+
+struct ObsInstallTransaction {
+    plugin: PathBuf,
+    plugin_rollback: FileRollback,
+    locale_rollback: FileRollback,
+    marker_rollback: FileRollback,
+}
+
+impl ObsInstallTransaction {
+    fn commit(mut self) -> PathBuf {
+        self.plugin_rollback.commit();
+        self.locale_rollback.commit();
+        self.marker_rollback.commit();
+        self.plugin
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +612,52 @@ impl Installer {
         )
     }
 
+    pub fn installed_options(&self) -> Option<(Distribution, bool)> {
+        self.load_manifest()
+            .ok()
+            .flatten()
+            .map(|manifest| (manifest.distribution, manifest.firewall_public))
+    }
+
+    /// Stages the optional OBS source before changing the game, then commits it
+    /// only after the core transaction verifies. A failure in either component
+    /// therefore restores OBS and leaves no misleading partial-success state.
+    pub fn install_with_optional_obs<F>(
+        &self,
+        explicit_game_directory: Option<PathBuf>,
+        allow_unknown_build: bool,
+        requested_distribution: Option<Distribution>,
+        firewall_public: bool,
+        install_obs: bool,
+        mut progress: F,
+    ) -> Result<InstallManifest>
+    where
+        F: FnMut(OperationProgress),
+    {
+        let obs_transaction = if install_obs {
+            progress(OperationProgress::step(
+                OperationKind::Install,
+                "optional_components",
+                2,
+                "Staging and verifying the OBS 32 source",
+            ));
+            Some(self.stage_obs_plugin()?)
+        } else {
+            None
+        };
+        let manifest = self.install_with_progress_options(
+            explicit_game_directory,
+            allow_unknown_build,
+            requested_distribution,
+            firewall_public,
+            &mut progress,
+        )?;
+        if let Some(transaction) = obs_transaction {
+            transaction.commit();
+        }
+        Ok(manifest)
+    }
+
     /// Runs the file transaction with optional Windows integration. Production
     /// callers always enable platform changes; disabling them lets tests cover
     /// the real staging, swapping, hashing, backup, move, and manifest logic
@@ -615,7 +681,7 @@ impl Installer {
             "Validating the selected Beatblock folder",
         ));
         if RUNTIME_PAYLOAD.is_empty() {
-            bail!("this installer build does not contain BeatblockTogetherRuntime.exe");
+            bail!("this installer build does not contain BeatblockOnlineRuntime.exe");
         }
         let game_directory = explicit_game_directory
             .or_else(|| self.initial_game_directory())
@@ -658,7 +724,7 @@ impl Installer {
         std::fs::create_dir_all(stage_directory.join("bbt"))?;
         std::fs::create_dir_all(stage_directory.join("lovely"))?;
         let mut installed_files = Vec::new();
-        let runtime_path = self.data_dir.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime_path = self.data_dir.join("runtime").join(RUNTIME_FILE_NAME);
         progress(OperationProgress::step(
             OperationKind::Install,
             "runtime",
@@ -667,6 +733,33 @@ impl Installer {
         ));
         let mut runtime_rollback = FileRollback::replace(&runtime_path, RUNTIME_PAYLOAD)
             .context("install hidden runtime; exit Online before updating")?;
+        // Alpha builds used a different runtime filename. Remove every prior
+        // managed path transactionally so upgrades cannot leave a launchable
+        // stale binary behind; any later install failure restores it.
+        let mut previous_runtime_paths =
+            vec![self.data_dir.join("runtime").join(LEGACY_RUNTIME_FILE_NAME)];
+        if let Some(previous_runtime) = managed_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.runtime_path.as_ref())
+            .filter(|path| *path != &runtime_path)
+        {
+            if !previous_runtime_paths.contains(previous_runtime) {
+                previous_runtime_paths.push(previous_runtime.clone());
+            }
+        }
+        let mut previous_runtime_rollbacks = Vec::new();
+        for previous_runtime in previous_runtime_paths {
+            if previous_runtime.is_file() {
+                previous_runtime_rollbacks.push(
+                    FileRollback::remove(&previous_runtime).with_context(|| {
+                        format!(
+                            "remove the previous online runtime at {}; exit Online before updating",
+                            previous_runtime.display()
+                        )
+                    })?,
+                );
+            }
+        }
         installed_files.push(runtime_path.clone());
         write(
             &stage_directory.join("runtime-path.txt"),
@@ -863,6 +956,9 @@ impl Installer {
         self.save_manifest(&manifest)?;
         mod_rollback.commit()?;
         runtime_rollback.commit();
+        for rollback in &mut previous_runtime_rollbacks {
+            rollback.commit();
+        }
         if let Some(rollback) = lovely_rollback.as_mut() {
             rollback.commit();
         }
@@ -1016,6 +1112,10 @@ impl Installer {
     }
 
     pub fn install_obs_plugin(&self) -> Result<PathBuf> {
+        Ok(self.stage_obs_plugin()?.commit())
+    }
+
+    fn stage_obs_plugin(&self) -> Result<ObsInstallTransaction> {
         if OBS_PLUGIN_PAYLOAD.is_empty() {
             bail!("this installer build does not contain the OBS plugin payload");
         }
@@ -1024,13 +1124,22 @@ impl Installer {
         let program_data = std::env::var_os("ProgramData")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        self.install_obs_plugin_into(obs, &program_data)
+        self.stage_obs_plugin_into(obs, &program_data)
     }
 
     /// Installs OBS files transactionally into a supplied ProgramData root.
     /// The public path supplies the real Windows directory; tests use a
     /// disposable root while exercising the identical payload and marker code.
+    #[cfg(test)]
     fn install_obs_plugin_into(&self, obs: PathBuf, program_data: &Path) -> Result<PathBuf> {
+        Ok(self.stage_obs_plugin_into(obs, program_data)?.commit())
+    }
+
+    fn stage_obs_plugin_into(
+        &self,
+        obs: PathBuf,
+        program_data: &Path,
+    ) -> Result<ObsInstallTransaction> {
         // ProgramData is OBS' recommended Windows plugin layout. It avoids the
         // legacy Program Files path that OBS has announced it will retire.
         let (plugin, locale) = obs_program_data_paths(program_data);
@@ -1044,19 +1153,21 @@ impl Installer {
             plugin_sha256: hex::encode(Sha256::digest(OBS_PLUGIN_PAYLOAD)),
         };
         let marker_payload = serde_json::to_vec_pretty(&record)?;
-        let mut plugin_rollback =
+        let plugin_rollback =
             FileRollback::replace(&plugin, OBS_PLUGIN_PAYLOAD).context("install OBS source DLL")?;
-        let mut locale_rollback =
+        let locale_rollback =
             FileRollback::replace(&locale, locale_payload).context("install OBS source locale")?;
-        let mut marker_rollback = FileRollback::replace(&marker, &marker_payload)
+        let marker_rollback = FileRollback::replace(&marker, &marker_payload)
             .context("record OBS source installation")?;
         if !file_matches(&plugin, OBS_PLUGIN_PAYLOAD) || !file_matches(&locale, locale_payload) {
             bail!("OBS source post-install hash verification failed");
         }
-        plugin_rollback.commit();
-        locale_rollback.commit();
-        marker_rollback.commit();
-        Ok(plugin)
+        Ok(ObsInstallTransaction {
+            plugin,
+            plugin_rollback,
+            locale_rollback,
+            marker_rollback,
+        })
     }
 
     pub fn obs_plugin_available(&self) -> bool {
@@ -1245,6 +1356,10 @@ impl Installer {
             }
             let _ = std::fs::remove_file(runtime);
         }
+        // Also clean a stale alpha runtime if a hand-edited or partial manifest
+        // no longer references it directly.
+        let legacy_runtime = self.data_dir.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
+        let _ = std::fs::remove_file(legacy_runtime);
         if apply_platform_changes {
             let _ = self.unregister_uninstall();
         }
@@ -2015,7 +2130,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(game.join("version.dll"), LOVELY_PAYLOAD).unwrap();
-        let runtime = data.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime = data.join("runtime").join(RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, RUNTIME_PAYLOAD).unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
@@ -2113,6 +2228,9 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(game.join("version.dll"), b"existing Lovely").unwrap();
         std::fs::write(data.join("runtime.sqlite3"), b"history").unwrap();
+        let legacy_runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
+        std::fs::create_dir_all(legacy_runtime.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_runtime, b"legacy runtime").unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
 
         let rejected = installer.install_with_progress_platform(
@@ -2125,6 +2243,7 @@ mod tests {
         );
         assert!(rejected.unwrap_err().to_string().contains("not certified"));
         assert!(!mods.join("BeatblockTogether").exists());
+        assert!(legacy_runtime.is_file());
 
         let mut progress = Vec::new();
         let manifest = install_isolated(
@@ -2136,6 +2255,8 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.distribution, Distribution::Standalone);
         assert!(!manifest.firewall_installed);
+        assert!(!legacy_runtime.exists());
+        assert!(data.join("runtime").join(RUNTIME_FILE_NAME).is_file());
         assert!(mods
             .join("BeatblockTogether/bbt/dashboard_model.lua")
             .is_file());
@@ -2156,7 +2277,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            data.join("runtime/BeatblockTogetherRuntime.exe"),
+            data.join("runtime").join(RUNTIME_FILE_NAME),
             b"corrupt runtime",
         )
         .unwrap();
@@ -2181,7 +2302,7 @@ mod tests {
             include_bytes!("../../mod/shared/bbt/dashboard_model.lua")
         ));
         assert!(file_matches(
-            &data.join("runtime/BeatblockTogetherRuntime.exe"),
+            &data.join("runtime").join(RUNTIME_FILE_NAME),
             RUNTIME_PAYLOAD
         ));
         assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
@@ -2218,7 +2339,8 @@ mod tests {
             b"existing Lovely"
         );
         assert!(!data.join("install-manifest.json").exists());
-        assert!(!data.join("runtime/BeatblockTogetherRuntime.exe").exists());
+        assert!(!data.join("runtime").join(RUNTIME_FILE_NAME).exists());
+        assert!(!legacy_runtime.exists());
         assert!(!installed_obs.exists());
         assert!(data.join("runtime.sqlite3").is_file());
         let _ = std::fs::remove_dir_all(root);
@@ -2235,7 +2357,7 @@ mod tests {
         std::fs::create_dir_all(game.join("version.dll")).unwrap();
         std::fs::create_dir_all(mods.join("BeatblockTogether")).unwrap();
         std::fs::write(mods.join("BeatblockTogether/previous.txt"), b"previous mod").unwrap();
-        let runtime = data.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, b"previous runtime").unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
@@ -2510,6 +2632,26 @@ mod tests {
                 r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\data\locale\en-US.ini"
             )
         );
+    }
+
+    #[test]
+    fn staged_obs_install_rolls_back_until_core_transaction_commits() {
+        let root = std::env::temp_dir().join(format!("bbt-obs-atomic-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let obs = root.join("obs-studio");
+        let program_data = root.join("ProgramData");
+        std::fs::create_dir_all(obs.join("bin/64bit")).unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), root.join("mods"));
+        let (plugin, _) = obs_program_data_paths(&program_data);
+        std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+        std::fs::write(&plugin, b"previous plugin").unwrap();
+
+        let transaction = installer.stage_obs_plugin_into(obs, &program_data).unwrap();
+        assert!(file_matches(&plugin, OBS_PLUGIN_PAYLOAD));
+        drop(transaction);
+        assert_eq!(std::fs::read(&plugin).unwrap(), b"previous plugin");
+        assert!(!data.join("obs-install.json").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

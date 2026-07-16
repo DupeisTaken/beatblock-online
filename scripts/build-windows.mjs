@@ -5,7 +5,7 @@ import { cargoCommand } from './run-cargo.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const manifest = resolve(root, 'companion/Cargo.toml');
-const runtime = resolve(root, 'companion/target/release/BeatblockTogetherRuntime.exe');
+const runtime = resolve(root, 'companion/target/release/BeatblockOnlineRuntime.exe');
 const installer = resolve(root, 'companion/target/release/BeatblockTogetherInstaller.exe');
 const lovely = resolve(root, '.reference/lovely-injector/target/release/version.dll');
 const obsPlugin = resolve(
@@ -29,7 +29,7 @@ function cargo(args, env = {}) {
 await access(obsPlugin).catch(() => {
   throw new Error(`Reviewed OBS source artifact is missing: ${obsPlugin}`);
 });
-cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockTogetherRuntime']);
+cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockOnlineRuntime']);
 cargo(
   [
     'build',

@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
         variant: "Hard".into(),
         expected_max_hits: 100,
         official: false,
-        transfer_mode: ChartTransferMode::HostTransfer,
+        transfer_mode: ChartTransferMode::VerifyOnly,
     };
     room.lock_chart(chart, true)?;
     let players = room

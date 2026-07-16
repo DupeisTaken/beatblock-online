@@ -36,13 +36,18 @@ async fn state(root: PathBuf, chart_hash: &str) -> AppState {
 }
 
 fn command(path: &str) -> Envelope {
+    chart_command("lobby.chart_verify_request", path, "Hard", 1)
+}
+
+fn chart_command(kind: &str, path: &str, variant: &str, expected_max_hits: u64) -> Envelope {
     Envelope::new(
-        "lobby.chart_verify_request",
+        kind,
         1,
         json!({
             "path": path,
             "levelPath": "Custom Levels/Test/",
-            "variant": "Hard"
+            "variant": variant,
+            "expectedMaxHits": expected_max_hits
         }),
     )
 }
@@ -96,6 +101,77 @@ async fn game_chart_command_explains_a_package_mismatch() {
         .as_str()
         .unwrap()
         .contains("does not match"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn game_chart_command_rejects_variant_and_note_count_mismatches() {
+    let root = temporary("game-command-variant");
+    let chart = root.join("chart");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("manifest.json"), b"competition chart").unwrap();
+    let canonical = beatblock_together_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
+    let app = state(root.clone(), &canonical.hash).await;
+
+    for (variant, max_hits, expected_fragment) in
+        [("Expert", 1, "variant"), ("Hard", 2, "note count")]
+    {
+        let mut events = app.events.subscribe();
+        game_commands::handle(
+            &app,
+            &chart_command(
+                "lobby.chart_verify_request",
+                chart.to_str().unwrap(),
+                variant,
+                max_hits,
+            ),
+        )
+        .await
+        .unwrap();
+        let response = loop {
+            let event = events.recv().await.unwrap();
+            if event.kind == "chart.verification" {
+                break event;
+            }
+        };
+        assert_eq!(response.payload["verified"], false);
+        assert!(response.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains(expected_fragment));
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn changing_the_host_custom_chart_verifies_against_the_new_lock() {
+    let root = temporary("game-command-change-lock");
+    let chart = root.join("chart");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("manifest.json"), b"new competition chart").unwrap();
+    let app = state(root.clone(), &"f".repeat(64)).await;
+    let mut events = app.events.subscribe();
+
+    game_commands::handle(
+        &app,
+        &chart_command(
+            "room.chart_select_request",
+            chart.to_str().unwrap(),
+            "Hard",
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    let response = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "chart.verification" {
+            break event;
+        }
+    };
+    assert_eq!(response.payload["verified"], true);
+    let locked = app.room.read().await.snapshot.chart.clone().unwrap();
+    assert_ne!(locked.hash, "f".repeat(64));
     let _ = std::fs::remove_dir_all(root);
 }
 

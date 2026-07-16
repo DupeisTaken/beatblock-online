@@ -2,6 +2,8 @@
 -- in the native engine; this state only normalizes snapshots and presents the
 -- next useful action without making players hunt through parallel pages.
 local Dashboard = require('bbt.dashboard_model')
+local utf8Ok,utf8Module=pcall(require,'utf8')
+local utf8=utf8Ok and utf8Module or _G.utf8
 
 -- These are palette-index source colors consumed by Beatblock's fixed shader.
 local C = {
@@ -106,6 +108,11 @@ end
 local function selectedParticipant(self)
   local participants=ensureRoster(self)
   return participants[self.rosterSelection]
+end
+
+local function rendererEligible(participant)
+  return participant and participant.admitted==true and participant.connected==true
+    and participant.role~='spectator'
 end
 
 local function requestConfirm(self,title,message,label,run)
@@ -223,13 +230,16 @@ local function overlayActions(self)
     end
   elseif self.overlay=='obs' then
     local target=selectedParticipant(self)
-    for index,id in ipairs(STREAM_IDS) do
-      addAction(list,'assign_'..id,'ASSIGN STREAM '..id,'Assign the selected participant to stable Stream '..id..'.','cyan',function()
-        BBT.command('renderer.configure',{slot=id,participantId=target and target.sessionId or '',participantName=target and target.displayName or '',mode='clean',width=1280,height=720,fps=60,delayMs=(BBT.settings and BBT.settings.spectatorDelayMs) or 500,featured=index==1})
-      end,host() and target~=nil)
-    end
     local id=STREAM_IDS[self.streamSelection or 1]
-    addAction(list,'feature','FEATURE '..id,'Drive shared audio and featured text exports.','green',function() BBT.command('renderer.configure',{slot=id,featured=true}) end,host())
+    local stream=(BBT.renderers or {})[self.streamSelection or 1] or {}
+    addAction(list,'assign','ASSIGN '..id,'Assign the selected admitted player to stable Stream '..id..'.','cyan',function()
+      BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode=stream.mode or 'clean',width=stream.width or 1280,height=stream.height or 720,fps=stream.fps or 60,delayMs=stream.delayMs or (BBT.settings and BBT.settings.spectatorDelayMs) or 500,featured=stream.featured==true})
+    end,host() and rendererEligible(target))
+    addAction(list,'feature','FEATURE '..id,'Drive featured video and atomic text exports.','green',function() BBT.command('renderer.configure',{slot=id,featured=true}) end,host() and stream.active==true)
+    addAction(list,'mode','MODE: '..string.upper(stream.mode or 'clean'),'Toggle clean competition graphics or the full game view.','white',function() BBT.command('renderer.configure',{slot=id,mode=stream.mode=='full' and 'clean' or 'full'}) end,host() and stream.active==true)
+    addAction(list,'quality',(stream.height or 720)>=1080 and 'QUALITY: 1080P' or 'QUALITY: 720P','Toggle the renderer output resolution.','white',function() local high=(stream.height or 720)<1080; BBT.command('renderer.configure',{slot=id,width=high and 1920 or 1280,height=high and 1080 or 720}) end,host() and stream.active==true)
+    addAction(list,'fps','RATE: '..tostring(stream.fps or 60)..' FPS','Toggle 30 or 60 frames per second.','white',function() BBT.command('renderer.configure',{slot=id,fps=(stream.fps or 60)==60 and 30 or 60}) end,host() and stream.active==true)
+    addAction(list,'delay','DELAY: '..tostring(stream.delayMs or 500)..' MS','Cycle 250, 500, and 1500 ms spectator delay.','white',function() local delay=stream.delayMs or 500; BBT.command('renderer.configure',{slot=id,delayMs=delay<500 and 500 or (delay<1500 and 1500 or 250)}) end,host() and stream.active==true)
     addAction(list,'stop','STOP '..id,'Stop the selected stable stream slot.','red',function() BBT.command('renderer.stop',{slot=id}) end,host())
     addAction(list,'exports','OPEN EXPORTS','Open atomic OBS text exports.','white',function() BBT.command('paths.open_exports',{}) end)
   elseif self.overlay=='history' then
@@ -259,11 +269,6 @@ local function overlayActions(self)
   return list
 end
 
-local KEYS={}
-for c=string.byte('a'),string.byte('z') do KEYS[string.char(c)]=string.char(c) end
-for n=0,9 do KEYS[tostring(n)]=tostring(n) end
-KEYS.space=' '; KEYS.period='.'; KEYS.minus='-'; KEYS.semicolon=':'
-
 local function formFields(mode)
   if mode=='host' then return {
     {id='name',label='ROOM NAME',max=40}, {id='port',label='UDP PORT',max=5},
@@ -274,14 +279,17 @@ local function formFields(mode)
 end
 
 local function openForm(self,mode,spectator)
-  self.formMode=mode; self.formSpectator=spectator==true; self.formField=1; self.keyLatch={}
-  self.formValues=mode=='host' and {name='Beatblock Room',port='32145',password='',displayName=BBT.context.playerName or 'Host',approval=true}
-    or {address='127.0.0.1:32145',password='',displayName=BBT.context.playerName or 'Player'}
+  self.formMode=mode; self.formSpectator=spectator==true; self.formField=1; self.keyLatch={}; self.formSubmitting=nil
+  local settings=BBT.settings or {}
+  local port=tostring(settings.hostPort or 32145)
+  local address=tostring(settings.hostAddress or '127.0.0.1')..':'..port
+  self.formValues=mode=='host' and {name='Beatblock Room',port=port,password='',displayName=BBT.context.playerName or 'Host',approval=true}
+    or {address=address,password='',displayName=BBT.context.playerName or 'Player'}
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(true) end
 end
 
 local function closeForm(self)
-  self.formMode=nil
+  self.formMode=nil; self.formSubmitting=nil
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
 end
 
@@ -289,7 +297,20 @@ local function editForm(self,text)
   local field=formFields(self.formMode)[self.formField]
   if not field or field.toggle then return end
   local value=self.formValues[field.id] or ''
-  self.formValues[field.id]=text=='\b' and value:sub(1,-2) or (#value<field.max and value..text or value)
+  if text=='\b' then
+    local offset=utf8 and utf8.offset and utf8.offset(value,-1)
+    self.formValues[field.id]=offset and value:sub(1,offset-1) or value:sub(1,-2)
+    return
+  end
+  local length=utf8 and utf8.len and utf8.len(value) or #value
+  if length and length<field.max then self.formValues[field.id]=value..text end
+end
+
+local function pasteForm(self)
+  if not love.system or not love.system.getClipboardText then return end
+  local text=love.system.getClipboardText() or ''
+  text=text:gsub('[\r\n\t]',' ')
+  for character in text:gmatch(utf8 and utf8.charpattern or '.') do editForm(self,character) end
 end
 
 local function submitForm(self)
@@ -301,21 +322,29 @@ local function submitForm(self)
     local port=tonumber(value.port)
     if not port or port<1 or port>65535 then BBT.lastError='UDP port must be 1-65535.'; return end
     if value.name=='' then BBT.lastError='A room name is required.'; return end
-    BBT.command('room.host_request',{name=value.name,port=port,password=value.password,displayName=value.displayName,hostApproval=value.approval})
+    self.formSubmitting=BBT.command('room.host_request',{name=value.name,port=port,password=value.password,displayName=value.displayName,hostApproval=value.approval})
   else
-    BBT.command('room.join_request',{address=value.address,password=value.password,displayName=value.displayName,spectator=self.formSpectator})
+    self.formSubmitting=BBT.command('room.join_request',{address=value.address,password=value.password,displayName=value.displayName,spectator=self.formSpectator})
   end
-  closeForm(self)
 end
 
 local function updateForm(self)
   local fields=formFields(self.formMode); local submitIndex=#fields+1
-  for key,text in pairs(KEYS) do local down=love.keyboard.isDown(key); if down and not self.keyLatch[key] then editForm(self,text) end; self.keyLatch[key]=down end
+  if self.formSubmitting then
+    if BBT.pendingRequestId==nil then
+      if BBT.lastError then self.formSubmitting=nil else closeForm(self); return end
+    end
+    if pressed('back') then self.formSubmitting=nil; closeForm(self) end
+    return
+  end
   local backspace=love.keyboard.isDown('backspace'); if backspace and not self.keyLatch.backspace then editForm(self,'\b') end; self.keyLatch.backspace=backspace
+  local paste=love.keyboard.isDown('v') and (love.keyboard.isDown('lctrl') or love.keyboard.isDown('rctrl'))
+  if paste and not self.keyLatch.paste then pasteForm(self) end; self.keyLatch.paste=paste
   if pressed('menu_up') then self.formField=clamp(self.formField-1,1,submitIndex); sound('click') end
   if pressed('menu_down') then self.formField=clamp(self.formField+1,1,submitIndex); sound('click') end
   local field=fields[self.formField]
   if field and field.toggle and (pressed('menu_left') or pressed('menu_right')) then self.formValues[field.id]=not self.formValues[field.id]; sound('click') end
+  if field and not field.toggle and (pressed('menu_left') or pressed('menu_right')) then pasteForm(self); sound('click') end
   for index=1,#fields do
     local y=78+(index-1)*34
     if clicked(74,y,452,29) then self.formField=index; if fields[index].toggle then self.formValues[fields[index].id]=not self.formValues[fields[index].id] end end
@@ -329,6 +358,17 @@ local function updateForm(self)
   elseif pressed('back') then closeForm(self) end
 end
 
+local function connectionLabel()
+  if not BBT.companionConnected then return string.upper(BBT.runtimeLaunchStatus or 'STARTING') end
+  local status=BBT.connectionStatus or (BBT.connected and 'connected' or 'offline')
+  if status=='hosting' then return 'HOSTING'
+  elseif status=='connected' then return 'CONNECTED'
+  elseif status=='connecting' then return 'CONNECTING'
+  elseif status=='reconnecting' then return 'RECONNECTING'
+  elseif status=='starting' then return 'STARTING HOST'
+  else return 'RUNTIME READY' end
+end
+
 local function drawHeader(self)
   setc(C.black); love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
   local current=room()
@@ -337,7 +377,7 @@ local function drawHeader(self)
   love.graphics.setFont(fonts.digitalDisco)
   local lifecycle=current and string.upper(current.lifecycle or 'forming') or 'DIRECT-IP'
   setc(BBT.companionConnected and C.green or C.yellow)
-  love.graphics.printf((BBT.companionConnected and 'LINK READY' or string.upper(BBT.runtimeLaunchStatus or 'STARTING'))..'  /  '..lifecycle,292,10,250,'right')
+  love.graphics.printf(connectionLabel()..'  /  '..lifecycle,292,10,250,'right')
   button(550,5,38,22,'? HELP',self.focusZone=='help','cyan',true)
 end
 
@@ -360,9 +400,11 @@ local function drawConnect(self)
   panel(12,78,356,208); panel(376,78,212,208); love.graphics.setFont(fonts.digitalDisco)
   setc(C.white); love.graphics.print('PLAY ONLINE',24,90)
   setc(C.muted); love.graphics.printf('Create a room on this computer or connect directly to a host. Room passwords stay out of snapshots and logs.',24,112,330,'left')
-  local status=BBT.companionConnected and 'ONLINE SERVICES READY' or string.upper(BBT.runtimeLaunchStatus or 'STARTING ONLINE SERVICES')
+  local status=connectionLabel()
   setc(BBT.companionConnected and C.green or C.yellow); love.graphics.print(status,24,174)
-  setc(C.muted); love.graphics.print('UDP / QUIC',24,204); love.graphics.printf(tostring(BBT.settings and BBT.settings.hostPort or 32145),202,204,150,'right')
+  setc(C.muted); love.graphics.print(BBT.connected and 'JOIN ADDRESS' or 'UDP / QUIC',24,204)
+  local joinAddress=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress
+  love.graphics.printf(short(joinAddress or tostring(BBT.settings and BBT.settings.hostPort or 32145),24),156,204,196,'right')
   love.graphics.print('LOCAL API',24,226); love.graphics.printf(BBT.companionConnected and '127.0.0.1:8974' or 'WAITING',202,226,150,'right')
   love.graphics.print('OBS EXPORTS',24,248); love.graphics.printf(BBT.companionConnected and 'ACTIVE' or 'WAITING',202,248,150,'right')
 
@@ -570,7 +612,8 @@ local function drawConfirm(self)
 end
 
 local function drawForm(self)
-  setc(C.black,.95); love.graphics.rectangle('fill',0,28,600,332)
+  -- Forms fully cover the dashboard so its footer cannot compete with modal guidance.
+  setc(C.black); love.graphics.rectangle('fill',0,28,600,332)
   panel(58,38,484,290); love.graphics.setFont(fonts.main); setc(C.white)
   love.graphics.printf(self.formMode=='host' and 'HOST A ROOM' or (self.formSpectator and 'JOIN AS SPECTATOR' or 'JOIN A ROOM'),58,50,484,'center')
   love.graphics.setFont(fonts.digitalDisco); local fields=formFields(self.formMode)
@@ -586,7 +629,14 @@ local function drawForm(self)
       if active then setc(C.white); love.graphics.rectangle('line',230.5,y-4.5,295,22,2,2) end
     end
   end
-  button(178,270,244,28,self.formMode=='host' and 'CREATE ROOM' or 'CONNECT',self.formField==#fields+1,'green',true)
+  local submitLabel=self.formSubmitting and 'WORKING...' or (self.formMode=='host' and 'CREATE ROOM' or 'CONNECT')
+  button(178,270,244,28,submitLabel,self.formField==#fields+1,'green',not self.formSubmitting)
+  -- Paste guidance is useful only while an editable field has focus. Keep it in the
+  -- reserved gap above the action button, away from the persistent form controls.
+  local activeField=fields[self.formField]
+  if activeField and not activeField.toggle and not self.formSubmitting then
+    setc(C.muted); love.graphics.printf('PASTE  CTRL+V / LEFT-RIGHT',74,246,452,'center')
+  end
   setc(C.muted); love.graphics.printf('UP/DOWN FIELDS   ENTER CONTINUE   ESC CANCEL',74,307,452,'center')
 end
 
@@ -746,9 +796,20 @@ return function()
     self.focusZone='primary'; self.utilitySelection=1; self.secondarySelection=1
     self.rosterSelection=1; self.rosterOffset=0; self.setlistSelection=1; self.setlistOffset=0; self.streamSelection=1; self.historySelection=1; self.historyOffset=0
     self.overlayActionSelection=1; self.overlayFocus='list'; self.sideSelection=1; self.helpSelection=1; self.openForm=openForm
+    -- LÖVE's textinput event supplies composed Unicode characters and respects
+    -- the user's keyboard layout. Preserve Beatblock's handler outside forms.
+    self.previousTextInput=love.textinput
+    self.onlineTextInput=function(text)
+      if self.formMode then editForm(self,text)
+      elseif self.previousTextInput then self.previousTextInput(text) end
+    end
+    love.textinput=self.onlineTextInput
     BBT.startOnlineRuntime(); BBT.command('runtime.snapshot_request',{})
   end)
-  function st:leave() if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end end
+  function st:leave()
+    if love.textinput==self.onlineTextInput then love.textinput=self.previousTextInput end
+    if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
+  end
   st:setUpdate(function(self,dt)
     if self.menuMusicManager then self.menuMusicManager:update(dt) end
     BBT.update(dt); if BBT.maybeLaunchScheduledChart() then return end; update(self)
