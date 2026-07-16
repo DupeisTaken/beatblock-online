@@ -18,22 +18,8 @@ pub fn write_exports(directory: &Path, state: &GameplayState) -> Result<()> {
     atomic(directory.join("misses.txt"), &state.misses.to_string())?;
     atomic(directory.join("rank.txt"), &state.rank.to_string())?;
     atomic(directory.join("lobby_name.txt"), &state.lobby_name)?;
-    atomic(directory.join("featured_name.txt"), &state.player_name)?;
     atomic(
-        directory.join("featured_accuracy.txt"),
-        &format!("{:.2}%", state.accuracy),
-    )?;
-    atomic(
-        directory.join("featured_combo.txt"),
-        &state.combo.to_string(),
-    )?;
-    atomic(
-        directory.join("featured_misses.txt"),
-        &state.misses.to_string(),
-    )?;
-    atomic(directory.join("featured_rank.txt"), &state.rank.to_string())?;
-    atomic(
-        directory.join("state.json"),
+        directory.join("gameplay.json"),
         &serde_json::to_string_pretty(state)?,
     )?;
     Ok(())
@@ -55,7 +41,20 @@ pub fn write_featured_exports(directory: &Path, state: &GameplayState) -> Result
         &state.misses.to_string(),
     )?;
     atomic(directory.join("featured_rank.txt"), &state.rank.to_string())?;
-    atomic(directory.join("song_name.txt"), &state.song_name)?;
+    Ok(())
+}
+
+pub fn clear_featured_exports(directory: &Path) -> Result<()> {
+    std::fs::create_dir_all(directory)?;
+    for name in [
+        "featured_name.txt",
+        "featured_accuracy.txt",
+        "featured_combo.txt",
+        "featured_misses.txt",
+        "featured_rank.txt",
+    ] {
+        atomic(directory.join(name), "")?;
+    }
     Ok(())
 }
 
@@ -67,37 +66,6 @@ pub fn write_room_exports(
     std::fs::create_dir_all(directory)?;
     atomic(directory.join("room_name.txt"), &room.name)?;
     atomic(directory.join("lobby_name.txt"), &room.name)?;
-    let featured = slots.iter().find(|slot| slot.featured);
-    if let Some(slot) = featured {
-        if let Some(participant_id) = slot.participant_id.as_deref() {
-            if let Some(participant) = room
-                .participants
-                .iter()
-                .find(|participant| participant.session_id == participant_id)
-            {
-                atomic(
-                    directory.join("featured_name.txt"),
-                    &participant.display_name,
-                )?;
-                atomic(
-                    directory.join("featured_accuracy.txt"),
-                    &format!("{:.2}%", participant.accuracy),
-                )?;
-                atomic(
-                    directory.join("featured_combo.txt"),
-                    &participant.totals.combo.to_string(),
-                )?;
-                atomic(
-                    directory.join("featured_misses.txt"),
-                    &participant.totals.misses.to_string(),
-                )?;
-                atomic(
-                    directory.join("featured_rank.txt"),
-                    &participant.rank.unwrap_or(0).to_string(),
-                )?;
-            }
-        }
-    }
     for slot in slots {
         let slot_directory = directory.join("streams").join(&slot.id);
         std::fs::create_dir_all(&slot_directory)?;
@@ -187,4 +155,52 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> Result<()> {
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> Result<()> {
     std::fs::rename(source, destination)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_gameplay_never_overwrites_featured_exports() {
+        let root = std::env::temp_dir().join(format!("bbt-exports-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        atomic(root.join("featured_name.txt"), "Remote player").unwrap();
+        let state = GameplayState {
+            player_name: "Host".into(),
+            song_name: "Song".into(),
+            lobby_name: "Room".into(),
+            ..GameplayState::default()
+        };
+
+        write_exports(&root, &state).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("featured_name.txt")).unwrap(),
+            "Remote player"
+        );
+        assert!(root.join("gameplay.json").is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clearing_featured_exports_removes_stale_values() {
+        let root = std::env::temp_dir().join(format!("bbt-featured-{}", rand::random::<u64>()));
+        write_featured_exports(
+            &root,
+            &GameplayState {
+                player_name: "Player".into(),
+                ..GameplayState::default()
+            },
+        )
+        .unwrap();
+
+        clear_featured_exports(&root).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("featured_name.txt")).unwrap(),
+            ""
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

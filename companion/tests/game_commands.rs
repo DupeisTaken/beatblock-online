@@ -1,7 +1,10 @@
 use beatblock_together_companion::{
     app_state::AppState,
     game_commands,
-    model::{AdmissionMode, ChartLock, ChartTransferMode, CompanionConfig, Envelope},
+    model::{
+        AdmissionMode, ChartLock, ChartTransferMode, CompanionConfig, Envelope, ParticipantRole,
+        RendererRequest,
+    },
     room::RoomEngine,
 };
 use serde_json::json;
@@ -144,5 +147,38 @@ async fn control_requests_are_correlated_and_snapshots_do_not_leak_tokens() {
     let encoded = serde_json::to_string(&snapshot.unwrap()).unwrap();
     assert!(!encoded.contains("top-secret-token"));
     assert!(!encoded.contains("password"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn renderer_rejects_spectators_as_video_targets() {
+    let root = temporary("renderer-spectator");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+    let spectator = app
+        .room
+        .write()
+        .await
+        .request_join("Caster", ParticipantRole::Spectator)
+        .unwrap();
+
+    let error = app
+        .configure_renderer(
+            "A",
+            RendererRequest {
+                participant_id: Some(spectator),
+                participant_name: Some("Caster".into()),
+                mode: None,
+                width: None,
+                height: None,
+                fps: None,
+                delay_ms: None,
+                featured: None,
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("active players"));
     let _ = std::fs::remove_dir_all(root);
 }

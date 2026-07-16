@@ -117,17 +117,18 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
         "room.role_set" => {
             state.require_host_control()?;
             let id = required(&message.payload, "sessionId")?;
-            state
-                .room
-                .write()
-                .await
-                .set_role(id, parse_role(message.payload.get("role"))?)?;
+            let role = parse_role(message.payload.get("role"))?;
+            state.room.write().await.set_role(id, role)?;
+            if role == ParticipantRole::Spectator {
+                state.renderer.stop_participant(id);
+            }
             state.publish_room().await
         }
         "room.kick" => {
             state.require_host_control()?;
             let id = required(&message.payload, "sessionId")?;
             state.room.write().await.kick(id)?;
+            state.renderer.stop_participant(id);
             state.publish_room().await
         }
         "setlist.remove" => {
@@ -146,15 +147,12 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state.room.write().await.move_setlist(from, to)?;
             state.publish_room().await
         }
-        "setlist.advance" => {
-            state.require_host_control()?;
-            state.room.write().await.advance_setlist()?;
-            state.publish_room().await
-        }
+        "setlist.advance" => state.advance_setlist().await,
         "renderer.configure" => {
             let slot = required(&message.payload, "slot")?;
             let request: RendererRequest = serde_json::from_value(message.payload.clone())?;
-            state.configure_renderer(slot, request).await.map(|_| ())
+            state.configure_renderer(slot, request).await?;
+            publish_snapshots(state).await
         }
         "renderer.stop" => {
             state.require_host_control()?;
@@ -258,16 +256,7 @@ async fn update_settings(state: &AppState, payload: &Value) -> Result<()> {
 }
 
 async fn publish_snapshots(state: &AppState) -> Result<()> {
-    publish(state, "runtime.snapshot", json!({
-        "connection":state.connection_status.read().await.clone(),
-        "hosting":state.is_host.load(std::sync::atomic::Ordering::Relaxed),
-        "room":state.room.read().await.snapshot.clone(),
-        "renderers":state.renderer.slots(),
-        "history":state.storage.history()?,
-        "settings":state.config.read().await.clone(),
-        "diagnostics":{"protocolVersion":crate::model::PROTOCOL_VERSION,"runtimeVersion":env!("CARGO_PKG_VERSION"),"peerCount":state.network.peer_count().await,"rendererBudgetWarning":state.renderer.budget_warning()},
-    })).await;
-    Ok(())
+    state.publish_runtime_snapshot().await
 }
 
 async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {

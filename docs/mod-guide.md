@@ -43,6 +43,8 @@ The Connect state shows Online service status, configured UDP port, localhost AP
 - **Host a Room** asks for room name, UDP port, password, display name, and optional host approval.
 - **Join Room** asks for the host `IP:port`, password, and display name.
 - **Join as Spectator** uses the same form but requests the spectator role.
+
+Room spectators stay on the adaptive Online dashboard and receive live roster, ranking, lifecycle, and result snapshots. They do not launch the competitive chart and do not receive a remote video feed; reconstructed player video is a host-side OBS slot feature.
 - **Exit Online** asks for confirmation before terminating session services.
 
 Passwords travel only through the local runtime control channel and the room's password-authenticated handshake. They are never included in room snapshots, join links, exports, or logs.

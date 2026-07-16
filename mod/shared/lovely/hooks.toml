@@ -50,7 +50,7 @@ times = 1
 target = "states/Game.lua"
 pattern = "st:setUpdate(function(self,dt)"
 position = "after"
-payload = "if BBT then BBT.update(dt) end"
+payload = "if BBT then BBT.update(dt) end; if BBTRenderer and BBTRenderer.active and BBTRenderer.shouldHold() then return end"
 match_indent = true
 
 [[patches]]

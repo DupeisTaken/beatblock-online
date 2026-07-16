@@ -72,9 +72,10 @@ async fn broadcasts_to_32_consumers_and_exports_only_complete_snapshots() {
         }
     }
     let exported: GameplayState =
-        serde_json::from_slice(&std::fs::read(root.join("exports/state.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(root.join("exports/gameplay.json")).unwrap())
+            .unwrap();
     assert_eq!(exported.player_name, "Player 99");
-    assert!(!root.join("exports/state.tmp").exists());
+    assert!(!root.join("exports/gameplay.tmp").exists());
     let _ = std::fs::remove_dir_all(root);
 }
 

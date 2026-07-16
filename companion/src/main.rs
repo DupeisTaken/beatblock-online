@@ -100,16 +100,29 @@ fn main() -> Result<()> {
     let render_state = state.clone();
     handle.spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(8));
+        let mut health_tick = 0u8;
+        let mut snapshot_tick = 0u8;
         loop {
             tick.tick().await;
             render_state
                 .renderer
                 .write_aligned_inputs(unix_ms() * 1_000);
+            health_tick = health_tick.wrapping_add(1);
+            if health_tick >= 12 {
+                health_tick = 0;
+                render_state.renderer.refresh_health(unix_ms());
+                snapshot_tick += 1;
+                if snapshot_tick >= 5 {
+                    snapshot_tick = 0;
+                    render_state.publish_renderer_snapshot();
+                }
+            }
         }
     });
     let export_state = state.clone();
     handle.spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(33));
+        let mut had_featured_state = false;
         loop {
             tick.tick().await;
             if let Some(featured) = export_state.renderer.aligned_featured_state(unix_ms()) {
@@ -117,6 +130,12 @@ fn main() -> Result<()> {
                     &export_state.data_dir.join("exports"),
                     &featured,
                 );
+                had_featured_state = true;
+            } else if had_featured_state {
+                let _ = beatblock_together_companion::exports::clear_featured_exports(
+                    &export_state.data_dir.join("exports"),
+                );
+                had_featured_state = false;
             }
         }
     });

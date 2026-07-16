@@ -225,7 +225,7 @@ local function overlayActions(self)
     local target=selectedParticipant(self)
     for index,id in ipairs(STREAM_IDS) do
       addAction(list,'assign_'..id,'ASSIGN STREAM '..id,'Assign the selected participant to stable Stream '..id..'.','cyan',function()
-        BBT.command('renderer.configure',{slot=id,participantId=target and target.sessionId or '',participantName=target and target.displayName or '',mode='clean',width=1280,height=720,fps=60,delayMs=500,featured=index==1})
+        BBT.command('renderer.configure',{slot=id,participantId=target and target.sessionId or '',participantName=target and target.displayName or '',mode='clean',width=1280,height=720,fps=60,delayMs=(BBT.settings and BBT.settings.spectatorDelayMs) or 500,featured=index==1})
       end,host() and target~=nil)
     end
     local id=STREAM_IDS[self.streamSelection or 1]
@@ -470,9 +470,11 @@ local function drawOverlayList(self)
     for index,id in ipairs(STREAM_IDS) do
       local stream=(BBT.renderers or {})[index] or {}; local y=84+(index-1)*47; local active=self.overlayFocus=='list' and self.streamSelection==index
       if active then setc(C.raised); love.graphics.rectangle('fill',38,y-3,330,40,2,2) end
-      setc(active and C.black or (stream.active and C.green or C.white)); love.graphics.print('STREAM '..id,46,y)
+      setc(active and C.black or (stream.healthy and C.green or (stream.active and C.yellow or C.white))); love.graphics.print('STREAM '..id,46,y)
       love.graphics.printf(short(stream.participantName or 'UNASSIGNED',24),148,y,210,'right')
-      setc(active and C.dimBlack or C.muted); love.graphics.printf((stream.mode or 'clean')..'  '..tostring(stream.width or 1280)..'x'..tostring(stream.height or 720)..'  '..tostring(stream.fps or 60)..'fps',46,y+18,312,'right')
+      local health=stream.healthy and 'LIVE' or (stream.active and 'STARTING' or 'STOPPED')
+      local detail=stream.lastError and short(stream.lastError,42) or (health..'  '..tostring(stream.fps or 60)..'fps  DROP '..tostring(stream.droppedFrames or 0))
+      setc(active and C.dimBlack or (stream.lastError and C.red or C.muted)); love.graphics.printf(detail,46,y+18,312,'right')
     end
   elseif self.overlay=='history' then
     local history=BBT.history or {}
