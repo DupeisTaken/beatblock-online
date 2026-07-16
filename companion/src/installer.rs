@@ -1610,11 +1610,15 @@ fn firewall_command(runtime: &Path, public: bool, add: bool) -> std::process::Co
         "name=Beatblock Together Host",
     ]);
     if add {
+        // PathBuf preserves forward slashes that appear in a joined string.
+        // Win32 file APIs accept those paths, but netsh validates `program=`
+        // strictly and rejects them as invalid application paths.
+        let program = format!("program={}", runtime.to_string_lossy().replace('/', "\\"));
         command.args([
             "dir=in",
             "action=allow",
             "protocol=UDP",
-            &format!("program={}", runtime.display()),
+            &program,
             if public {
                 "profile=private,public"
             } else {
@@ -1984,12 +1988,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn firewall_command_targets_runtime_and_selected_profiles() {
-        let runtime = Path::new(r"C:\Program Files\Beatblock Together\Runtime.exe");
+        let runtime = Path::new(r"C:\Program Files\Beatblock Together/Runtime.exe");
         let private = firewall_command(runtime, false, true)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(private.contains(&format!("program={}", runtime.display())));
+        assert!(
+            private.contains(&r"program=C:\Program Files\Beatblock Together\Runtime.exe".into())
+        );
+        assert!(private
+            .iter()
+            .find(|arg| arg.starts_with("program="))
+            .is_some_and(|arg| !arg.contains('/')));
         assert!(private.contains(&"profile=private,domain".into()));
 
         let public = firewall_command(runtime, true, true)

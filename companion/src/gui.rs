@@ -780,6 +780,8 @@ fn needs_elevation(error: &anyhow::Error) -> bool {
         m.contains("access is denied")
             || m.contains("permission denied")
             || m.contains("requires administrator")
+            || m.contains("requires elevation")
+            || m.contains("run as administrator")
     })
 }
 
@@ -828,6 +830,9 @@ mod tests {
     fn access_denied_requests_elevation_but_validation_errors_do_not() {
         let denied = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         assert!(needs_elevation(&denied));
+        assert!(needs_elevation(&anyhow::anyhow!(
+            "The requested operation requires elevation (Run as administrator)."
+        )));
         assert!(!needs_elevation(&anyhow::anyhow!(
             "unsupported fingerprint"
         )));
