@@ -13,6 +13,7 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     io::Write,
     net::SocketAddr,
     path::PathBuf,
@@ -41,6 +42,7 @@ pub struct AppState {
     pub connection_status: Arc<RwLock<String>>,
     pub shutdown_requested: Arc<AtomicBool>,
     pub selected_chart_path: Arc<RwLock<Option<String>>>,
+    pub chart_paths: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -90,6 +92,7 @@ impl AppState {
                 connection_status: Arc::new(RwLock::new("offline".into())),
                 shutdown_requested: Arc::new(AtomicBool::new(false)),
                 selected_chart_path: Arc::new(RwLock::new(None)),
+                chart_paths: Arc::new(RwLock::new(HashMap::new())),
             },
             network_events_rx,
         ))
@@ -285,6 +288,7 @@ impl AppState {
             NetworkEvent::Disconnected { session_id, reason } => {
                 if self.is_host.load(Ordering::Relaxed) {
                     self.room.write().await.disconnect(&session_id);
+                    self.renderer.stop_participant(&session_id);
                     self.broadcast_room().await?;
                 } else {
                     *self.connection_status.write().await = "reconnecting".into();
@@ -426,16 +430,47 @@ impl AppState {
     pub async fn admit(&self, session_id: &str, admit: bool, role: ParticipantRole) -> Result<()> {
         self.require_host()?;
         self.room.write().await.admit(session_id, admit, role)?;
+        if !admit || role == ParticipantRole::Spectator {
+            self.renderer.stop_participant(session_id);
+        }
         self.broadcast_room().await
     }
 
     pub async fn lock_chart(&self, chart: ChartLock, append_to_setlist: bool) -> Result<()> {
         self.require_host()?;
+        if let Some(path) = self.selected_chart_path.read().await.clone() {
+            self.chart_paths
+                .write()
+                .await
+                .insert(chart.hash.clone(), path);
+        }
         self.room
             .write()
             .await
             .lock_chart(chart, append_to_setlist)?;
-        self.broadcast_room().await
+        self.broadcast_room().await?;
+        self.relaunch_active_renderers().await;
+        Ok(())
+    }
+
+    pub async fn advance_setlist(&self) -> Result<()> {
+        self.require_host()?;
+        self.room.write().await.advance_setlist()?;
+        if let Some(hash) = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .as_ref()
+            .map(|chart| chart.hash.clone())
+        {
+            *self.selected_chart_path.write().await =
+                self.chart_paths.read().await.get(&hash).cloned();
+        }
+        self.broadcast_room().await?;
+        self.relaunch_active_renderers().await;
+        Ok(())
     }
 
     pub async fn set_local_verified(&self, verified: bool, reason: Option<String>) -> Result<()> {
@@ -499,6 +534,7 @@ impl AppState {
         self.require_host()?;
         self.room.write().await.close();
         self.broadcast_room().await?;
+        self.renderer.stop_all();
         self.network.shutdown().await;
         *self.connection_status.write().await = "offline".into();
         Ok(())
@@ -510,21 +546,42 @@ impl AppState {
         request: RendererRequest,
     ) -> Result<crate::model::RendererSlot> {
         self.require_host()?;
+        let restart = request.participant_id.is_some()
+            || request.mode.is_some()
+            || request.width.is_some()
+            || request.height.is_some()
+            || request.fps.is_some()
+            || request.delay_ms.is_some();
+        if let Some(participant_id) = request
+            .participant_id
+            .as_deref()
+            .filter(|participant_id| !participant_id.is_empty())
+        {
+            let room = self.room.read().await;
+            let participant = room
+                .snapshot
+                .participants
+                .iter()
+                .find(|participant| participant.session_id == participant_id)
+                .context("renderer participant is not in this room")?;
+            if !participant.admitted || !participant.connected {
+                anyhow::bail!("renderer participant must be admitted and connected");
+            }
+            if participant.role == ParticipantRole::Spectator {
+                anyhow::bail!("renderer slots can only follow active players");
+            }
+        }
         let configured = self.renderer.configure(slot, request)?;
-        if configured.active {
-            let config = self.config.read().await.clone();
-            let chart = self.room.read().await.snapshot.chart.clone();
-            if let (Some(game_directory), Some(chart)) = (config.game_directory, chart) {
-                let game = PathBuf::from(game_directory).join("Beatblock.exe");
-                let profile = crate::renderer::prepare_renderer_profile(&self.data_dir)?;
-                let chart_path = self
-                    .selected_chart_path
-                    .read()
-                    .await
-                    .clone()
-                    .unwrap_or_else(|| chart.package_name.clone());
+        if let Some(participant_id) = configured.participant_id.as_deref() {
+            self.sync_renderer_player(participant_id).await;
+        }
+        if configured.active && restart {
+            if self.room.read().await.snapshot.chart.is_none() {
                 self.renderer
-                    .launch_slot(slot, &game, &profile, &chart_path, &chart.variant)?;
+                    .set_error(slot, "assigned; waiting for the host to lock a chart");
+            } else if let Err(error) = self.launch_renderer_slot(slot).await {
+                self.renderer.set_error(slot, error.to_string());
+                return Err(error);
             }
         }
         write_room_exports(
@@ -533,6 +590,45 @@ impl AppState {
             &self.renderer.slots(),
         )?;
         Ok(configured)
+    }
+
+    async fn launch_renderer_slot(&self, slot: &str) -> Result<()> {
+        let config = self.config.read().await.clone();
+        let game_directory = config
+            .game_directory
+            .context("Beatblock installation path is unavailable")?;
+        let game = PathBuf::from(game_directory).join("Beatblock.exe");
+        if !game.is_file() {
+            anyhow::bail!(
+                "Beatblock renderer executable was not found at {}",
+                game.display()
+            );
+        }
+        let chart = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .clone()
+            .context("renderer is assigned and waiting for a locked chart")?;
+        let profile = crate::renderer::prepare_renderer_profile(&self.data_dir)?;
+        let chart_path = self
+            .selected_chart_path
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| chart.package_name.clone());
+        self.renderer
+            .launch_slot(slot, &game, &profile, &chart_path, &chart.variant)
+    }
+
+    async fn relaunch_active_renderers(&self) {
+        for slot in self.renderer.active_slots() {
+            if let Err(error) = self.launch_renderer_slot(&slot.id).await {
+                self.renderer.set_error(&slot.id, error.to_string());
+            }
+        }
     }
 
     async fn broadcast_room(&self) -> Result<()> {
@@ -578,6 +674,39 @@ impl AppState {
 
     pub async fn publish_room(&self) -> Result<()> {
         self.broadcast_room().await
+    }
+
+    pub async fn publish_runtime_snapshot(&self) -> Result<()> {
+        let _ = self.events.send(Envelope::new(
+            "runtime.snapshot",
+            0,
+            json!({
+                "connection":self.connection_status.read().await.clone(),
+                "hosting":self.is_host.load(Ordering::Relaxed),
+                "room":self.room.read().await.snapshot.clone(),
+                "renderers":self.renderer.slots(),
+                "history":self.storage.history()?,
+                "settings":self.config.read().await.clone(),
+                "diagnostics":{
+                    "protocolVersion":crate::model::PROTOCOL_VERSION,
+                    "runtimeVersion":env!("CARGO_PKG_VERSION"),
+                    "peerCount":self.network.peer_count().await,
+                    "rendererBudgetWarning":self.renderer.budget_warning()
+                },
+            }),
+        ));
+        Ok(())
+    }
+
+    pub fn publish_renderer_snapshot(&self) {
+        let _ = self.events.send(Envelope::new(
+            "renderer.snapshot",
+            0,
+            json!({
+                "renderers": self.renderer.slots(),
+                "budgetWarning": self.renderer.budget_warning(),
+            }),
+        ));
     }
 
     fn validate(&self, message: &Envelope) -> Result<()> {

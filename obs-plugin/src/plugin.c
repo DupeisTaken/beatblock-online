@@ -21,8 +21,22 @@ struct bbt_video {
     uint64_t sequence;
     uint8_t *pixels;
     size_t pixel_capacity;
+    uint64_t last_frame_ns;
     wchar_t path[MAX_PATH * 2];
 };
+
+static void clear_stale_texture(struct bbt_video *ctx)
+{
+    if (!ctx->texture || os_gettime_ns() - ctx->last_frame_ns < 1500000000ULL)
+        return;
+    obs_enter_graphics();
+    gs_texture_destroy(ctx->texture);
+    ctx->texture = NULL;
+    obs_leave_graphics();
+    ctx->width = 0;
+    ctx->height = 0;
+    ctx->sequence = 0;
+}
 
 static const char *video_name(void *unused)
 {
@@ -37,7 +51,7 @@ static void build_path(struct bbt_video *ctx)
     if (!length)
         wcscpy_s(root, MAX_PATH, L".");
     _snwprintf_s(ctx->path, MAX_PATH * 2, _TRUNCATE,
-        L"%s\\BeatblockTogether\\BeatblockTogether\\render-streams\\stream-%c.bbtframe",
+        L"%s\\BeatblockTogether\\BeatblockTogether\\data\\render-streams\\stream-%c.bbtframe",
         root, ctx->slot);
 }
 
@@ -95,13 +109,16 @@ static void video_tick(void *data, float seconds)
     UNUSED_PARAMETER(seconds);
     struct bbt_video *ctx = data;
     FILE *file = NULL;
-    if (_wfopen_s(&file, ctx->path, L"rb") || !file)
+    if (_wfopen_s(&file, ctx->path, L"rb") || !file) {
+        clear_stale_texture(ctx);
         return;
+    }
 
     uint8_t header[HEADER_SIZE];
     if (fread(header, 1, sizeof(header), file) != sizeof(header) ||
         memcmp(header, FRAME_MAGIC, 8) != 0) {
         fclose(file);
+        clear_stale_texture(ctx);
         return;
     }
     uint32_t width, height, stride, frame_count;
@@ -115,6 +132,7 @@ static void video_tick(void *data, float seconds)
     if (!width || !height || !stride || !frame_count || frame_size > (uint64_t)1920 * 1080 * 4 ||
         sequence == ctx->sequence) {
         fclose(file);
+        clear_stale_texture(ctx);
         return;
     }
     if (ctx->pixel_capacity < frame_size) {
@@ -141,6 +159,7 @@ static void video_tick(void *data, float seconds)
     ctx->height = height;
     ctx->stride = stride;
     ctx->sequence = sequence;
+    ctx->last_frame_ns = os_gettime_ns();
 }
 
 static uint32_t video_width(void *data) { return ((struct bbt_video *)data)->width; }
@@ -170,7 +189,7 @@ static void *audio_create(obs_data_t *settings, obs_source_t *source)
     UNUSED_PARAMETER(settings);
     struct bbt_audio *ctx = bzalloc(sizeof(*ctx));
     ctx->source = source;
-    blog(LOG_INFO, "[Beatblock Together] Shared Audio uses the Manager's featured renderer; song-only fallback is reported in Manager diagnostics.");
+    blog(LOG_INFO, "[Beatblock Together] Shared Audio follows the featured in-game renderer; song-only fallback is reported in Online diagnostics.");
     return ctx;
 }
 

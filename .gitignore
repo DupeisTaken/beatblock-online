@@ -5,10 +5,13 @@ coverage/
 .env
 *.log
 *.tsbuildinfo
+*.obj
 .DS_Store
 Thumbs.db
 target/
 .tools/
+.cache/
+obs-plugin/build/
 companion-data/
 exports/
 .dev-mods/

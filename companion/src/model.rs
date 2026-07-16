@@ -292,6 +292,12 @@ pub struct RendererSlot {
     pub active: bool,
     pub frame_sequence: u64,
     pub dropped_frames: u64,
+    #[serde(default)]
+    pub healthy: bool,
+    #[serde(default)]
+    pub last_frame_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 impl RendererSlot {
@@ -310,6 +316,9 @@ impl RendererSlot {
             active: false,
             frame_sequence: 0,
             dropped_frames: 0,
+            healthy: false,
+            last_frame_at_ms: None,
+            last_error: None,
         }
     }
 }
@@ -358,7 +367,7 @@ impl RenderSample {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChartHashRequest {
     pub path: String,

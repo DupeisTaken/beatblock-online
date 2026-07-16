@@ -486,6 +486,10 @@ local function handleCommand(raw)
     BBT.settings = message.payload.settings or BBT.settings
     if BBT.settings and BBT.settings.hudEnabled ~= nil then BBT.hudEnabled = BBT.settings.hudEnabled == true end
     BBT.diagnostics = message.payload.diagnostics or BBT.diagnostics
+  elseif message.type == 'renderer.snapshot' then
+    BBT.renderers = message.payload.renderers or BBT.renderers
+    BBT.diagnostics = BBT.diagnostics or {}
+    BBT.diagnostics.rendererBudgetWarning = message.payload.budgetWarning
   elseif message.type == 'control.ack' then
     if message.payload.requestId == BBT.pendingRequestId then BBT.pendingRequestId = nil end
   elseif message.type == 'runtime.error' or message.type == 'control.error' then

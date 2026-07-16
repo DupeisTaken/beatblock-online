@@ -1,6 +1,6 @@
 # Beatblock Together OBS plugin
 
-This native OBS 32.1.x plugin registers the stable **Beatblock Together Player Stream** source for Manager slots A-D and the **Beatblock Together Shared Audio** source contract.
+This native OBS 32 plugin registers the stable **Beatblock Together Player Stream** source for runtime slots A-D and the **Beatblock Together Shared Audio** source contract. The reviewed installer artifact is built and smoke-tested against OBS Studio 32.0.4 x64.
 
 Configure a build against an OBS SDK that exports `OBS::libobs`:
 
@@ -9,6 +9,8 @@ cmake -S obs-plugin -B obs-plugin/build -Dlibobs_DIR=<obs-sdk>/cmake
 cmake --build obs-plugin/build --config Release
 ```
 
-The Manager installer embeds and installs the resulting `beatblock-together-obs.dll` when `BBT_OBS_PLUGIN_DLL` points to it during the Manager build. Without an OBS SDK build artifact, the Manager clearly reports that the optional source is unavailable.
+For the pinned Windows release artifact, run `pnpm build:obs`. The repository script verifies the official OBS 32.0.4 source checksum and links against the export table of the locally installed OBS runtime.
 
-Video frame ingestion is implemented through the Manager's versioned shared frame ring. Process-specific audio capture and song-only fallback remain a certification gate; the current alpha audio source registers the contract but intentionally emits no misleading audio until that path is built and verified against OBS 32.1.2.
+`scripts/build-windows.mjs` embeds the reviewed artifact from `artifacts/obs-32.0.4`. A development build can override it with `BBT_OBS_PLUGIN_DLL`. The installer rejects empty, non-PE, or incorrectly exported payloads before touching OBS and installs valid files under `%ProgramData%\obs-studio\plugins\beatblock-together-obs`.
+
+Video frame ingestion reads the hidden runtime's versioned frame rings under `%LOCALAPPDATA%\BeatblockTogether\BeatblockTogether\data\render-streams`. Process-specific audio capture and song-only fallback remain a certification gate; the current alpha audio source registers the contract but intentionally emits no misleading audio.

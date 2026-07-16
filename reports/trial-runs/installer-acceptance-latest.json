@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-07-16",
+  "branch": "codex/installer",
+  "installer": {
+    "path": "release/BeatblockTogetherInstaller.exe",
+    "sha256": "7213112e60f9f171c7d986c1c3e808096feac31b398d2448413ea30014c32903",
+    "bytes": 34378752
+  },
+  "result": "blocked_on_uac",
+  "automated": {
+    "rust": 34,
+    "dashboard": 1,
+    "gameCommands": 5,
+    "luaCompilation": 1,
+    "releaseStress": 4,
+    "typescript": 4,
+    "lovelySignatures": 13,
+    "gameManagerHooks": 3,
+    "inGameCommands": 18,
+    "passed": true
+  },
+  "physicalReleaseFailures": [
+    { "scenario": "invalid_folder", "exitCode": 1, "rollbackClean": true },
+    { "scenario": "unknown_build_blocked", "exitCode": 1, "rollbackClean": true },
+    { "scenario": "beatblock_plus_missing", "exitCode": 1, "rollbackClean": true },
+    { "scenario": "adapter_conflict", "exitCode": 1, "rollbackClean": true },
+    { "scenario": "unknown_override_requires_elevation", "exitCode": 1, "rollbackClean": true },
+    { "scenario": "supported_build_requires_elevation", "exitCode": 1, "rollbackClean": true }
+  ],
+  "fixedDuringTrial": [
+    "move_transaction_mistook_rollback_directory_for_external_lovely_mod",
+    "maintenance_installer_survived_failed_transaction",
+    "failed_atomic_write_left_temporary_payload",
+    "standalone_adapter_allowed_with_beatblock_plus"
+  ],
+  "pendingPhysical": [
+    "elevated_repair",
+    "protected_folder_install",
+    "physical_move_and_restore",
+    "physical_restore_and_uninstall",
+    "launch_verification",
+    "windows_scaling_125_150",
+    "current_obs_dll_physical_load_and_source_menu"
+  ]
+}
