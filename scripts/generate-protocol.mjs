@@ -12,12 +12,12 @@ import {
 } from '../protocol/dist/index.js';
 
 const root = resolve(import.meta.dirname, '..');
-const output = resolve(root, 'protocol/schemas/v1');
+const output = resolve(root, 'protocol/schemas/v2');
 await mkdir(output, { recursive: true });
 const schema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
-  $id: 'https://beatblock-together.local/protocol/v1/protocol.json',
-  title: 'Beatblock Together protocol v1',
+  $id: 'https://beatblock-together.local/protocol/v2/protocol.json',
+  title: 'Beatblock Together protocol v2',
   $defs: {
     Envelope: EnvelopeSchema,
     ScoreTotals: ScoreTotalsSchema,
@@ -30,4 +30,4 @@ const schema = {
   },
 };
 await writeFile(resolve(output, 'protocol.json'), `${JSON.stringify(schema, null, 2)}\n`);
-console.log('Generated protocol/schemas/v1/protocol.json');
+console.log('Generated protocol/schemas/v2/protocol.json');

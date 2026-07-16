@@ -1,0 +1,145 @@
+{
+  "capabilities": {
+    "authoritativeRanking": true,
+    "capacityRejection": true,
+    "chartLock": true,
+    "directRoom": true,
+    "packed60HzTelemetry": true,
+    "passwordAdmissionModel": true,
+    "players16": true,
+    "readyVerification": true,
+    "scheduledStart": true,
+    "setTotal": true,
+    "spectators32": true
+  },
+  "metrics": {
+    "elapsedMs": 7.4576,
+    "renderTelemetryKiBPerSecondPerPlayer": 1.875,
+    "scheduledStartUnixMs": 1784131795126,
+    "scoreEventsPerSecond": 520289.95325519954,
+    "scoreIngestMs": 7.3805
+  },
+  "passed": true,
+  "scenario": "direct-host-16-player-32-spectator",
+  "schemaVersion": 2,
+  "standings": [
+    {
+      "accuracy": 100.0,
+      "name": "Host",
+      "rank": 1,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 2",
+      "rank": 7,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 3",
+      "rank": 8,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 4",
+      "rank": 9,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 5",
+      "rank": 10,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 6",
+      "rank": 11,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 7",
+      "rank": 12,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 8",
+      "rank": 13,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 9",
+      "rank": 14,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 10",
+      "rank": 2,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 11",
+      "rank": 3,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 12",
+      "rank": 4,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 13",
+      "rank": 5,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 100.0,
+      "name": "Player 14",
+      "rank": 6,
+      "setTotal": 100.0,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 99.75,
+      "name": "Player 15",
+      "rank": 15,
+      "setTotal": 99.75,
+      "validity": "valid"
+    },
+    {
+      "accuracy": 99.0,
+      "name": "Player 16",
+      "rank": 16,
+      "setTotal": 99.0,
+      "validity": "valid"
+    }
+  ],
+  "workload": {
+    "players": 16,
+    "renderDatagramHz": 60,
+    "scoreEvents": 3840,
+    "spectators": 32
+  }
+}

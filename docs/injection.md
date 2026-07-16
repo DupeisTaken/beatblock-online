@@ -1,187 +1,63 @@
-# Injecting Beatblock Together into Beatblock
+# Installation and injection
 
-Beatblock Together supports two mutually exclusive Windows injection paths. Use **standalone Lovely** when BeatblockPlus is not installed. Use the **BeatblockPlus 2.x package** when it is.
+## Recommended path
 
-Both paths use [Lovely Injector](https://github.com/ethangreen-dev/lovely-injector), which loads `version.dll` beside `Beatblock.exe` and patches Lua chunks as the game loads them. It does not rewrite `Beatblock.exe` or the packed game archives. Lovely discovers each mod in its own folder under `%APPDATA%\Beatblock\Mods`; its default folder is derived from the `Beatblock.exe` filename. BeatblockPlus then discovers `mod.json` files in those same per-mod folders.
+Run `BeatblockTogetherInstaller.exe`. Its four Unity Mod Manager-style tabs are installation-only:
 
-## Supported baseline
+- **Install:** a selected-target card, Automatic/standalone/BeatblockPlus method, optional OBS source, real operation progress, Install/Update, Repair, Uninstall, Restore Game Files, and postflight Launch Beatblock verification.
+- **Components:** a colored table for the game build, adapter, shared Lua payload, Lovely, runtime, renderer, optional OBS plugin, and firewall. Text labels accompany every color, and one **Repair Required Components** action fixes managed files.
+- **Log:** bounded log with Copy and Save.
+- **Settings:** update channel/check, backup folder, private/public firewall profile, data-retaining uninstall, and developer-only unknown-build override.
 
-- Windows x64.
-- The Beatblock build recorded in `mod/fixtures/patch-signatures.json`.
-- Lovely 0.9.0 or a later compatible release with LÖVE 12 support.
-- BeatblockPlus 2.x for the BeatblockPlus distribution.
+The path in the field is always the path being described and modified. Selection priority is the current field, then the managed manifest target, then Steam discovery. Any folder with `Beatblock.exe`, the required LÖVE/Lua libraries, and the expected `packed` archives is structurally valid—including repository/reference copies and paths containing spaces or Unicode. The installer validates the supported `Beatblock.exe` SHA-256 `c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b`; other fingerprints require **Developer: allow an uncertified Beatblock build** and remain blocked from competitive rooms.
 
-The pinned `Beatblock.exe` SHA-256 is:
+Only one game folder is managed at a time. Selecting another valid folder changes the primary action to **Move Installation** and asks before restoring the former target. Mod files remain in the normal shared `%APPDATA%\Beatblock\Mods` location; the game-folder-specific change is the Lovely `version.dll` injector.
 
-```text
-c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b
-```
+Installation starts with the player's normal Windows permissions. If a protected game, OBS, or firewall location returns an access-denied error, the same installer requests administrator approval through the native Windows UAC prompt and continues in a windowless elevated helper. The visible installer follows the helper through an atomic status file and waits for its process exit plus postflight verification. UAC cancellation and helper failures are explicit results. Build validation failures remain in the installer and do not trigger an unrelated UAC prompt.
 
-An unknown build may be used for non-competitive hook development, but the alpha intentionally blocks it from competitive races.
+Every mutating action reports monotonic phases and a percentage. Controls are locked once replacement begins. The complete Lua adapter is first written to a sibling staging directory, checked against the Lovely module declarations, then atomically swapped into place. The manifest is written only after required component hashes pass. Existing injector backups are never replaced during update or repair.
 
-## Find the game folder
-
-In Steam, open **Library > Beatblock > Manage > Browse local files**. The folder you need contains all three of these files:
+Installed layout:
 
 ```text
-Beatblock.exe
-love.dll
-lua51.dll
+<Beatblock>\Beatblock.exe
+<Beatblock>\version.dll
+%APPDATA%\Beatblock\Mods\BeatblockTogether\
+  runtime-path.txt
+  installer-path.txt
+  bbt\core.lua
+  bbt\dashboard_model.lua
+  bbt\ipc_thread.lua
+  bbt\online_state.lua
+  bbt\renderer.lua
+  lovely\hooks.toml
+  lovely\bootstrap.toml       (standalone only)
+  mod.json + main.lua ...     (BeatblockPlus only)
+%LOCALAPPDATA%\BeatblockTogether\...
+  runtime\BeatblockTogetherRuntime.exe
+  installer\BeatblockTogetherInstaller.exe
 ```
 
-The normal mod-data folder is separate:
+Lovely loads beside `Beatblock.exe` and applies signatures while LÖVE loads Lua chunks. BBT does not rewrite `Beatblock.exe` or packed archives. The standalone bootstrap uses Lovely's supported `{{lovely_hack:patch_dir}}` placeholder. Opening Online starts a literal-source LÖVE worker thread, passes the installed mod path through a channel, launches the GUI-subsystem runtime without a console, and connects to `\\.\pipe\beatblock-together-v2`. Bundled LuaSocket on `127.0.0.1:8975` remains the isolated fallback when LuaJIT FFI is unavailable. Normal menus never create this thread.
 
-```text
-%APPDATA%\Beatblock\Mods
-```
+The bundled injector is built reproducibly from Lovely v0.9 with the default console disabled; `--enable-console` is retained for developer diagnosis. The maintained delta is recorded in `third-party/lovely-no-console.patch`. Existing Lovely installations are backed up and restored according to the installer transaction rather than overwritten blindly.
 
-In PowerShell, `$env:APPDATA` expands `%APPDATA%` to the current Windows account's roaming application-data folder.
+Repair restores only BBT-owned files. Uninstall restores the backed-up injector or removes a BBT-owned injector only when no other Lovely mod depends on it. Settings/history are preserved unless **Remove settings and match history** is checked.
 
-## Pathway 1: guarded repository installer
+## Launch verification
 
-This is the least error-prone path from a source checkout. The installer verifies the game hash, locates or installs Lovely, enforces the correct distribution for the detected loader, and refuses to overwrite an existing installation unless `-Force` is explicit.
+After Install/Update or Repair, **Launch Beatblock** starts the executable inside the selected folder with that folder as its working directory. For a non-Steam copy, the installer temporarily supplies Steam app ID `3045200` and restores the prior file afterward. Verification waits for the exact process to remain alive and for a new Lovely log under `%APPDATA%\Beatblock\Mods\lovely\log` to identify the selected game directory and report `Initialization complete`. A Lovely panic or early process exit is shown with the relevant log excerpt and repair/log actions.
 
-First build and validate both packages:
+## Repairing the missing-dashboard alpha
 
-```powershell
-pnpm test:mod
-powershell -NoProfile -File scripts/test-install-mod.ps1
-```
+An earlier installer declared `bbt/dashboard_model.lua` in `lovely/hooks.toml` but omitted that source from both installed and renderer payloads. Lovely correctly aborted with `Module source "bbt/dashboard_model.lua" not found in preloaded sources`. The Components table now marks such installations **REPAIR REQUIRED**. Repair installs the missing file from the centralized payload inventory while preserving the existing Lovely backup; conformance tests prevent a declared Lovely module from being omitted again.
 
-For standalone Lovely, download `lovely-x86_64-pc-windows-msvc.zip` from the [official Lovely release page](https://github.com/ethangreen-dev/lovely-injector/releases/latest), then run:
+## Developer/test path
 
-```powershell
-.\scripts\install-mod.ps1 `
-  -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Beatblock" `
-  -Distribution standalone `
-  -LovelyArchive "$HOME\Downloads\lovely-x86_64-pc-windows-msvc.zip"
-```
+The two mutually exclusive development ZIPs are under `mod/releases`. Release users should use the one-EXE installer. For a disposable trial, clone the game folder, select that clone in the installer, and enable the unknown-build override only when its fingerprint is not certified. The selected-target card must name the clone before proceeding.
 
-If Lovely and BeatblockPlus 2.x are already installed:
+If Online reports damage, choose **Open Installer**, inspect the Components table, then use **Repair Required Components**. Steam Verify restores official files. Do not manually delete `version.dll` when another Lovely mod uses it.
 
-```powershell
-.\scripts\install-mod.ps1 `
-  -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Beatblock" `
-  -Distribution beatblock-plus
-```
+The latest physical injected-game evidence is recorded in [`injected-installer-lifecycle-latest.md`](../reports/trial-runs/injected-installer-lifecycle-latest.md), including the hidden runtime, live telemetry ingestion, and explicit Online shutdown screenshots.
 
-Use `-WhatIf` to preview changes. `-Force` moves the prior installation to `%APPDATA%\Beatblock\BeatblockTogether-backups` before installing. `-AllowUnknownBuild` is only for local hook development and does not make that build competition-compatible.
-
-To uninstall only Beatblock Together:
-
-```powershell
-.\scripts\install-mod.ps1 `
-  -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Beatblock" `
-  -Uninstall
-```
-
-The uninstaller deliberately keeps `version.dll`, because Lovely or other mods may still depend on it.
-
-## Pathway 2: standalone Lovely, manual
-
-1. Close Beatblock.
-2. Download the Windows x64 Lovely ZIP from the [official releases](https://github.com/ethangreen-dev/lovely-injector/releases/latest).
-3. Copy `version.dll` from that ZIP into the game folder, directly beside `Beatblock.exe`.
-4. Create `%APPDATA%\Beatblock\Mods` if it does not exist.
-5. Extract `mod/releases/beatblock-together-standalone-0.1.0-alpha.1.zip` directly into that `Mods` folder.
-6. Start the companion, then launch Beatblock through Steam.
-
-The final paths must be exactly:
-
-```text
-<Beatblock game folder>\
-├── Beatblock.exe
-├── love.dll
-├── lua51.dll
-└── version.dll                    <- Lovely's Windows proxy
-
-%APPDATA%\Beatblock\Mods\
-└── BeatblockTogether\
-    ├── README.txt
-    ├── bbt\
-    │   ├── core.lua
-    │   ├── ipc_thread.lua
-    │   └── online_state.lua
-    └── lovely\
-        ├── bootstrap.toml
-        └── hooks.toml
-```
-
-Do not leave an extra directory layer such as `Mods\beatblock-together-standalone-0.1.0-alpha.1\BeatblockTogether`. Lovely requires the folder containing `lovely\*.toml` to be the direct child mod folder.
-
-Do not use the standalone package if BeatblockPlus is present. BeatblockPlus applies its own bootstrap before loading Beatblock Together's `mod.json` package.
-
-## Pathway 3: BeatblockPlus 2.x
-
-Install Lovely and [BeatblockPlus](https://github.com/BeatblockTools/BeatblockPlus) first. Confirm Beatblock's main menu contains **Mods**.
-
-The preferred BeatblockPlus path uses its in-game ZIP installer:
-
-1. Leave `beatblock-together-beatblock-plus-0.1.0-alpha.1.zip` unopened.
-2. Launch Beatblock and open **Mods**.
-3. Drag the ZIP file onto the Mods screen.
-4. Accept the detected `Beatblock Together` mod and restart Beatblock when prompted.
-
-The release ZIP intentionally contains `BeatblockTogether/mod.json`; this is the layout BeatblockPlus's drag-and-drop installer requires.
-
-For a manual install, close the game and extract the ZIP directly into `%APPDATA%\Beatblock\Mods`. Verify:
-
-```text
-%APPDATA%\Beatblock\Mods\
-├── BeatblockPlus\                 <- folder name may vary
-│   ├── mod.json                   <- id is beatblock-plus
-│   └── lovely\...
-└── BeatblockTogether\
-    ├── mod.json                   <- id is beatblock-together
-    ├── main.lua
-    ├── config.lua
-    ├── bbt\...
-    ├── lovely\hooks.toml
-    └── states\Online.lua
-```
-
-Do not also extract the standalone release. The two packages share a core but use different bootstraps.
-
-## Developer injection without touching normal mods
-
-Lovely supports an explicit `LOVELY_MOD_DIR`. Use it to isolate a development copy from `%APPDATA%\Beatblock\Mods`:
-
-```powershell
-$game = "C:\Program Files (x86)\Steam\steamapps\common\Beatblock"
-$devMods = Join-Path $PWD ".dev-mods\standalone"
-
-pnpm test:mod
-.\scripts\install-mod.ps1 `
-  -GameDir $game `
-  -ModsDir $devMods `
-  -Distribution standalone
-
-$env:LOVELY_MOD_DIR = $devMods
-& (Join-Path $game "Beatblock.exe")
-Remove-Item Env:LOVELY_MOD_DIR
-```
-
-Only the selected development directory is scanned during that launch. For an isolated BeatblockPlus run, copy the installed BeatblockPlus folder into `$devMods` first, then install with `-Distribution beatblock-plus`.
-
-Regenerate the copied Lua core after changes with `pnpm package:mods`, or rerun the installer with `-Force`. The game must be restarted for Lovely patch changes; Lua patches are applied while chunks load.
-
-## Confirm injection succeeded
-
-1. A Lovely console opens with the game unless Lovely was launched with `--disable-console`.
-2. Lovely logs appear under `%APPDATA%\Beatblock\Mods\lovely\log`, or under `<LOVELY_MOD_DIR>\lovely\log` for an isolated run.
-3. Beatblock's main menu contains **Online**.
-4. The Online screen reports the companion connection and offers create/join lobby actions.
-5. A practice run updates `http://127.0.0.1:8974/v1/state` when opened with the local token generated by the companion.
-
-For a pre-release check, inspect Lovely's patched sources under `Mods\lovely\dump` and confirm the BBT hook payloads appear in `states/Game.lua`, `states/SongSelect.lua`, `states/Results.lua`, and the main-menu state.
-
-## Recovery and removal
-
-- Launch once with `--disable-mods` if a patch prevents the menu from loading.
-- Remove `%APPDATA%\Beatblock\Mods\BeatblockTogether` to uninstall BBT manually.
-- Keep `version.dll` when any Lovely mod remains. Delete only that Lovely-provided `version.dll` to disable Lovely completely.
-- If both BBT variants were mixed, remove the entire `BeatblockTogether` folder and reinstall exactly one release.
-- If Lovely reports a missing patch signature, stop using the build competitively and run `pnpm validate:patches` against the updated game reference before changing the fixture.
-- Steam's **Verify integrity of game files** restores official game files, but BBT normally never modifies them.
-
-The installer never copies remote credentials or invite codes into the mod folder. Those remain in the companion's credential store.
+The current `.reference\Beatblock` installer and Lovely recovery evidence is recorded in [`installer-reliability-latest.md`](../reports/trial-runs/installer-reliability-latest.md). It distinguishes the verified payload/launch result from the administrator-approved firewall gate that remains pending after UAC cancellation.

@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "generatedAt": "2026-07-14T18:25:30.352Z",
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-15T16:09:53.194Z",
   "passed": true,
   "environment": {
     "platform": "win32",
@@ -9,82 +9,205 @@
   },
   "runs": [
     {
-      "name": "TypeScript unit and stress tests",
+      "name": "Protocol v2 typecheck",
       "passed": true,
-      "durationMs": 2908
+      "durationMs": 567
     },
     {
-      "name": "Protocol/build verification",
+      "name": "Protocol v2 schema generation",
       "passed": true,
-      "durationMs": 5631
+      "durationMs": 151
     },
     {
-      "name": "In-game mod conformance and packaging",
+      "name": "Protocol v2 tests",
       "passed": true,
-      "durationMs": 2957
+      "durationMs": 946
     },
     {
-      "name": "Rust companion and Beatblock Lua runtime tests",
+      "name": "Rust runtime, installer, Lua, and stress tests",
       "passed": true,
-      "durationMs": 15890
+      "durationMs": 65795
     },
     {
-      "name": "Server maximum-capacity benchmark",
+      "name": "Package both in-game adapters",
       "passed": true,
-      "durationMs": 1657
+      "durationMs": 2962
     },
     {
-      "name": "Companion I/O benchmark",
+      "name": "In-game mod conformance",
       "passed": true,
-      "durationMs": 8704
+      "durationMs": 86
+    },
+    {
+      "name": "Hidden runtime lifecycle and resource gate",
+      "passed": true,
+      "durationMs": 8202
+    },
+    {
+      "name": "16-player / 32-spectator direct-host simulation",
+      "passed": true,
+      "durationMs": 13197
+    },
+    {
+      "name": "Runtime I/O benchmark report",
+      "passed": true,
+      "durationMs": 50
     }
   ],
-  "server": {
-    "schemaVersion": 1,
-    "generatedAt": "2026-07-14T18:25:21.611Z",
-    "passed": true,
+  "hostRoom": {
     "capabilities": {
-      "inviteRedemption": true,
-      "rotatingRefresh": true,
-      "oneTimeBrowserHandoff": true,
-      "maximumLobby": true,
-      "playerCapacityRejected": true,
-      "spectatorCapacityRejected": true,
-      "chartVerificationAndReadyCheck": true,
-      "synchronizedStartScheduled": true,
-      "authoritativeResults": true,
-      "duplicateIdempotent": true,
-      "reconnectAtCapacity": true
+      "authoritativeRanking": true,
+      "capacityRejection": true,
+      "chartLock": true,
+      "directRoom": true,
+      "packed60HzTelemetry": true,
+      "passwordAdmissionModel": true,
+      "players16": true,
+      "readyVerification": true,
+      "scheduledStart": true,
+      "setTotal": true,
+      "spectators32": true
     },
+    "metrics": {
+      "elapsedMs": 7.4576,
+      "renderTelemetryKiBPerSecondPerPlayer": 1.875,
+      "scheduledStartUnixMs": 1784131795126,
+      "scoreEventsPerSecond": 520289.95325519954,
+      "scoreIngestMs": 7.3805
+    },
+    "passed": true,
+    "scenario": "direct-host-16-player-32-spectator",
+    "schemaVersion": 2,
+    "standings": [
+      {
+        "accuracy": 100,
+        "name": "Host",
+        "rank": 1,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 2",
+        "rank": 7,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 3",
+        "rank": 8,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 4",
+        "rank": 9,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 5",
+        "rank": 10,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 6",
+        "rank": 11,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 7",
+        "rank": 12,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 8",
+        "rank": 13,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 9",
+        "rank": 14,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 10",
+        "rank": 2,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 11",
+        "rank": 3,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 12",
+        "rank": 4,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 13",
+        "rank": 5,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 100,
+        "name": "Player 14",
+        "rank": 6,
+        "setTotal": 100,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 99.75,
+        "name": "Player 15",
+        "rank": 15,
+        "setTotal": 99.75,
+        "validity": "valid"
+      },
+      {
+        "accuracy": 99,
+        "name": "Player 16",
+        "rank": 16,
+        "setTotal": 99,
+        "validity": "valid"
+      }
+    ],
     "workload": {
       "players": 16,
-      "spectators": 32,
-      "eventsPerPlayer": 240,
-      "totalEvents": 3840
-    },
-    "metrics": {
-      "concurrentJoinMs": 3.9732999999999947,
-      "scoreEventsPerSecond": 4101.697312256021,
-      "ingestMeanMs": 2.1701415885416613,
-      "ingestP95Ms": 3.3541999999999916,
-      "ingestP99Ms": 4.31110000000001,
-      "eventLoopDelayP95Ms": 0.000511,
-      "heapUsedMb": 22.35338592529297
-    },
-    "thresholds": {
-      "exactEventCount": 3840,
-      "ingestP95Ms": 250
+      "renderDatagramHz": 60,
+      "scoreEvents": 3840,
+      "spectators": 32
     }
   },
-  "companion": {
-    "generatedAtMs": 1784053530326,
+  "runtime": {
+    "generatedAtMs": 1784131767685,
     "metrics": {
-      "chartCacheSpeedup": 36.052029136316335,
-      "chartCachedMs": 0.3844,
-      "chartColdMs": 13.8584,
-      "exportMeanMs": 18.85634719999999,
-      "exportP95Ms": 20.5564,
-      "journalEventsPerSecond": 4278.104515633434,
+      "chartCacheSpeedup": 37.43944832798035,
+      "chartCachedMs": 0.5293,
+      "chartColdMs": 19.8167,
+      "exportMeanMs": 35.18428600000001,
+      "exportP95Ms": 39.274499999999996,
+      "journalEventsPerSecond": 2409.051094046464,
       "journalRecoveredEvents": 5000
     },
     "passed": true,
@@ -99,5 +222,19 @@
       "journalEvents": 5000,
       "snapshots": 250
     }
+  },
+  "lifecycle": {
+    "schemaVersion": 2,
+    "generatedAt": "2026-07-15T16:09:35.061Z",
+    "passed": true,
+    "readiness": "runtime.ready",
+    "protocolVersion": 2,
+    "workingSetBytes": 16248832,
+    "idleWorkingSetTargetBytes": 31457280,
+    "idleWorkingSetTargetMet": true,
+    "duplicateMutexRejected": true,
+    "explicitSessionShutdown": true,
+    "parentExitCleanup": true,
+    "visibleConsoleRequested": false
   }
 }

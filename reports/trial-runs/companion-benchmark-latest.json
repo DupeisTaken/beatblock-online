@@ -1,12 +1,12 @@
 {
-  "generatedAtMs": 1784053530326,
+  "generatedAtMs": 1784109448088,
   "metrics": {
-    "chartCacheSpeedup": 36.052029136316335,
-    "chartCachedMs": 0.3844,
-    "chartColdMs": 13.8584,
-    "exportMeanMs": 18.85634719999999,
-    "exportP95Ms": 20.5564,
-    "journalEventsPerSecond": 4278.104515633434,
+    "chartCacheSpeedup": 129.84655846107606,
+    "chartCachedMs": 0.6654,
+    "chartColdMs": 86.3999,
+    "exportMeanMs": 33.36334279999999,
+    "exportP95Ms": 35.7966,
+    "journalEventsPerSecond": 2985.646266721037,
     "journalRecoveredEvents": 5000
   },
   "passed": true,

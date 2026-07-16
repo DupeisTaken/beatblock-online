@@ -1,9 +1,11 @@
 local BBT = {
-  version = '0.1.0-alpha.1',
-  protocolVersion = 1,
+  version = '0.3.0-alpha.1',
+  protocolVersion = 2,
   sequence = 0,
   runSequence = 0,
   snapshotTimer = 0,
+  renderTimer = 0,
+  keyframeTimer = 0,
   installedHooks = false,
   connected = false,
   companionConnected = false,
@@ -19,6 +21,9 @@ local BBT = {
   clockSynchronized = false,
   wasInGame = false,
   wasRunReady = false,
+  sessionActive = false,
+  requestSequence = 0,
+  hudEnabled = true,
 }
 
 local SUPPORTED_GAME_BUILD = 'c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b'
@@ -37,8 +42,11 @@ local function estimatedServerTimeMs()
 end
 
 local function encode(value)
-  if json and json.encode then return json.encode(value) end
-  if dpf and dpf.json and dpf.json.encode then return dpf.json.encode(value) end
+  -- Beatblock's bundled rxi encoder appends a raw newline after every object,
+  -- including nested payloads. Strings are escaped first, so stripping raw
+  -- CR/LF here safely restores the protocol's one-envelope-per-line framing.
+  if json and json.encode then return (json.encode(value):gsub('[\r\n]', '')) end
+  if dpf and dpf.json and dpf.json.encode then return (dpf.json.encode(value):gsub('[\r\n]', '')) end
   error('Beatblock Together could not find the game JSON encoder')
 end
 
@@ -69,21 +77,95 @@ local function totals()
 end
 
 function BBT.send(kind, payload)
-  if BBT.disabled then return end
-  local message = { version = BBT.protocolVersion, type = kind, sequence = BBT.sequence, timestampMs = math.floor(estimatedServerTimeMs()), payload = payload }
+  if BBT.disabled or not BBT.sessionActive then return end
+  local message = {
+    version = BBT.protocolVersion,
+    type = kind,
+    sequence = BBT.sequence,
+    runTimeUs = math.floor((love and love.timer and love.timer.getTime() or 0) * 1000000),
+    runId = BBT.context.runId,
+    requestId = payload and payload.requestId or nil,
+    payload = payload,
+  }
   BBT.sequence = BBT.sequence + 1
   love.thread.getChannel('bbt_outbound'):push(encode(message))
 end
 
 function BBT.command(kind, payload)
   BBT.lastError = nil
-  BBT.send(kind, payload or {})
+  payload = payload or {}
+  BBT.requestSequence = BBT.requestSequence + 1
+  local requestId = 'game-' .. tostring(BBT.requestSequence)
+  payload.requestId = requestId
+  BBT.pendingRequestId = requestId
+  BBT.send(kind, payload)
+end
+
+-- The native engine is deliberately lazy: normal Beatblock menus never start it.
+function BBT.startOnlineRuntime()
+  if BBT.sessionActive or (BBTRenderer and BBTRenderer.active) then return end
+  BBT.sessionActive = true
+  BBT.companionConnected = false
+  BBT.runtimeStarting = true
+  love.thread.getChannel('bbt_ipc_control'):clear()
+  love.thread.getChannel('bbt_outbound'):clear()
+  love.thread.getChannel('bbt_inbound'):clear()
+  local threadPath = BBT.modPath .. '/bbt/ipc_thread.lua'
+  -- Lovely's patch directory lives outside LÖVE's virtual filesystem. Read the
+  -- worker once while entering Online, then hand LÖVE a FileData object so the
+  -- gameplay loop never performs IPC or filesystem work.
+  local sourceFile = io.open(threadPath, 'rb')
+  local source = sourceFile and sourceFile:read('*a') or nil
+  if sourceFile then sourceFile:close() end
+  local ok, thread = pcall(function()
+    if not source then error('IPC worker is missing from the installed mod') end
+    return love.thread.newThread(source)
+  end)
+  if ok then
+    BBT.ipcThread = thread
+    local pathChannel = love.thread.getChannel('bbt_mod_path')
+    pathChannel:clear(); pathChannel:push(BBT.modPath)
+    thread:start()
+    BBT.send('client.hello', { clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = BBT.distribution, mods = {} })
+  else
+    BBT.sessionActive = false
+    BBT.lastError = 'Could not start the Beatblock Together runtime IPC: ' .. tostring(thread)
+  end
+end
+
+function BBT.exitOnline()
+  if not BBT.sessionActive then return end
+  -- Shutdown control must not sit behind stale 60 Hz render samples. Ordered
+  -- run journals are already persisted by the runtime; unsent UI telemetry is
+  -- expendable once the user explicitly leaves Online.
+  love.thread.getChannel('bbt_outbound'):clear()
+  BBT.command('runtime.session_end', {})
+  BBT.sessionActive = false
+  BBT.connected = false
+  BBT.companionConnected = false
+  BBT.runtimeStarting = false
+  BBT.lastLobby = nil
+  BBT.context.lobbyId = 'offline'
+  love.thread.getChannel('bbt_ipc_control'):push('stop')
+end
+
+function BBT.openInstaller()
+  local file = io.open(BBT.modPath .. '/installer-path.txt', 'rb')
+  local path = file and file:read('*a') or nil
+  if file then file:close() end
+  if not path or path == '' then BBT.lastError = 'Installer maintenance copy is missing. Download BeatblockTogetherInstaller.exe again.'; return end
+  path = path:gsub('[\r\n]+$', '')
+  local ok, ffi = pcall(require, 'ffi')
+  if not ok then BBT.lastError = 'Windows launcher is unavailable.'; return end
+  ffi.cdef[[void* ShellExecuteA(void*, const char*, const char*, const char*, const char*, int);]]
+  local result = tonumber(ffi.cast('intptr_t', ffi.C.ShellExecuteA(nil, 'open', path, nil, nil, 1)))
+  if not result or result <= 32 then BBT.lastError = 'Windows could not open the installer maintenance copy.' end
 end
 
 function BBT.currentPlayer()
-  if not BBT.lastLobby or not BBT.lastLobby.players then return nil end
-  for _, player in ipairs(BBT.lastLobby.players) do
-    if player.userId == BBT.context.userId or player.displayName == BBT.context.playerName then
+  if not BBT.lastLobby or not BBT.lastLobby.participants then return nil end
+  for _, player in ipairs(BBT.lastLobby.participants) do
+    if player.sessionId == BBT.context.sessionId or player.displayName == BBT.context.playerName then
       return player
     end
   end
@@ -91,8 +173,8 @@ function BBT.currentPlayer()
 end
 
 function BBT.isOrganizer()
-  return BBT.lastLobby and BBT.lastLobby.organizerId and BBT.currentPlayer()
-    and BBT.lastLobby.organizerId == BBT.currentPlayer().userId
+  return BBT.lastLobby and BBT.lastLobby.hostSessionId and BBT.currentPlayer()
+    and BBT.lastLobby.hostSessionId == BBT.currentPlayer().sessionId
 end
 
 function BBT.openChartSelect(mode)
@@ -110,6 +192,52 @@ function BBT.openChartSelect(mode)
   cs:init()
 end
 
+local expectedMaxHits
+
+function BBT.openOfficialSelect(mode)
+  BBT.selectingOfficialChart = true
+  BBT.chartSelectionMode = mode or 'verify'
+  local previous = cs
+  local music = previous and previous.menuMusicManager
+  cs = bs.load('AtomMap')
+  if previous and previous.leave then previous:leave() end
+  cs.menuMusicManager = music
+  cs:init()
+end
+
+function BBT.onOfficialChartSelected(selector, filename, variant)
+  if not BBT.selectingOfficialChart then return false end
+  local selected = selector.activeQuark
+  local level = selected and selected.level
+  local variantName = variant and (variant.name or variant.display) or selected and selected.currVariant and (selected.currVariant.name or selected.currVariant.display) or 'Default'
+  BBT.localChart = {
+    levelPath = filename,
+    variantName = variantName,
+    variantInfo = variant or (selected and selected.currVariant),
+    levelData = level,
+    songName = level and level.metadata and level.metadata.songName or filename,
+    expectedMaxHits = expectedMaxHits(level) or 1,
+    official = true,
+  }
+  BBT.chartVerified = false
+  BBT.selectingOfficialChart = false
+  BBT.command((BBT.chartSelectionMode == 'host' or BBT.chartSelectionMode == 'setlist') and 'room.official_chart_select' or 'room.official_chart_verify', {
+    chartId = filename,
+    songName = BBT.localChart.songName,
+    variant = variantName,
+    expectedMaxHits = BBT.localChart.expectedMaxHits,
+    appendToSetlist = BBT.chartSelectionMode == 'setlist',
+  })
+  BBT.chartSelectionMode = nil
+  local music = selector.menuMusicManager
+  if selector.source then selector.source:stop(); selector.source = nil end
+  if music then music:clearOnBeatHooks(); music:forceUnmute() end
+  cs = bs.load('Online')
+  cs.menuMusicManager = music
+  cs:init()
+  return true
+end
+
 local function selectedPackagePath(levelPath)
   local probe = levelPath .. 'manifest.json'
   local real = love.filesystem.getRealDirectory(probe)
@@ -120,7 +248,7 @@ local function selectedPackagePath(levelPath)
   return real .. separator .. levelPath
 end
 
-local function expectedMaxHits(levelData)
+expectedMaxHits = function(levelData)
   if not levelData or not levelData.events or not Event or not Event.hitCount then return nil end
   local total, mineBeats = 0, {}
   for _, event in ipairs(levelData.events) do
@@ -156,12 +284,13 @@ function BBT.onChartSelected(selector, levelPath, variantName)
   BBT.chartVerified = false
   BBT.selectingOnlineChart = false
   if packagePath and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
-    BBT.command(BBT.chartSelectionMode == 'host' and 'lobby.chart_select_request' or 'lobby.chart_verify_request', {
+    BBT.command((BBT.chartSelectionMode == 'host' or BBT.chartSelectionMode == 'setlist') and 'room.chart_select_request' or 'room.chart_verify_request', {
       path = packagePath,
       levelPath = levelPath,
       songName = BBT.localChart.songName,
       variant = BBT.localChart.variantName,
       expectedMaxHits = BBT.localChart.expectedMaxHits,
+      appendToSetlist = BBT.chartSelectionMode == 'setlist',
     })
   elseif packagePath then
     BBT.lastError = 'Chart notes were not preloaded; wait for the song preview and select it again'
@@ -206,15 +335,16 @@ function BBT.init(distribution, modPath)
   _G.BBT_ACTIVE_DISTRIBUTION = distribution
   BBT.distribution = distribution
   BBT.modPath = modPath
+  if os.getenv('BBT_RENDERER_FRAME_PATH') then
+    local rendererOk, renderer = pcall(require, 'bbt.renderer')
+    if rendererOk then renderer.init() end
+  end
   BBT.context.runId = 'run_' .. tostring(os.time()) .. '_' .. tostring(math.random(100000, 999999))
   if bs and bs.states and not bs.states.Online then
     local ok, factory = pcall(require, 'bbt.online_state')
     if ok then bs.states.Online = factory end
   end
-  local threadPath = modPath .. '/bbt/ipc_thread.lua'
-  local ok, thread = pcall(love.thread.newThread, threadPath)
-  if ok then BBT.ipcThread = thread; thread:start() else if log then log('BBT IPC failed: ' .. tostring(thread), 'warning') end end
-  BBT.send('client.hello', { clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = distribution, mods = {} })
+  if BBTRenderer and BBTRenderer.active then return BBT end
   return BBT
 end
 
@@ -242,6 +372,7 @@ function BBT.installHooks()
   local addToScore = GameManager.addToScore
   local handleMiss = GameManager.handleMiss
   local addMineToTotal = GameManager.addMineToTotal
+  local getTapInputs = GameManager.getTapInputs
   if not addToScore or not handleMiss or not addMineToTotal then return end
   GameManager.addToScore = function(self, ...)
     local before = totals()
@@ -261,6 +392,16 @@ function BBT.installHooks()
     local result = { addMineToTotal(self, ...) }
     if totals().currentMaxHits ~= before.currentMaxHits then emitScoreDelta() end
     return unpack(result)
+  end
+  if getTapInputs then
+    GameManager.getTapInputs = function(self, ...)
+      if BBTRenderer and BBTRenderer.active then return BBTRenderer.tapInputs() end
+      local pressed, released = getTapInputs(self, ...)
+      if pressed or released then
+        BBT.send('input.tap', { pressed = pressed == true, released = released == true, beat = cs and cs.cBeat or 0 })
+      end
+      return pressed, released
+    end
   end
   BBT.installedHooks = true
 end
@@ -284,21 +425,42 @@ end
 
 local function handleCommand(raw)
   local message = decode(raw)
-  if not message or message.version ~= 1 then return end
-  BBT.companionConnected = true
-  if message.type == 'lobby.context' then
+  if not message then return end
+  if message.version ~= BBT.protocolVersion then
+    BBT.lastError = 'Incompatible runtime protocol. Re-run the Beatblock Together installer.'
+    return
+  end
+  if message.type ~= 'runtime.launch_status' and message.type ~= 'runtime.error' then
+    BBT.companionConnected = true
+  end
+  if message.type == 'room.context' or message.type == 'lobby.context' then
     BBT.context.lobbyId = message.payload.lobbyId or BBT.context.lobbyId
     BBT.context.lobbyName = message.payload.lobbyName or BBT.context.lobbyName
     BBT.context.playerName = message.payload.playerName or BBT.context.playerName
     BBT.context.userId = message.payload.userId or BBT.context.userId
-  elseif message.type == 'companion.ready' then
+  elseif message.type == 'runtime.ready' then
     BBT.context.playerName = message.payload.displayName or BBT.context.playerName
-    BBT.context.userId = message.payload.userId or BBT.context.userId
+    BBT.context.sessionId = message.payload.sessionId or BBT.context.sessionId
     BBT.context.role = message.payload.role or BBT.context.role
-  elseif message.type == 'lobby.start_scheduled' then
+    BBT.companionConnected = true
+    BBT.connected = message.payload.connection == 'hosting' or message.payload.connection == 'connected'
+    BBT.runtimeStarting = false
+    if message.payload.runtimeTimeMs then
+      BBT.serverMonotonicOffsetMs = message.payload.runtimeTimeMs - monotonicMs()
+      BBT.clockSynchronized = true
+      BBT.clockRoundTripMs = 0
+    end
+  elseif message.type == 'room.start_scheduled' or message.type == 'lobby.start_scheduled' then
+    if message.payload.runtimeTimeMs then
+      BBT.serverMonotonicOffsetMs = message.payload.runtimeTimeMs - monotonicMs()
+      BBT.clockSynchronized = true
+    end
     BBT.scheduledStartTimeMs = message.payload.serverStartTimeMs
-  elseif message.type == 'lobby.snapshot' then
+  elseif message.type == 'room.snapshot' or message.type == 'lobby.snapshot' then
     BBT.lastLobby = message.payload
+    BBT.connected = message.payload.lifecycle ~= 'closed' and message.payload.id ~= 'offline'
+    BBT.context.lobbyId = message.payload.id or BBT.context.lobbyId
+    BBT.context.lobbyName = message.payload.name or BBT.context.lobbyName
     BBT.scheduledStartTimeMs = message.payload.scheduledStartTimeMs or BBT.scheduledStartTimeMs
     if message.payload.chart then
       BBT.chartVerified = BBT.localChart ~= nil
@@ -307,8 +469,8 @@ local function handleCommand(raw)
     else
       BBT.chartVerified = false
     end
-    if message.payload.players then
-      for _, player in ipairs(message.payload.players) do
+    if message.payload.participants then
+      for _, player in ipairs(message.payload.participants) do
         if player.displayName == BBT.context.playerName then BBT.lastRank = player.rank or BBT.lastRank end
       end
     end
@@ -316,8 +478,21 @@ local function handleCommand(raw)
     BBT.chartVerified = message.payload.verified == true
     if BBT.localChart then BBT.localChart.hash = message.payload.hash end
     if not BBT.chartVerified then BBT.lastError = message.payload.reason or 'Chart verification failed' end
-  elseif message.type == 'companion.error' then
-    BBT.lastError = message.payload.message or 'The companion rejected the command'
+  elseif message.type == 'runtime.snapshot' then
+    BBT.runtimeSnapshot = message.payload
+    BBT.lastLobby = message.payload.room or BBT.lastLobby
+    BBT.renderers = message.payload.renderers or {}
+    BBT.history = message.payload.history or {}
+    BBT.settings = message.payload.settings or BBT.settings
+    if BBT.settings and BBT.settings.hudEnabled ~= nil then BBT.hudEnabled = BBT.settings.hudEnabled == true end
+    BBT.diagnostics = message.payload.diagnostics or BBT.diagnostics
+  elseif message.type == 'control.ack' then
+    if message.payload.requestId == BBT.pendingRequestId then BBT.pendingRequestId = nil end
+  elseif message.type == 'runtime.error' or message.type == 'control.error' then
+    BBT.lastError = message.payload.message or 'The runtime rejected the command'
+    if message.type == 'runtime.error' then BBT.runtimeStarting = false end
+  elseif message.type == 'runtime.launch_status' then
+    BBT.runtimeLaunchStatus = message.payload.phase
   elseif message.type == 'clock.pong' then
     local clientSend = message.payload.clientSendTimeMs
     local companionReceive = message.payload.companionReceiveTimeMs
@@ -329,10 +504,6 @@ local function handleCommand(raw)
       BBT.clockRoundTripMs = roundTrip
       BBT.clockSynchronized = true
     end
-  elseif message.type == 'gateway.ready' then
-    BBT.connected = true
-  elseif message.type == 'gateway.disconnected' then
-    BBT.connected = false
   end
 end
 
@@ -349,7 +520,7 @@ function BBT.drawCountdown()
 end
 
 function BBT.drawRaceHud()
-  if BBT.context.lobbyId == 'offline' or not BBT.lastLobby then return end
+  if not BBT.hudEnabled or BBT.context.lobbyId == 'offline' or not BBT.lastLobby then return end
   local player = BBT.currentPlayer()
   love.graphics.setFont(fonts.digitalDisco)
   color()
@@ -358,17 +529,50 @@ function BBT.drawRaceHud()
   love.graphics.rectangle('line', project.res.x - 174, 8, 166, 45)
   local rank = player and player.rank or BBT.lastRank or 1
   local total = 0
-  for _, value in ipairs(BBT.lastLobby.players or {}) do if not value.spectator then total = total + 1 end end
-  love.graphics.printf('ONLINE  #' .. tostring(rank) .. '/' .. tostring(math.max(1, total)), project.res.x - 168, 13, 154, 'left')
-  if player then love.graphics.printf(string.format('%.2f%%  %d combo', player.accuracy or 100, player.totals and player.totals.combo or 0), project.res.x - 168, 31, 154, 'left') end
+  for _, value in ipairs(BBT.lastLobby.participants or {}) do if value.role ~= 'spectator' then total = total + 1 end end
+  local connection = BBT.connected and 'LINK' or 'WARN'
+  love.graphics.printf(connection .. '  #' .. tostring(rank) .. '/' .. tostring(math.max(1, total)), project.res.x - 168, 13, 154, 'left')
+  if player then love.graphics.printf(string.format('%.2f%%  %+.2f', player.accuracy or 100, (player.accuracy or 100) - 100), project.res.x - 168, 31, 154, 'left') end
 end
 
 function BBT.update(dt)
   if BBT.disabled then return end
   BBT.installHooks()
+  if BBTRenderer and BBTRenderer.active then BBTRenderer.update() end
+  if not BBT.sessionActive then return end
+  if BBT.ipcThread then
+    local workerRunning = BBT.ipcThread:isRunning()
+    if not BBT.runtimeLaunchStatus then BBT.runtimeLaunchStatus = workerRunning and 'ipc worker running' or 'ipc worker stopped' end
+    if not workerRunning then
+      local workerError = BBT.ipcThread:getError()
+      BBT.runtimeStarting = false
+      BBT.runtimeLaunchStatus = 'ipc worker stopped'
+      if workerError then BBT.lastError = 'Runtime IPC stopped: ' .. tostring(workerError) end
+    end
+  end
   local incoming = love.thread.getChannel('bbt_inbound')
   while incoming:getCount() > 0 do handleCommand(incoming:pop()) end
   BBT.snapshotTimer = BBT.snapshotTimer + dt
+  BBT.renderTimer = BBT.renderTimer + dt
+  BBT.keyframeTimer = BBT.keyframeTimer + dt
+  if BBT.renderTimer >= 1 / 60 then
+    BBT.renderTimer = 0
+    local tapMask = 0
+    if maininput and maininput.down then
+      local ok1, down1 = pcall(maininput.down, maininput, 'tap1')
+      local ok2, down2 = pcall(maininput.down, maininput, 'tap2')
+      if ok1 and down1 then tapMask = tapMask + 1 end
+      if ok2 and down2 then tapMask = tapMask + 2 end
+    end
+    local flags = 0
+    if cs and cs.level and not cs.results then flags = flags + 1 end
+    if cs and cs.paused then flags = flags + 2 end
+    BBT.send('render.sample', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, tapMask = tapMask, flags = flags })
+  end
+  if BBT.keyframeTimer >= 1 then
+    BBT.keyframeTimer = 0
+    BBT.send('render.keyframe', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, totals = totals(), activeNotes = cs and cs.notes and #cs.notes or 0 })
+  end
   if BBT.snapshotTimer < 1 / 30 then return end
   BBT.snapshotTimer = 0
   local current = totals()

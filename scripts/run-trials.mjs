@@ -5,37 +5,72 @@ import { cargoCommand } from './run-cargo.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const reportDirectory = resolve(root, 'reports', 'trial-runs');
-const pnpmCli = process.env.npm_execpath;
-const pnpmCommand = pnpmCli ? process.execPath : 'pnpm';
-const pnpmArgs = (args) => (pnpmCli ? [pnpmCli, ...args] : args);
 await mkdir(reportDirectory, { recursive: true });
 
 const commands = [
   {
-    name: 'TypeScript unit and stress tests',
-    command: pnpmCommand,
-    args: pnpmArgs(['test']),
-  },
-  { name: 'Protocol/build verification', command: pnpmCommand, args: pnpmArgs(['build']) },
-  {
-    name: 'In-game mod conformance and packaging',
-    command: pnpmCommand,
-    args: pnpmArgs(['test:mod']),
+    name: 'Protocol v2 typecheck',
+    command: process.execPath,
+    args: ['node_modules/typescript/bin/tsc', '-p', 'protocol/tsconfig.json'],
   },
   {
-    name: 'Rust companion and Beatblock Lua runtime tests',
+    name: 'Protocol v2 schema generation',
+    command: process.execPath,
+    args: ['scripts/generate-protocol.mjs'],
+  },
+  {
+    name: 'Protocol v2 tests',
+    command: process.execPath,
+    args: ['node_modules/vitest/vitest.mjs', 'run', 'protocol/test/score.test.ts'],
+  },
+  {
+    name: 'Rust runtime, installer, Lua, and stress tests',
     command: cargoCommand(),
-    args: ['test', '--manifest-path', 'companion/Cargo.toml', '--release'],
+    args: [
+      'test',
+      '--manifest-path',
+      'companion/Cargo.toml',
+      '--release',
+      '--all-targets',
+      '--features',
+      'installer-ui',
+    ],
   },
   {
-    name: 'Server maximum-capacity benchmark',
-    command: pnpmCommand,
-    args: pnpmArgs(['--filter', '@bbt/server', 'benchmark']),
+    name: 'Package both in-game adapters',
+    command: process.execPath,
+    args: ['scripts/package-mods.mjs'],
   },
   {
-    name: 'Companion I/O benchmark',
+    name: 'In-game mod conformance',
+    command: process.execPath,
+    args: ['scripts/test-mod.mjs'],
+  },
+  {
+    name: 'Hidden runtime lifecycle and resource gate',
+    command: process.execPath,
+    args: ['scripts/test-runtime-lifecycle.mjs'],
+  },
+  {
+    name: '16-player / 32-spectator direct-host simulation',
     command: cargoCommand(),
-    args: ['bench', '--manifest-path', 'companion/Cargo.toml', '--bench', 'companion_bench'],
+    args: [
+      'run',
+      '--manifest-path',
+      'companion/Cargo.toml',
+      '--release',
+      '--example',
+      'host_room_trial',
+    ],
+  },
+  {
+    // `cargo test --all-targets` above executes the benchmark target and writes
+    // its report. Verify that artifact here instead of compiling the same
+    // executable a second time, which Windows Application Control may reject
+    // solely because it has a new transient filename.
+    name: 'Runtime I/O benchmark report',
+    command: process.execPath,
+    args: ['scripts/verify-benchmark-report.mjs'],
   },
 ];
 
@@ -46,9 +81,12 @@ for (const trial of commands) {
   const result = spawnSync(trial.command, trial.args, {
     cwd: root,
     stdio: 'inherit',
+    shell: process.platform === 'win32' && trial.command === 'pnpm',
     env: {
       ...process.env,
-      BBT_BENCH_REPORT: resolve(reportDirectory, 'companion-benchmark-latest.json'),
+      BBT_BENCH_REPORT: resolve(reportDirectory, 'runtime-benchmark-latest.json'),
+      BBT_HOST_TRIAL_REPORT: resolve(reportDirectory, 'host-room-simulation-latest.json'),
+      CI: 'true',
     },
   });
   runs.push({ name: trial.name, passed: result.status === 0, durationMs: Date.now() - started });
@@ -64,19 +102,20 @@ const readJson = async (name) => {
   }
 };
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: new Date().toISOString(),
   passed: runs.length === commands.length && runs.every((run) => run.passed),
   environment: { platform: process.platform, architecture: process.arch, node: process.version },
   runs,
-  server: await readJson('server-stress-latest.json'),
-  companion: await readJson('companion-benchmark-latest.json'),
+  hostRoom: await readJson('host-room-simulation-latest.json'),
+  runtime: await readJson('runtime-benchmark-latest.json'),
+  lifecycle: await readJson('runtime-lifecycle-latest.json'),
 };
 await writeFile(
   resolve(reportDirectory, 'full-capability-latest.json'),
   `${JSON.stringify(report, null, 2)}\n`,
 );
-const markdown = `# Beatblock Together full-capability trial\n\nGenerated: ${report.generatedAt}\n\nOverall: **${report.passed ? 'PASS' : 'FAIL'}**\n\n${runs.map((run) => `- ${run.passed ? 'PASS' : 'FAIL'} - ${run.name}: ${(run.durationMs / 1000).toFixed(2)} s`).join('\n')}\n\nMachine-readable metrics are in \`full-capability-latest.json\`, \`server-stress-latest.json\`, and \`companion-benchmark-latest.json\`.\n`;
+const markdown = `# Beatblock Together installer/runtime capability trial\n\nGenerated: ${report.generatedAt}\n\nAutomated gate: **${report.passed ? 'PASS' : 'FAIL'}**\n\n${runs.map((run) => `- ${run.passed ? 'PASS' : 'FAIL'} - ${run.name}: ${(run.durationMs / 1000).toFixed(2)} s`).join('\n')}\n\nMachine-readable metrics are in \`full-capability-latest.json\`, \`host-room-simulation-latest.json\`, \`runtime-lifecycle-latest.json\`, and \`runtime-benchmark-latest.json\`. Physical WAN, OBS, GPU, and clean-machine release gates use the manual trial sheets under \`docs/trials\`; simulations are not reported as physical results.\n`;
 await writeFile(resolve(reportDirectory, 'full-capability-latest.md'), markdown);
 console.log(`\nFull trial: ${report.passed ? 'PASS' : 'FAIL'}`);
 console.log(`Report: ${resolve(reportDirectory, 'full-capability-latest.md')}`);

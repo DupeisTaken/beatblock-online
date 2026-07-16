@@ -2,8 +2,8 @@
   "id": "beatblock-together",
   "name": "Beatblock Together",
   "author": "Beatblock Together contributors",
-  "description": "Invite-only online competition, telemetry, and OBS integration.",
-  "version": "0.1.0-alpha.1",
+  "description": "Direct-IP hosted competition, telemetry, and OBS rendering.",
+  "version": "0.2.0-alpha.1",
   "config": {
     "showConnectionIndicator": true
   }

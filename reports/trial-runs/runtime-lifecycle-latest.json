@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-15T16:09:35.061Z",
+  "passed": true,
+  "readiness": "runtime.ready",
+  "protocolVersion": 2,
+  "workingSetBytes": 16248832,
+  "idleWorkingSetTargetBytes": 31457280,
+  "idleWorkingSetTargetMet": true,
+  "duplicateMutexRejected": true,
+  "explicitSessionShutdown": true,
+  "parentExitCleanup": true,
+  "visibleConsoleRequested": false
+}

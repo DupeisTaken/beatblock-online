@@ -1,0 +1,24 @@
+{
+  "generatedAtMs": 1784131767685,
+  "metrics": {
+    "chartCacheSpeedup": 37.43944832798035,
+    "chartCachedMs": 0.5293,
+    "chartColdMs": 19.8167,
+    "exportMeanMs": 35.18428600000001,
+    "exportP95Ms": 39.274499999999996,
+    "journalEventsPerSecond": 2409.051094046464,
+    "journalRecoveredEvents": 5000
+  },
+  "passed": true,
+  "schemaVersion": 1,
+  "thresholds": {
+    "cacheHitFasterThanCold": true,
+    "exportP95Ms": 100,
+    "journalEventsPerSecond": 100
+  },
+  "workload": {
+    "chartBytes": 4194304,
+    "journalEvents": 5000,
+    "snapshots": 250
+  }
+}

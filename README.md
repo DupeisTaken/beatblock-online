@@ -1,66 +1,54 @@
 # Beatblock Together
 
-Beatblock Together is an invite-only, self-hostable competition layer for Beatblock. The alpha synchronizes private races, verifies complete chart packages, recomputes live rankings on the server, and exposes telemetry to spectators, OBS, and other local applications.
+Beatblock Together is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 telemetry spectators. The host manages charts, readiness, starts, rankings, spectator streams, OBS exports, and match history from inside Beatblock.
 
-This repository contains one shared Lua gameplay core with standalone Lovely and BeatblockPlus 2.x packages, a Windows Rust companion, a Fastify/PostgreSQL service, and a responsive React broadcast console.
+## Player quick start
 
-## Quick start
+1. Download and run [BeatblockTogetherInstaller.exe](release/BeatblockTogetherInstaller.exe).
+2. Confirm the **Selected game** card points to the folder you intend to modify. A green **SUPPORTED** badge identifies the certified build; developer copies require the explicit uncertified-build override.
+3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If a protected game, OBS, or firewall folder rejects the write, approve the native Windows administrator prompt. A result banner and one completion dialog report the final verified outcome.
+4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
+5. Open **Online**, then host a room or join with the host's `IP:port` and password.
+6. Follow the dashboard's highlighted next action to select or verify the chart, ready players, and start the race. Select a roster row for participant details; the bottom utility bar opens Setlist, Spectate + OBS, History, and Settings without losing dashboard position.
+7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
 
-Requirements for local development are Node.js 22+ and pnpm 10. Building the companion additionally requires the stable Rust toolchain and Windows SDK.
+![Concentrated host dashboard](reports/trial-runs/dashboard-room-latest.png)
 
-```powershell
-pnpm install
-pnpm build
-pnpm test
-pnpm package:mods
+## Developer commands
+
+Install Node workspace dependencies once with `pnpm install`. Rust must be available on `PATH`.
+
+```text
+pnpm generate:protocol  Regenerate protocol v2 schemas
+pnpm test:mod           Package and validate both Lua adapters
+pnpm test               Run protocol and Rust unit tests
+pnpm test:stress        Run direct-room and export stress tests
+pnpm trial              Run the complete acceptance and benchmark suite
+pnpm build              Build the protocol and self-contained Windows installer
 ```
 
-Install the standalone mod from a repository checkout with:
+Development scripts operate on the repository and disposable `.test` copy. Players install and launch through the GUI and Steam.
 
-```powershell
-.\scripts\install-mod.ps1 `
-  -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Beatblock" `
-  -Distribution standalone `
-  -LovelyArchive "$HOME\Downloads\lovely-x86_64-pc-windows-msvc.zip"
-```
+## Detailed documentation
 
-See [injection and installation paths](docs/injection.md) for the manual Lovely route, BeatblockPlus drag-and-drop route, isolated developer injection, exact folder trees, and recovery steps.
+- [Installation, repair, adapters, and injection](docs/injection.md)
+- [Adaptive Online dashboard and controls](docs/mod-guide.md)
+- [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
+- [OBS streams, local API, and text exports](docs/obs-setup.md)
+- [Protocol v2](docs/protocol.md)
+- [Installer/runtime architecture](docs/architecture.md)
+- [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 
-Run the maximum-capacity stress gate, performance benchmarks, or the complete demonstrator:
+The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
 
-```powershell
-pnpm test:stress
-pnpm benchmark
-pnpm trial
-```
+## Components
 
-Run a memory-backed development instance and the web console:
+- `mod`: shared Lua telemetry/gameplay core and mutually exclusive standalone Lovely and BeatblockPlus adapters.
+- `companion`: feature-gated Rust installer and hidden runtime sharing installer, networking, SQLite, renderer, API, and export libraries.
+- `obs-plugin`: native Stream A-D video source and shared-memory frame integration.
+- `protocol`: protocol v2 JSON Schema and TypeScript conformance implementation.
+- `reports/trial-runs`: machine-readable and Markdown acceptance evidence.
 
-```powershell
-$env:ALLOW_INSECURE_HTTP='true'
-pnpm dev
-```
+## Current alpha scope
 
-For self-hosting, copy `.env.example`, set unique secrets and a domain, then run:
-
-```powershell
-docker compose --env-file .env -f deploy/compose.yml up -d --build
-docker compose --env-file .env -f deploy/compose.yml exec server node server/dist/cli.js invite-create --role organizer
-```
-
-## Packages
-
-- `protocol` — protocol v1 schemas, scoring rules, and shared TypeScript contracts.
-- `server` — HTTPS/WSS API, invites, sessions, lobbies, authoritative scoring, persistence, and `bbtctl`.
-- `web` — spectator console plus four OBS layouts.
-- `companion` — loopback API, IPC bridge, event journal, chart hashing, credential vault, tray, and atomic exports.
-- `mod` — shared hooks and two mutually exclusive package bootstraps.
-- `deploy` — PostgreSQL/Caddy Docker deployment.
-
-See [injection and installation](docs/injection.md), [mod and player guide](docs/mod-guide.md), [architecture](docs/architecture.md), [operator guide](docs/operator-guide.md), [OBS setup](docs/obs-setup.md), [protocol](docs/protocol.md), and [benchmark/trial guide](docs/benchmarking.md).
-
-## Alpha boundaries
-
-Spectating is telemetry-based; gameplay video still comes from game capture. The alpha does not include public signup, matchmaking, chat, chart distribution, replay rendering, global ratings, or a claim of cheat-proof results.
-
-Remote production instances require HTTPS. Invite and refresh credentials are hashed at rest, refresh tokens rotate, Windows credentials live in Credential Manager, browser handoffs expire after 60 seconds, and local APIs bind only to `127.0.0.1` with a per-install token.
+Windows 10 2004+ and Windows 11 x64 are supported. A room supports 16 players, 32 telemetry spectators, four stable host renderer slots, password admission, optional host approval, synchronized starts, chart verification, authoritative event-derived rankings, SQLite history, and atomic OBS text exports.

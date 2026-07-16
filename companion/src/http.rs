@@ -1,24 +1,27 @@
 use crate::{
     app_state::AppState,
     chart_hash::canonical_chart_hash_cached,
-    model::{ChartHashRequest, CompanionConfig, RedeemRequest, SpectateRequest},
+    model::{
+        AdmissionRequest, ChartHashRequest, ChartLock, CompanionConfig, HostRoomRequest,
+        JoinRoomRequest, ReadyRequest, RendererRequest, StartRequest, DEFAULT_HOST_PORT,
+    },
 };
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Query, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
     },
     http::{header, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
-    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
@@ -27,34 +30,51 @@ struct TokenQuery {
     token: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LockChartRequest {
+    chart: ChartLock,
+    #[serde(default)]
+    append_to_setlist: bool,
+}
+
 fn authorized(state: &AppState, token: &Option<String>) -> Result<(), StatusCode> {
-    if token.as_deref() == Some(state.local_token.as_str()) {
+    if token.as_deref()
+        == Some(
+            state
+                .local_token
+                .read()
+                .expect("token lock poisoned")
+                .as_str(),
+        )
+    {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
 }
 
-pub fn router(state: AppState, web_dir: std::path::PathBuf) -> Router {
-    let index = web_dir.join("index.html");
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/state", get(get_state))
-        .route("/v1/lobby", get(get_lobby))
+        .route("/v1/room", get(get_room))
+        .route("/v1/lobby", get(get_room))
         .route("/v1/players", get(get_players))
         .route("/v1/run", get(get_state))
+        .route("/v1/streams", get(get_streams))
+        .route("/v1/history", get(get_history))
+        .route("/v1/diagnostics", get(get_diagnostics))
         .route("/v1/events", get(events))
         .route("/v1/config", get(get_config).put(put_config))
-        .route("/v1/redeem", post(redeem))
         .route("/v1/chart-hash", post(chart_hash))
-        .route("/v1/spectate", post(spectate))
-        .route("/v1/lobbies", post(create_lobby))
-        .route("/v1/lobbies/join", post(join_lobby))
-        .route("/v1/lobby/chart", put(lock_chart))
-        .route("/v1/lobby/ready", put(set_ready))
-        .route("/v1/lobby/start", post(start_lobby))
-        .route("/v1/lobby/close", post(close_lobby))
-        .nest_service("/assets", ServeDir::new(web_dir.join("assets")))
-        .fallback_service(ServeFile::new(index))
+        .route("/v1/host", post(host_room))
+        .route("/v1/join", post(join_room))
+        .route("/v1/room/admission", put(admit))
+        .route("/v1/room/chart", put(lock_chart))
+        .route("/v1/room/ready", put(set_ready))
+        .route("/v1/room/start", post(start_room))
+        .route("/v1/room/close", post(close_room))
+        .route("/v1/streams/{slot}", put(configure_stream))
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin, _| {
@@ -72,32 +92,81 @@ pub fn router(state: AppState, web_dir: std::path::PathBuf) -> Router {
 async fn get_state(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-) -> Result<Json<crate::model::GameplayState>, StatusCode> {
-    authorized(&state, &query.token)?;
-    Ok(Json(state.gameplay.read().await.clone()))
-}
-async fn get_lobby(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     authorized(&state, &query.token)?;
-    Ok(Json(state.lobby.read().await.clone()))
+    Ok(Json(json!({
+        "gameplay": state.gameplay.read().await.clone(),
+        "connection": state.connection_status.read().await.clone(),
+        "hosting": state.is_host.load(std::sync::atomic::Ordering::Relaxed),
+        "sessionId": state.local_session_id.read().await.clone(),
+    })))
 }
-async fn get_players(
+
+async fn get_room(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     authorized(&state, &query.token)?;
     Ok(Json(
-        state
-            .lobby
-            .read()
-            .await
-            .get("players")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
+        serde_json::to_value(&state.room.read().await.snapshot).unwrap_or_default(),
     ))
 }
+
+async fn get_players(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    authorized(&state, &query.token)?;
+    Ok(Json(json!(state.room.read().await.snapshot.participants)))
+}
+
+async fn get_streams(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    authorized(&state, &query.token)?;
+    Ok(Json(json!({
+        "streams": state.renderer.slots(),
+        "budgetWarning": state.renderer.budget_warning(),
+    })))
+}
+
+async fn get_history(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    authorized(&state, &query.token)?;
+    state
+        .storage
+        .history()
+        .map(|history| Json(json!(history)))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_diagnostics(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    authorized(&state, &query.token)?;
+    let local_addresses = local_ip_address::list_afinet_netifas()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, address)| address.is_ipv4())
+        .map(|(name, address)| json!({"adapter":name,"address":address.to_string()}))
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "protocolVersion": crate::model::PROTOCOL_VERSION,
+        "runtimeVersion": env!("CARGO_PKG_VERSION"),
+        "connection": state.connection_status.read().await.clone(),
+        "hosting": state.is_host.load(std::sync::atomic::Ordering::Relaxed),
+        "peerCount": state.network.peer_count().await,
+        "localAddresses": local_addresses,
+        "rendererBudgetWarning": state.renderer.budget_warning(),
+        "dataDirectory": state.data_dir.to_string_lossy(),
+        "relayAvailable": false,
+    })))
+}
+
 async fn get_config(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
@@ -105,17 +174,20 @@ async fn get_config(
     authorized(&state, &query.token)?;
     Ok(Json(state.config.read().await.clone()))
 }
+
 async fn put_config(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
     Json(config): Json<CompanionConfig>,
 ) -> Result<Json<CompanionConfig>, StatusCode> {
     authorized(&state, &query.token)?;
-    persist_config(&state, &config)
-        .await
+    let bytes = serde_json::to_vec_pretty(&config).map_err(|_| StatusCode::BAD_REQUEST)?;
+    std::fs::write(state.data_dir.join("config.json"), bytes)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    *state.config.write().await = config.clone();
     Ok(Json(config))
 }
+
 async fn chart_hash(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
@@ -130,380 +202,223 @@ async fn chart_hash(
         })
 }
 
-async fn redeem(
+async fn host_room(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-    Json(request): Json<RedeemRequest>,
+    Json(request): Json<HostRoomRequest>,
 ) -> Response {
     if authorized(&state, &query.token).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let endpoint = format!(
-        "{}/api/v1/auth/redeem",
-        request.instance_url.trim_end_matches('/')
-    );
-    let response = match reqwest::Client::new().post(endpoint).json(&json!({ "inviteCode": request.invite_code, "displayName": request.display_name, "deviceName": request.device_name.unwrap_or_else(|| "Windows PC".into()) })).send().await {
-        Ok(response) => response, Err(error) => return (StatusCode::BAD_GATEWAY, Json(json!({"error": error.to_string()}))).into_response(),
-    };
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .unwrap_or_else(|_| json!({"error":"Invalid instance response"}));
-    if !status.is_success() {
-        return (
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-            Json(value),
+    match state
+        .host_room(
+            request.name,
+            request.password,
+            request.port.unwrap_or(DEFAULT_HOST_PORT),
+            request
+                .admission_mode
+                .unwrap_or(crate::model::AdmissionMode::HostApproval),
         )
-            .into_response();
+        .await
+    {
+        Ok(address) => Json(json!({
+            "address":address.to_string(),
+            "joinUri":format!("bbt://{}?v=2", public_display_address(address)),
+            "room":state.room.read().await.snapshot.clone(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
     }
-    if let Some(token) = value.get("accessToken").and_then(Value::as_str) {
-        if let Ok(entry) = keyring::Entry::new("BeatblockTogether", "access-token") {
-            let _ = entry.set_password(token);
-        }
-    }
-    if let Some(token) = value.get("refreshToken").and_then(Value::as_str) {
-        if let Ok(entry) = keyring::Entry::new("BeatblockTogether", "refresh-token") {
-            let _ = entry.set_password(token);
-        }
-    }
-    let config = CompanionConfig {
-        instance_url: Some(request.instance_url),
-        user_id: value
-            .pointer("/user/id")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        display_name: value
-            .pointer("/user/displayName")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        role: value
-            .pointer("/user/role")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-    };
-    if let Err(error) = persist_config(&state, &config).await {
-        tracing::warn!(%error, "config persistence failed");
-    }
-    let _ = state.events.send(crate::model::Envelope {
-        version: 1,
-        kind: "companion.ready".into(),
-        sequence: 0,
-        timestamp_ms: unix_ms(),
-        payload: json!({
-            "configured": true,
-            "userId": config.user_id,
-            "displayName": config.display_name,
-            "role": config.role
-        }),
-    });
-    Json(value).into_response()
 }
 
-async fn spectate(
+async fn join_room(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-    Json(request): Json<SpectateRequest>,
+    Json(request): Json<JoinRoomRequest>,
 ) -> Response {
     if authorized(&state, &query.token).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let config = state.config.read().await.clone();
-    let Some(instance_url) = config.instance_url else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error":"No competition instance is configured"})),
-        )
-            .into_response();
-    };
-    let access_token = match keyring::Entry::new("BeatblockTogether", "access-token")
-        .and_then(|entry| entry.get_password())
-    {
-        Ok(token) => token,
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error":"Remote session is unavailable"})),
-            )
-                .into_response()
-        }
-    };
-    let response = match reqwest::Client::new()
-        .post(format!(
-            "{}/api/v1/auth/browser-ticket",
-            instance_url.trim_end_matches('/')
-        ))
-        .bearer_auth(access_token)
-        .send()
-        .await
-    {
-        Ok(response) => response,
+    let address = match resolve_address(&request.address).await {
+        Ok(address) => address,
         Err(error) => {
             return (
-                StatusCode::BAD_GATEWAY,
+                StatusCode::BAD_REQUEST,
                 Json(json!({"error":error.to_string()})),
             )
                 .into_response()
         }
     };
-    if !response.status().is_success() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Unable to create browser handoff"})),
+    match state
+        .join_room(
+            address,
+            &request.password,
+            &request.display_name,
+            request.role,
         )
-            .into_response();
+        .await
+    {
+        Ok(session_id) => Json(json!({"sessionId":session_id,"address":address})).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
     }
-    let value: Value = response.json().await.unwrap_or_default();
-    let Some(ticket) = value.get("ticket").and_then(Value::as_str) else {
-        return StatusCode::BAD_GATEWAY.into_response();
-    };
-    let url = format!(
-        "{}/?api={}&lobby={}&ticket={}",
-        instance_url.trim_end_matches('/'),
-        url::form_urlencoded::byte_serialize(instance_url.as_bytes()).collect::<String>(),
-        url::form_urlencoded::byte_serialize(request.lobby_id.as_bytes()).collect::<String>(),
-        url::form_urlencoded::byte_serialize(ticket.as_bytes()).collect::<String>()
-    );
-    Json(json!({ "url": url, "expiresInSeconds": 60 })).into_response()
 }
 
-async fn create_lobby(
+async fn admit(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-    Json(body): Json<Value>,
+    Json(request): Json<AdmissionRequest>,
 ) -> Response {
-    proxy_lobby(
-        state,
-        query,
-        reqwest::Method::POST,
-        "/api/v1/lobbies".into(),
-        body,
+    if authorized(&state, &query.token).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_response(
+        state
+            .admit(&request.session_id, request.admit, request.role)
+            .await,
     )
-    .await
-}
-
-async fn join_lobby(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
-    Json(body): Json<Value>,
-) -> Response {
-    let Some(code) = body.get("code").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"code is required"})),
-        )
-            .into_response();
-    };
-    proxy_lobby(
-        state,
-        query,
-        reqwest::Method::POST,
-        format!(
-            "/api/v1/lobbies/{}/join",
-            url::form_urlencoded::byte_serialize(code.as_bytes()).collect::<String>()
-        ),
-        json!({ "spectator": body.get("spectator").and_then(Value::as_bool).unwrap_or(false) }),
-    )
-    .await
 }
 
 async fn lock_chart(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-    Json(body): Json<Value>,
+    Json(request): Json<LockChartRequest>,
 ) -> Response {
-    let Some(lobby_id) = body.get("lobbyId").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"lobbyId is required"})),
-        )
-            .into_response();
-    };
-    let chart = body.get("chart").cloned().unwrap_or(Value::Null);
-    proxy_lobby(
-        state,
-        query,
-        reqwest::Method::PUT,
-        format!("/api/v1/lobbies/{lobby_id}/chart"),
-        chart,
+    if authorized(&state, &query.token).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_response(
+        state
+            .lock_chart(request.chart, request.append_to_setlist)
+            .await,
     )
-    .await
 }
 
 async fn set_ready(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
-    Json(mut body): Json<Value>,
-) -> Response {
-    let Some(lobby_id) = body
-        .get("lobbyId")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-    else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"lobbyId is required"})),
-        )
-            .into_response();
-    };
-    let client = state.client.read().await.clone();
-    if let Some(object) = body.as_object_mut() {
-        object.remove("lobbyId");
-        object.insert("client".into(), client);
-    }
-    proxy_lobby(
-        state,
-        query,
-        reqwest::Method::PUT,
-        format!("/api/v1/lobbies/{lobby_id}/ready"),
-        body,
-    )
-    .await
-}
-
-async fn start_lobby(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
-    Json(body): Json<Value>,
-) -> Response {
-    lobby_command(state, query, body, "start").await
-}
-
-async fn close_lobby(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
-    Json(body): Json<Value>,
-) -> Response {
-    lobby_command(state, query, body, "close").await
-}
-
-async fn lobby_command(state: AppState, query: TokenQuery, body: Value, command: &str) -> Response {
-    let Some(lobby_id) = body.get("lobbyId").and_then(Value::as_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"lobbyId is required"})),
-        )
-            .into_response();
-    };
-    proxy_lobby(
-        state,
-        query,
-        reqwest::Method::POST,
-        format!("/api/v1/lobbies/{lobby_id}/{command}"),
-        json!({}),
-    )
-    .await
-}
-
-async fn proxy_lobby(
-    state: AppState,
-    query: TokenQuery,
-    method: reqwest::Method,
-    path: String,
-    body: Value,
+    Json(request): Json<ReadyRequest>,
 ) -> Response {
     if authorized(&state, &query.token).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let config = state.config.read().await.clone();
-    let Some(instance_url) = config.instance_url else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error":"No competition instance is configured"})),
-        )
-            .into_response();
-    };
-    let access_token = match keyring::Entry::new("BeatblockTogether", "access-token")
-        .and_then(|entry| entry.get_password())
-    {
-        Ok(token) => token,
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error":"Remote session is unavailable"})),
-            )
-                .into_response()
-        }
-    };
-    let response = match reqwest::Client::new()
-        .request(
-            method,
-            format!("{}{}", instance_url.trim_end_matches('/'), path),
-        )
-        .bearer_auth(access_token)
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error":error.to_string()})),
-            )
-                .into_response()
-        }
-    };
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .unwrap_or_else(|_| json!({"error":"Invalid instance response"}));
-    if status.is_success() {
-        let event = crate::model::Envelope {
-            version: 1,
-            kind: "lobby.snapshot".into(),
-            sequence: 0,
-            timestamp_ms: unix_ms(),
-            payload: value.clone(),
-        };
-        let _ = state.ingest_remote(event).await;
-        let context = crate::model::Envelope {
-            version: 1,
-            kind: "lobby.context".into(),
-            sequence: 0,
-            timestamp_ms: unix_ms(),
-            payload: json!({ "lobbyId": value.get("id"), "lobbyName": value.get("name"), "playerName": config.display_name, "userId": config.user_id }),
-        };
-        let _ = state.ingest_remote(context).await;
-    }
-    (
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-        Json(value),
-    )
-        .into_response()
+    result_response(state.set_local_ready(request.ready).await)
 }
 
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+async fn start_room(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+    Json(request): Json<StartRequest>,
+) -> Response {
+    if authorized(&state, &query.token).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.start_room(request.force).await {
+        Ok(start) => {
+            Json(json!({"scheduledStartTimeMs":start,"force":request.force})).into_response()
+        }
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn close_room(State(state): State<AppState>, Query(query): Query<TokenQuery>) -> Response {
+    if authorized(&state, &query.token).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_response(state.close_room().await)
+}
+
+async fn configure_stream(
+    State(state): State<AppState>,
+    Path(slot): Path<String>,
+    Query(query): Query<TokenQuery>,
+    Json(request): Json<RendererRequest>,
+) -> Response {
+    if authorized(&state, &query.token).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.configure_renderer(&slot, request).await {
+        Ok(stream) => Json(json!(stream)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn events(
-    ws: WebSocketUpgrade,
+    websocket: WebSocketUpgrade,
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
 ) -> Result<Response, StatusCode> {
     authorized(&state, &query.token)?;
-    Ok(ws.on_upgrade(move |socket| event_socket(socket, state)))
+    Ok(websocket.on_upgrade(move |socket| stream_events(socket, state)))
 }
-async fn event_socket(socket: WebSocket, state: AppState) {
-    let (mut sender, mut receiver) = socket.split();
+
+async fn stream_events(mut socket: WebSocket, state: AppState) {
     let mut events = state.events.subscribe();
     loop {
         tokio::select! {
-            event = events.recv() => match event { Ok(event) => if sender.send(Message::Text(serde_json::to_string(&event).unwrap_or_default().into())).await.is_err() { break; }, Err(_) => break },
-            incoming = receiver.next() => match incoming { Some(Ok(Message::Close(_))) | None => break, _ => {} }
+            event = events.recv() => match event {
+                Ok(event) => {
+                    if socket.send(Message::Text(serde_json::to_string(&event).unwrap_or_default().into())).await.is_err() { break; }
+                }
+                Err(_) => break,
+            },
+            incoming = socket.next() => match incoming {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            }
         }
     }
 }
-async fn persist_config(state: &AppState, config: &CompanionConfig) -> anyhow::Result<()> {
-    let path = state.data_dir.join("config.json");
-    let temporary = state.data_dir.join("config.json.tmp");
-    tokio::fs::write(&temporary, serde_json::to_vec_pretty(config)?).await?;
-    crate::exports::replace_file(&temporary, &path)?;
-    *state.config.write().await = config.clone();
-    Ok(())
+
+fn result_response(result: anyhow::Result<()>) -> Response {
+    match result {
+        Ok(()) => Json(json!({"ok":true})).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn resolve_address(value: &str) -> anyhow::Result<SocketAddr> {
+    let stripped = value
+        .trim()
+        .strip_prefix("bbt://")
+        .unwrap_or(value.trim())
+        .split('?')
+        .next()
+        .unwrap_or(value.trim());
+    let with_port = if stripped.rsplit_once(':').is_some() {
+        stripped.to_owned()
+    } else {
+        format!("{stripped}:{DEFAULT_HOST_PORT}")
+    };
+    tokio::net::lookup_host(with_port)
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("host address did not resolve"))
+}
+
+fn public_display_address(bound: SocketAddr) -> String {
+    if bound.ip().is_unspecified() {
+        format!("127.0.0.1:{}", bound.port())
+    } else {
+        bound.to_string()
+    }
 }

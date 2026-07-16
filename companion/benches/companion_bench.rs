@@ -1,15 +1,13 @@
 use beatblock_together_companion::{
     app_state::AppState,
     chart_hash::canonical_chart_hash_cached,
-    model::{CompanionConfig, Envelope, GameplayState},
+    model::{CompanionConfig, Envelope},
 };
 use serde_json::json;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
     time::Instant,
 };
-use tokio::sync::{broadcast, mpsc, RwLock};
 
 fn percentile(values: &mut [f64], percentile: f64) -> f64 {
     values.sort_by(|a, b| a.total_cmp(b));
@@ -17,28 +15,15 @@ fn percentile(values: &mut [f64], percentile: f64) -> f64 {
 }
 
 fn app(root: PathBuf) -> AppState {
-    let (events, _) = broadcast::channel(8192);
-    let (remote_tx, _remote_rx) = mpsc::channel(1);
-    AppState {
-        local_token: Arc::new("benchmark-token".into()),
-        gameplay: Arc::new(RwLock::new(GameplayState::default())),
-        lobby: Arc::new(RwLock::new(json!({"id":"benchmark"}))),
-        config: Arc::new(RwLock::new(CompanionConfig::default())),
-        client: Arc::new(RwLock::new(json!({}))),
-        events,
-        remote_tx,
-        data_dir: Arc::new(root),
-    }
+    AppState::new(root, "benchmark-token".into(), CompanionConfig::default())
+        .unwrap()
+        .0
 }
 
 fn envelope(kind: &str, sequence: u64, payload: serde_json::Value) -> Envelope {
-    Envelope {
-        version: 1,
-        kind: kind.into(),
-        sequence,
-        timestamp_ms: sequence,
-        payload,
-    }
+    let mut message = Envelope::new(kind, sequence, payload);
+    message.run_time_us = sequence;
+    message
 }
 
 fn report_path() -> PathBuf {

@@ -1,74 +1,97 @@
-# Beatblock mod installation and player flow
+# Adaptive Online dashboard
 
-Beatblock Together is controlled from inside Beatblock. The companion webpage is only used once for account setup and later for OBS or caster links.
+Opening **Online** lazily starts the hidden runtime, localhost API, and atomic exports. There are no equal-weight page tabs: one dashboard changes between Connect, Lobby, and Results while keeping the room, chart, verification, readiness, roster, connection, and next action visible together.
 
-## Install
+![Host dashboard with a full room](../reports/trial-runs/dashboard-room-latest.png)
 
-The complete paths, folder trees, automatic installer, developer override, verification, and recovery steps are in [Injecting Beatblock Together into Beatblock](injection.md).
+## What stays on screen
 
-The short version is:
+| Area                | Purpose                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Header              | Room name, runtime link state, room lifecycle, and contextual Help.                                                                                |
+| Chart strip         | Locked song, variant, and this client's verification result.                                                                                       |
+| Roster              | Eight visible rows with host/player/spectator marker, connection or ready state, rank, and accuracy. The footer shows the visible range and total. |
+| Status/control card | Local role and status, one highlighted next action, a short current-state description, and admission/result alerts.                                |
+| Utility bar         | Focused Setlist, Spectate + OBS, History, and Settings overlays.                                                                                   |
+| Footer              | Description of the focused control and the shared keyboard/controller bindings.                                                                    |
 
-1. Find the folder containing `Beatblock.exe` through Steam's **Manage > Browse local files**.
-2. Install Lovely's `version.dll` beside `Beatblock.exe`.
-3. Choose exactly one ZIP from `mod/releases`:
-   - `beatblock-together-standalone-0.1.0-alpha.1.zip` for Lovely without BeatblockPlus.
-   - `beatblock-together-beatblock-plus-0.1.0-alpha.1.zip` when using BeatblockPlus 2.x.
-4. Extract the selected ZIP into `%APPDATA%\Beatblock\Mods`, producing `%APPDATA%\Beatblock\Mods\BeatblockTogether`. BeatblockPlus users can instead drag the unopened BeatblockPlus ZIP onto its in-game **Mods** screen.
-5. Install and start the Windows companion.
-6. Open the companion tray console, enter the self-hosted instance URL, invite code, and display name.
-7. Start Beatblock and select **Online** from the main menu.
+Roster markers are `[H]` host, `[P]` player, and `[S]` spectator. Important states always use text or a symbol as well as color: green is ready/success, yellow needs attention, cyan is informational/navigation, and red is destructive or invalid.
 
-The alpha rejects unknown Beatblock builds. The pinned executable SHA-256 is recorded in `mod/fixtures/patch-signatures.json`.
+## State-driven next action
 
-## Online screen controls
+The large button is derived from the protocol-v2 room snapshot and local role. An explicit participant verification result takes priority over any older local status, so a mismatch cannot appear ready.
 
-The Online screen is a mouse-, keyboard-, and controller-ready race-control dashboard:
+| State                                          | Highlighted action                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------- |
+| Runtime unavailable                            | **Open Installer**                                                        |
+| Not in a room                                  | **Host a Room**; Join Room and Join as Spectator remain directly below it |
+| Host, no locked chart                          | **Select Chart**                                                          |
+| Player package or variant mismatch             | **Locate Matching Chart**                                                 |
+| Verified player                                | **Ready**                                                                 |
+| Ready non-host                                 | **You Are Ready** (waiting for host)                                      |
+| Host, every assigned player ready and verified | **Start Race**                                                            |
+| Countdown or gameplay                          | **Race in Progress**; administrative actions are locked                   |
+| Results with another setlist chart             | **Advance Setlist**                                                       |
+| Completed set                                  | **View Results**                                                          |
 
-- Hover and click any action, or navigate with the arrow keys/D-pad and select with Enter, Space, Z, or controller A.
-- Disabled actions remain selectable and explain exactly what prerequisite is missing.
-- Lobby codes accept direct keyboard entry, Backspace, and Enter, as well as the controller-friendly character grid.
-- Player and spectator joins are separate actions.
-- **Practice + Telemetry** opens Custom Levels even without a remote instance, keeping local companion and OBS output useful while offline.
-- The lobby view shows chart verification, lifecycle, synchronization delay, spectators, and a two-column 16-player readiness roster.
+![Chart mismatch action](../reports/trial-runs/dashboard-mismatch-latest.png)
 
-The interface uses a high-contrast ink/cyan/mint scheme. Mint indicates verified or ready state, amber indicates an unmet prerequisite, and coral indicates a connection failure or destructive action.
+## Connecting
 
-## Play a race
+The Connect state shows Online service status, configured UDP port, localhost API, and export state in one panel.
 
-### Organizer
+- **Host a Room** asks for room name, UDP port, password, display name, and optional host approval.
+- **Join Room** asks for the host `IP:port`, password, and display name.
+- **Join as Spectator** uses the same form but requests the spectator role.
+- **Exit Online** asks for confirmation before terminating session services.
 
-1. Select **Create private lobby** in Beatblock.
-2. Share the displayed six-character lobby code.
-3. Select **Select custom chart**. Beatblock opens its normal Custom Levels song wheel.
-4. Select the exact variant to race. The mod calculates Beatblock's expected maximum hit count, and the companion hashes the complete package before locking it.
-5. Locate the chart locally if prompted, then ready up.
-6. When every competitor is ready, select **Start synchronized race**.
+Passwords travel only through the local runtime control channel and the room's password-authenticated handshake. They are never included in room snapshots, join links, exports, or logs.
 
-### Player
+![Direct-IP Connect state](../reports/trial-runs/dashboard-connect-latest.png)
 
-1. Select **Join with code** and enter the code using the controller-friendly on-screen keyboard.
-2. Select **Locate matching chart** and choose the announced chart and variant through Beatblock's song wheel.
-3. A hash mismatch leaves readiness disabled and displays a specific error.
-4. Select **Ready for race**.
+If the runtime cannot start, the primary action becomes **Open Installer** and the footer shows the concrete repair error.
 
-The mod loads the verified chart several seconds before the scheduled start. Beatblock remains in its native `startPending` state until the synchronized timestamp, displays the countdown, and then releases gameplay. During play, the upper-right race HUD shows live server rank, accuracy, and combo. Normal Beatblock results return to the online lobby; retry and pause invalidate competitive runs.
+![Runtime repair state](../reports/trial-runs/dashboard-runtime-error-latest.png)
 
-## What remains in the webpage
+## Roster and contextual controls
 
-- Invite redemption and instance configuration.
-- Companion connection diagnostics.
-- OBS player-card, leaderboard, versus, and caster URLs.
-- Authenticated spectator handoff.
+Move focus left from the primary action to enter the roster. Up/down scrolls through all admitted participants and pending requests while preserving an eight-row viewport. Selecting a row opens a compact participant card without leaving the dashboard.
 
-Creating, joining, selecting a chart, readying, and starting are ordinary in-game operations and do not require an open browser.
+Everyone can inspect role, connection, verification, rank, accuracy, and validity. The host additionally receives context-appropriate controls:
 
-## Troubleshooting
+- approve or reject a pending admission;
+- switch an admitted participant between player and spectator while the room is unlocked;
+- remove an admitted participant while the room is unlocked.
 
-- **Companion offline:** start the tray companion before Beatblock and confirm port 8975 is not occupied.
-- **Instance offline:** use the tray console to reconnect the invited account. Production instances require HTTPS/WSS.
-- **Chart notes were not preloaded:** remain on the song in Song Select until its preview finishes loading, then select it again.
-- **Chart mismatch:** both the package bytes and selected variant must match. The mod does not automatically download charts.
-- **Both distributions installed:** remove one package and restart Beatblock.
-- **Unknown build:** do not bypass the check for a competitive race; update the patch fixture and validate every hook first.
+Reject, remove, close-room, force-start, history deletion, token rotation, and runtime restart use confirmation dialogs. Back closes only the topmost card, dialog, drawer, or overlay.
 
-Run `pnpm test:mod` and `powershell -NoProfile -File scripts/test-install-mod.ps1` before distributing either ZIP. They regenerate both packages, verify every Lovely signature against the supplied Beatblock source archive, check the in-game command contract, inspect both release archives, and exercise both installer paths.
+![Pending participant card](../reports/trial-runs/dashboard-participant-latest.png)
+
+**Room Options** holds controls that should not compete with the next action: copy the password-free `bbt://` link, Force Start, Unready, Leave Room, Close Room, and Exit Online according to role and lifecycle.
+
+## Focused utilities
+
+The utility overlays temporarily cover the dashboard. Closing one restores the same roster selection, scroll offset, and room state.
+
+- **Setlist:** lock an Atom Map or custom chart, append official/custom charts, reorder or remove entries, and locate the host's exact chart as a participant.
+- **Spectate + OBS:** assign the selected roster participant to stable Stream A-D, choose the featured slot, stop a renderer, and open text exports.
+- **History:** refresh saved summaries, delete a selected result, or prune raw journals older than 30 days while retaining summaries.
+- **Settings:** toggle the gameplay HUD; inspect protocol, runtime, connection, peers, renderer budget, and local API; open logs/exports; rotate the API token; restart the runtime; or open the installer.
+
+![Setlist overlay](../reports/trial-runs/dashboard-setlist-latest.png)
+
+![Spectate and OBS overlay](../reports/trial-runs/dashboard-obs-latest.png)
+
+## Help and navigation
+
+**Help** opens a right-side drawer whose explanation follows the current phase or open utility. It also provides Open Logs and Open Installer troubleshooting shortcuts and remains available offline.
+
+![Contextual Help drawer](../reports/trial-runs/dashboard-help-latest.png)
+
+Mouse, keyboard, and controller use one focus order: roster, primary action, contextual action, utility bar, and Help. Arrow inputs move focus, **Select/Enter** activates it, and **Back/Escape** closes one layer. Mouse hover and controller focus use the same highlighted state and Beatblock menu sounds.
+
+The minimal gameplay HUD remains enabled by default and shows rank, accuracy delta, link state, and warnings. Disable it from Settings; this does not stop telemetry or OBS exports.
+
+## Session shutdown
+
+**Exit Online** closes or leaves the room, stops renderer children, flushes SQLite and exports, shuts down the localhost API, and terminates the hidden runtime. Online Song Select, gameplay, and Results keep the same session alive. If the runtime crashes during a competitive run, the run is invalidated and only one bounded restart is attempted.
