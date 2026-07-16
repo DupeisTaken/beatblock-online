@@ -166,10 +166,9 @@ impl AppState {
         } else if matches!(
             message.kind.as_str(),
             "client.hello" | "input.tap" | "render.keyframe" | "chart.status"
-        ) {
-            if !self.is_host.load(Ordering::Relaxed) {
-                self.network.broadcast(message.clone()).await;
-            }
+        ) && !self.is_host.load(Ordering::Relaxed)
+        {
+            self.network.broadcast(message.clone()).await;
         }
         let _ = self.events.send(message);
         Ok(())

@@ -319,7 +319,7 @@ impl Installer {
             state_for(managed_here, adapter_ok),
             if adapter_ok { "Installed" } else { "Broken" },
             "Yes",
-            format!("{}", distribution_label(distribution)),
+            distribution_label(distribution).to_string(),
         ));
         components.push(component(
             "Shared Lua payload",
@@ -1211,13 +1211,17 @@ impl Installer {
             quote_windows(status_path)
         );
         let arguments = wide(combined);
-        let mut info = SHELLEXECUTEINFOW::default();
-        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-        info.fMask = SEE_MASK_NOCLOSEPROCESS;
-        info.lpVerb = operation.as_ptr();
-        info.lpFile = executable.as_ptr();
-        info.lpParameters = arguments.as_ptr();
-        info.nShow = SW_HIDE;
+        // Populate the Win32 request atomically so every pointer remains tied to
+        // the owned UTF-16 buffers above for the duration of ShellExecuteExW.
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: operation.as_ptr(),
+            lpFile: executable.as_ptr(),
+            lpParameters: arguments.as_ptr(),
+            nShow: SW_HIDE,
+            ..Default::default()
+        };
         if unsafe { ShellExecuteExW(&mut info) } == 0 || info.hProcess.is_null() {
             let error = std::io::Error::last_os_error();
             bail!("administrator approval was cancelled or Windows could not start the helper: {error}");

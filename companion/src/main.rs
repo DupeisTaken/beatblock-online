@@ -201,7 +201,7 @@ impl SingleInstance {
                 unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
                 anyhow::bail!("Beatblock Together runtime is already active");
             }
-            return Ok(Self { handle });
+            Ok(Self { handle })
         }
         #[cfg(not(windows))]
         Ok(Self {})

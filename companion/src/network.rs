@@ -418,22 +418,19 @@ impl NetworkHub {
                     }
                 }
             });
-            loop {
-                match connection.read_datagram().await {
-                    Ok(bytes) => match RenderSample::decode(&bytes) {
-                        Ok(sample) => {
-                            let _ = events
-                                .send(NetworkEvent::RenderSample {
-                                    session_id: session_id.clone(),
-                                    sample,
-                                })
-                                .await;
-                        }
-                        Err(error) => {
-                            let _ = events.send(NetworkEvent::Error(error.to_string())).await;
-                        }
-                    },
-                    Err(_) => break,
+            while let Ok(bytes) = connection.read_datagram().await {
+                match RenderSample::decode(&bytes) {
+                    Ok(sample) => {
+                        let _ = events
+                            .send(NetworkEvent::RenderSample {
+                                session_id: session_id.clone(),
+                                sample,
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        let _ = events.send(NetworkEvent::Error(error.to_string())).await;
+                    }
                 }
             }
             reliable.abort();
