@@ -1,7 +1,5 @@
 packages:
   - protocol
-  - server
-  - web
 
 onlyBuiltDependencies:
   - esbuild

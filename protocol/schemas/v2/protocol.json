@@ -1,0 +1,823 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beatblock-together.local/protocol/v2/protocol.json",
+  "title": "Beatblock Together protocol v2",
+  "$defs": {
+    "Envelope": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "version",
+        "type",
+        "sequence",
+        "runTimeUs",
+        "payload"
+      ],
+      "properties": {
+        "version": {
+          "const": 2,
+          "type": "number"
+        },
+        "type": {
+          "minLength": 1,
+          "maxLength": 80,
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runTimeUs": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runId": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "requestId": {
+          "minLength": 1,
+          "maxLength": 80,
+          "type": "string"
+        },
+        "payload": {}
+      }
+    },
+    "ScoreTotals": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "hits",
+        "misses",
+        "barelies",
+        "combo",
+        "maxCombo",
+        "currentMaxHits",
+        "maxHits",
+        "mineHits"
+      ],
+      "properties": {
+        "hits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "misses": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "barelies": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "combo": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxCombo": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "currentMaxHits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxHits": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mineHits": {
+          "minimum": 0,
+          "default": 0,
+          "type": "integer"
+        }
+      }
+    },
+    "ChartFingerprint": {
+      "type": "object",
+      "required": [
+        "hash",
+        "packageName",
+        "songName",
+        "variant",
+        "expectedMaxHits",
+        "official",
+        "transferMode"
+      ],
+      "properties": {
+        "hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "packageName": {
+          "minLength": 1,
+          "maxLength": 256,
+          "type": "string"
+        },
+        "songName": {
+          "minLength": 1,
+          "maxLength": 256,
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 128,
+          "type": "string"
+        },
+        "expectedMaxHits": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "official": {
+          "type": "boolean"
+        },
+        "transferMode": {
+          "anyOf": [
+            {
+              "const": "verify_only",
+              "type": "string"
+            },
+            {
+              "const": "host_transfer",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "Rules": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate",
+        "pauseAllowed",
+        "retryAllowed",
+        "forceStart"
+      ],
+      "properties": {
+        "rate": {
+          "const": 1,
+          "type": "number"
+        },
+        "pauseAllowed": {
+          "const": false,
+          "type": "boolean"
+        },
+        "retryAllowed": {
+          "const": false,
+          "type": "boolean"
+        },
+        "forceStart": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PlayerSnapshot": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "displayName",
+        "role",
+        "admitted",
+        "connected",
+        "ready",
+        "verified",
+        "progress",
+        "accuracy",
+        "setTotal",
+        "totals",
+        "validity"
+      ],
+      "properties": {
+        "sessionId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "displayName": {
+          "minLength": 1,
+          "maxLength": 48,
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "const": "player",
+              "type": "string"
+            },
+            {
+              "const": "spectator",
+              "type": "string"
+            },
+            {
+              "const": "host",
+              "type": "string"
+            }
+          ]
+        },
+        "admitted": {
+          "type": "boolean"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "rank": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "progress": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
+        "accuracy": {
+          "minimum": 0,
+          "maximum": 100,
+          "type": "number"
+        },
+        "setTotal": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "totals": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "hits",
+            "misses",
+            "barelies",
+            "combo",
+            "maxCombo",
+            "currentMaxHits",
+            "maxHits",
+            "mineHits"
+          ],
+          "properties": {
+            "hits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "misses": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "barelies": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "combo": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxCombo": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "currentMaxHits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxHits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mineHits": {
+              "minimum": 0,
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        },
+        "validity": {
+          "anyOf": [
+            {
+              "const": "pending",
+              "type": "string"
+            },
+            {
+              "const": "valid",
+              "type": "string"
+            },
+            {
+              "const": "invalid",
+              "type": "string"
+            },
+            {
+              "const": "dnf",
+              "type": "string"
+            }
+          ]
+        },
+        "invalidReason": {
+          "maxLength": 512,
+          "type": "string"
+        }
+      }
+    },
+    "LobbySnapshot": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "hostSessionId",
+        "lifecycle",
+        "admissionMode",
+        "participants",
+        "forceStart",
+        "setlist",
+        "currentSetlistIndex",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "maxLength": 80,
+          "type": "string"
+        },
+        "hostSessionId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "anyOf": [
+            {
+              "const": "forming",
+              "type": "string"
+            },
+            {
+              "const": "chart_locked",
+              "type": "string"
+            },
+            {
+              "const": "ready",
+              "type": "string"
+            },
+            {
+              "const": "countdown",
+              "type": "string"
+            },
+            {
+              "const": "playing",
+              "type": "string"
+            },
+            {
+              "const": "results",
+              "type": "string"
+            },
+            {
+              "const": "set_complete",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "type": "string"
+            }
+          ]
+        },
+        "admissionMode": {
+          "anyOf": [
+            {
+              "const": "password_only",
+              "type": "string"
+            },
+            {
+              "const": "host_approval",
+              "type": "string"
+            }
+          ]
+        },
+        "chart": {
+          "type": "object",
+          "required": [
+            "hash",
+            "packageName",
+            "songName",
+            "variant",
+            "expectedMaxHits",
+            "official",
+            "transferMode"
+          ],
+          "properties": {
+            "hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "packageName": {
+              "minLength": 1,
+              "maxLength": 256,
+              "type": "string"
+            },
+            "songName": {
+              "minLength": 1,
+              "maxLength": 256,
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "expectedMaxHits": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "official": {
+              "type": "boolean"
+            },
+            "transferMode": {
+              "anyOf": [
+                {
+                  "const": "verify_only",
+                  "type": "string"
+                },
+                {
+                  "const": "host_transfer",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        "participants": {
+          "maxItems": 49,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sessionId",
+              "displayName",
+              "role",
+              "admitted",
+              "connected",
+              "ready",
+              "verified",
+              "progress",
+              "accuracy",
+              "setTotal",
+              "totals",
+              "validity"
+            ],
+            "properties": {
+              "sessionId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "displayName": {
+                "minLength": 1,
+                "maxLength": 48,
+                "type": "string"
+              },
+              "role": {
+                "anyOf": [
+                  {
+                    "const": "player",
+                    "type": "string"
+                  },
+                  {
+                    "const": "spectator",
+                    "type": "string"
+                  },
+                  {
+                    "const": "host",
+                    "type": "string"
+                  }
+                ]
+              },
+              "admitted": {
+                "type": "boolean"
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "verified": {
+                "type": "boolean"
+              },
+              "rank": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "progress": {
+                "minimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              "accuracy": {
+                "minimum": 0,
+                "maximum": 100,
+                "type": "number"
+              },
+              "setTotal": {
+                "minimum": 0,
+                "type": "number"
+              },
+              "totals": {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "hits",
+                  "misses",
+                  "barelies",
+                  "combo",
+                  "maxCombo",
+                  "currentMaxHits",
+                  "maxHits",
+                  "mineHits"
+                ],
+                "properties": {
+                  "hits": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "misses": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "barelies": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "combo": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxCombo": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "currentMaxHits": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxHits": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mineHits": {
+                    "minimum": 0,
+                    "default": 0,
+                    "type": "integer"
+                  }
+                }
+              },
+              "validity": {
+                "anyOf": [
+                  {
+                    "const": "pending",
+                    "type": "string"
+                  },
+                  {
+                    "const": "valid",
+                    "type": "string"
+                  },
+                  {
+                    "const": "invalid",
+                    "type": "string"
+                  },
+                  {
+                    "const": "dnf",
+                    "type": "string"
+                  }
+                ]
+              },
+              "invalidReason": {
+                "maxLength": 512,
+                "type": "string"
+              }
+            }
+          }
+        },
+        "scheduledStartTimeMs": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forceStart": {
+          "type": "boolean"
+        },
+        "setlist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "chart",
+              "completed"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "chart": {
+                "type": "object",
+                "required": [
+                  "hash",
+                  "packageName",
+                  "songName",
+                  "variant",
+                  "expectedMaxHits",
+                  "official",
+                  "transferMode"
+                ],
+                "properties": {
+                  "hash": {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "packageName": {
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "songName": {
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "variant": {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  "expectedMaxHits": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "official": {
+                    "type": "boolean"
+                  },
+                  "transferMode": {
+                    "anyOf": [
+                      {
+                        "const": "verify_only",
+                        "type": "string"
+                      },
+                      {
+                        "const": "host_transfer",
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              },
+              "completed": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "currentSetlistIndex": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAtMs": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAtMs": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      }
+    },
+    "RunScoreDelta": {
+      "type": "object",
+      "required": [
+        "runSequence",
+        "progress",
+        "beat",
+        "songTimeMs",
+        "totals"
+      ],
+      "properties": {
+        "runSequence": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "progress": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
+        "beat": {
+          "type": "number"
+        },
+        "songTimeMs": {
+          "type": "integer"
+        },
+        "totals": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "hits",
+            "misses",
+            "barelies",
+            "combo",
+            "maxCombo",
+            "currentMaxHits",
+            "maxHits",
+            "mineHits"
+          ],
+          "properties": {
+            "hits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "misses": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "barelies": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "combo": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxCombo": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "currentMaxHits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxHits": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mineHits": {
+              "minimum": 0,
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "ClientHello": {
+      "type": "object",
+      "required": [
+        "clientVersion",
+        "gameBuildHash",
+        "distribution",
+        "mods"
+      ],
+      "properties": {
+        "clientVersion": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "gameBuildHash": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "distribution": {
+          "anyOf": [
+            {
+              "const": "standalone",
+              "type": "string"
+            },
+            {
+              "const": "beatblock-plus",
+              "type": "string"
+            }
+          ]
+        },
+        "mods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "hash"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "hash": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
