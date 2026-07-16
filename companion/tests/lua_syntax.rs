@@ -45,8 +45,10 @@ fn every_distributed_lua_chunk_compiles_with_beatblocks_lua_runtime() {
 
     let files = [
         "mod/shared/bbt/core.lua",
+        "mod/shared/bbt/dashboard_model.lua",
         "mod/shared/bbt/online_state.lua",
         "mod/shared/bbt/ipc_thread.lua",
+        "mod/shared/bbt/renderer.lua",
         "mod/standalone/lovely/bootstrap.toml",
         "mod/beatblock-plus/main.lua",
         "mod/beatblock-plus/config.lua",
