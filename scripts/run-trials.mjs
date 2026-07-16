@@ -26,7 +26,15 @@ const commands = [
   {
     name: 'Rust runtime, installer, Lua, and stress tests',
     command: cargoCommand(),
-    args: ['test', '--manifest-path', 'companion/Cargo.toml', '--release', '--all-targets', '--features', 'installer-ui'],
+    args: [
+      'test',
+      '--manifest-path',
+      'companion/Cargo.toml',
+      '--release',
+      '--all-targets',
+      '--features',
+      'installer-ui',
+    ],
   },
   {
     name: 'Package both in-game adapters',
@@ -46,7 +54,14 @@ const commands = [
   {
     name: '16-player / 32-spectator direct-host simulation',
     command: cargoCommand(),
-    args: ['run', '--manifest-path', 'companion/Cargo.toml', '--release', '--example', 'host_room_trial'],
+    args: [
+      'run',
+      '--manifest-path',
+      'companion/Cargo.toml',
+      '--release',
+      '--example',
+      'host_room_trial',
+    ],
   },
   {
     // `cargo test --all-targets` above executes the benchmark target and writes

@@ -34,27 +34,33 @@ export const RunValiditySchema = Type.Union([
 ]);
 export type RunValidity = Static<typeof RunValiditySchema>;
 
-export const EnvelopeSchema = Type.Object({
-  version: Type.Literal(PROTOCOL_VERSION),
-  type: Type.String({ minLength: 1, maxLength: 80 }),
-  sequence: Type.Integer({ minimum: 0 }),
-  runTimeUs: Type.Integer({ minimum: 0 }),
-  runId: Type.Optional(Type.String({ maxLength: 80 })),
-  requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
-  payload: Type.Unknown(),
-}, { additionalProperties: false });
+export const EnvelopeSchema = Type.Object(
+  {
+    version: Type.Literal(PROTOCOL_VERSION),
+    type: Type.String({ minLength: 1, maxLength: 80 }),
+    sequence: Type.Integer({ minimum: 0 }),
+    runTimeUs: Type.Integer({ minimum: 0 }),
+    runId: Type.Optional(Type.String({ maxLength: 80 })),
+    requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+    payload: Type.Unknown(),
+  },
+  { additionalProperties: false },
+);
 export type Envelope<T = unknown> = Omit<Static<typeof EnvelopeSchema>, 'payload'> & { payload: T };
 
-export const ScoreTotalsSchema = Type.Object({
-  hits: Type.Integer({ minimum: 0 }),
-  misses: Type.Integer({ minimum: 0 }),
-  barelies: Type.Integer({ minimum: 0 }),
-  combo: Type.Integer({ minimum: 0 }),
-  maxCombo: Type.Integer({ minimum: 0 }),
-  currentMaxHits: Type.Integer({ minimum: 0 }),
-  maxHits: Type.Integer({ minimum: 0 }),
-  mineHits: Type.Integer({ minimum: 0, default: 0 }),
-}, { additionalProperties: false });
+export const ScoreTotalsSchema = Type.Object(
+  {
+    hits: Type.Integer({ minimum: 0 }),
+    misses: Type.Integer({ minimum: 0 }),
+    barelies: Type.Integer({ minimum: 0 }),
+    combo: Type.Integer({ minimum: 0 }),
+    maxCombo: Type.Integer({ minimum: 0 }),
+    currentMaxHits: Type.Integer({ minimum: 0 }),
+    maxHits: Type.Integer({ minimum: 0 }),
+    mineHits: Type.Integer({ minimum: 0, default: 0 }),
+  },
+  { additionalProperties: false },
+);
 export type ScoreTotals = Static<typeof ScoreTotalsSchema>;
 
 export const ChartLockSchema = Type.Object({
@@ -90,12 +96,15 @@ export type Participant = Static<typeof ParticipantSchema>;
 export const PlayerSnapshotSchema = ParticipantSchema;
 export type PlayerSnapshot = Participant;
 
-export const RulesSchema = Type.Object({
-  rate: Type.Literal(1),
-  pauseAllowed: Type.Literal(false),
-  retryAllowed: Type.Literal(false),
-  forceStart: Type.Boolean(),
-}, { additionalProperties: false });
+export const RulesSchema = Type.Object(
+  {
+    rate: Type.Literal(1),
+    pauseAllowed: Type.Literal(false),
+    retryAllowed: Type.Literal(false),
+    forceStart: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
 export type Rules = Static<typeof RulesSchema>;
 
 export const RoomSnapshotSchema = Type.Object({
@@ -108,7 +117,9 @@ export const RoomSnapshotSchema = Type.Object({
   participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS + 1 }),
   scheduledStartTimeMs: Type.Optional(Type.Integer({ minimum: 0 })),
   forceStart: Type.Boolean(),
-  setlist: Type.Array(Type.Object({ id: Type.String(), chart: ChartLockSchema, completed: Type.Boolean() })),
+  setlist: Type.Array(
+    Type.Object({ id: Type.String(), chart: ChartLockSchema, completed: Type.Boolean() }),
+  ),
   currentSetlistIndex: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
   createdAtMs: Type.Integer({ minimum: 0 }),
   updatedAtMs: Type.Integer({ minimum: 0 }),
@@ -145,29 +156,38 @@ export interface RenderDatagram {
 }
 
 export const EMPTY_TOTALS: ScoreTotals = {
-  hits: 0, misses: 0, barelies: 0, combo: 0, maxCombo: 0,
-  currentMaxHits: 0, maxHits: 0, mineHits: 0,
+  hits: 0,
+  misses: 0,
+  barelies: 0,
+  combo: 0,
+  maxCombo: 0,
+  currentMaxHits: 0,
+  maxHits: 0,
+  mineHits: 0,
 };
 
 export function calculateAccuracy(
   totals: Pick<ScoreTotals, 'misses' | 'barelies' | 'currentMaxHits'>,
 ): number {
   if (totals.currentMaxHits <= 0) return 100;
-  const raw = ((totals.currentMaxHits - totals.misses - totals.barelies / 4) /
-    totals.currentMaxHits) * 100;
+  const raw =
+    ((totals.currentMaxHits - totals.misses - totals.barelies / 4) / totals.currentMaxHits) * 100;
   return Math.max(0, Math.floor(raw * 100) / 100);
 }
 
 export function rankPlayers(players: Participant[]): Participant[] {
-  const competitors = players.filter((player) => player.role !== 'spectator').slice().sort((a, b) => {
-    const aValid = a.validity === 'valid' || a.validity === 'pending';
-    const bValid = b.validity === 'valid' || b.validity === 'pending';
-    if (aValid !== bValid) return aValid ? -1 : 1;
-    if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
-    if (b.progress !== a.progress) return b.progress - a.progress;
-    if (b.totals.maxCombo !== a.totals.maxCombo) return b.totals.maxCombo - a.totals.maxCombo;
-    return a.displayName.localeCompare(b.displayName);
-  });
+  const competitors = players
+    .filter((player) => player.role !== 'spectator')
+    .slice()
+    .sort((a, b) => {
+      const aValid = a.validity === 'valid' || a.validity === 'pending';
+      const bValid = b.validity === 'valid' || b.validity === 'pending';
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+      if (b.progress !== a.progress) return b.progress - a.progress;
+      if (b.totals.maxCombo !== a.totals.maxCombo) return b.totals.maxCombo - a.totals.maxCombo;
+      return a.displayName.localeCompare(b.displayName);
+    });
   const ranks = new Map(competitors.map((player, index) => [player.sessionId, index + 1]));
   return players.map((player) => {
     const rank = ranks.get(player.sessionId);
@@ -175,9 +195,17 @@ export function rankPlayers(players: Participant[]): Participant[] {
   });
 }
 
-export function envelope<T>(type: string, sequence: number, payload: T, runId?: string, requestId?: string): Envelope<T> {
+export function envelope<T>(
+  type: string,
+  sequence: number,
+  payload: T,
+  runId?: string,
+  requestId?: string,
+): Envelope<T> {
   return {
-    version: PROTOCOL_VERSION, type, sequence,
+    version: PROTOCOL_VERSION,
+    type,
+    sequence,
     runTimeUs: Math.floor(performance.now() * 1000),
     ...(runId === undefined ? {} : { runId }),
     ...(requestId === undefined ? {} : { requestId }),
@@ -216,5 +244,7 @@ export function decodeRenderDatagram(bytes: Uint8Array): RenderDatagram {
 }
 
 export const isEnvelope = (value: unknown): value is Envelope => Value.Check(EnvelopeSchema, value);
-export const isRunScoreDelta = (value: unknown): value is RunScoreDelta => Value.Check(RunScoreDeltaSchema, value);
-export const isChartFingerprint = (value: unknown): value is ChartFingerprint => Value.Check(ChartLockSchema, value);
+export const isRunScoreDelta = (value: unknown): value is RunScoreDelta =>
+  Value.Check(RunScoreDeltaSchema, value);
+export const isChartFingerprint = (value: unknown): value is ChartFingerprint =>
+  Value.Check(ChartLockSchema, value);

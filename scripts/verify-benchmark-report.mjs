@@ -31,8 +31,14 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({
-  passed: true,
-  report: reportPath,
-  metrics: report.metrics,
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      passed: true,
+      report: reportPath,
+      metrics: report.metrics,
+    },
+    null,
+    2,
+  ),
+);

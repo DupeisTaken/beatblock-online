@@ -17,7 +17,7 @@ const [core, dashboard, online, ipc, hooks, commands, readme] = await Promise.al
 ]);
 const bootstrap = await read('mod/standalone/lovely/bootstrap.toml');
 if (!bootstrap.includes('{{lovely_hack:patch_dir}}'))
-  throw new Error('Standalone bootstrap must use Lovely\'s supported patch_dir placeholder');
+  throw new Error("Standalone bootstrap must use Lovely's supported patch_dir placeholder");
 if (bootstrap.includes('{{lovely_hack::patch_dir}}'))
   throw new Error('Standalone bootstrap contains the invalid double-colon patch_dir placeholder');
 
@@ -32,13 +32,18 @@ for (const contract of [
   [ipc, 'WinExec'],
   [ipc, 'beatblock-together-v2'],
 ]) {
-  if (!contract[0].includes(contract[1])) throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
+  if (!contract[0].includes(contract[1]))
+    throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
 }
 if (!hooks.includes('name = "bbt.dashboard_model"'))
   throw new Error('Lovely does not register the adaptive dashboard model before main.lua');
-if (core.includes("BBT.send('client.hello'") && core.indexOf("BBT.send('client.hello'") < core.indexOf('function BBT.startOnlineRuntime()'))
+if (
+  core.includes("BBT.send('client.hello'") &&
+  core.indexOf("BBT.send('client.hello'") < core.indexOf('function BBT.startOnlineRuntime()')
+)
   throw new Error('Runtime hello is sent before entering Online');
-if (`${core}\n${online}`.includes('manager.open_request')) throw new Error('Obsolete visible Manager command remains');
+if (`${core}\n${online}`.includes('manager.open_request'))
+  throw new Error('Obsolete visible Manager command remains');
 
 for (const contrastContract of [
   'muted={1,1,1,.68}',
@@ -49,7 +54,7 @@ for (const contrastContract of [
   if (!online.includes(contrastContract))
     throw new Error(`Online font contrast contract is missing ${contrastContract}`);
 }
-if (online.includes("local PAGES ="))
+if (online.includes('local PAGES ='))
   throw new Error('Online still uses the obsolete six-page tab bar');
 for (const dashboardContract of [
   "require('bbt.dashboard_model')",
@@ -93,8 +98,7 @@ for (const readmeSection of [
   'docs/injection.md',
   'docs/benchmarking.md',
 ]) {
-  if (!readme.includes(readmeSection))
-    throw new Error(`README is missing ${readmeSection}`);
+  if (!readme.includes(readmeSection)) throw new Error(`README is missing ${readmeSection}`);
 }
 
 const requiredCommands = [
@@ -138,7 +142,8 @@ for (const capability of [
   'MATCH HISTORY',
   'SETTINGS + DIAGNOSTICS',
 ]) {
-  if (!`${online}\n${dashboard}`.includes(capability)) throw new Error(`Online dashboard is missing ${capability}`);
+  if (!`${online}\n${dashboard}`.includes(capability))
+    throw new Error(`Online dashboard is missing ${capability}`);
 }
 for (const interaction of [
   "pressed('select')",
@@ -181,13 +186,22 @@ if (core.includes('expectedMaxHits = 1'))
   throw new Error('Chart verification still contains the placeholder max-hit count');
 
 for (const distribution of ['standalone', 'beatblock-plus']) {
-  for (const file of ['core.lua', 'dashboard_model.lua', 'online_state.lua', 'ipc_thread.lua', 'renderer.lua']) {
+  for (const file of [
+    'core.lua',
+    'dashboard_model.lua',
+    'online_state.lua',
+    'ipc_thread.lua',
+    'renderer.lua',
+  ]) {
     const shared = await read(`mod/shared/bbt/${file}`);
     const packaged = await read(`mod/${distribution}/bbt/${file}`);
     if (hash(shared) !== hash(packaged))
       throw new Error(`${distribution}/${file} was not generated from the shared core`);
   }
-  const archive = resolve(root, `mod/releases/beatblock-together-${distribution}-0.3.0-alpha.1.zip`);
+  const archive = resolve(
+    root,
+    `mod/releases/beatblock-together-${distribution}-0.3.0-alpha.1.zip`,
+  );
   const entries = execFileSync('tar', ['-tf', archive], { encoding: 'utf8' });
   const prefix = 'BeatblockTogether/';
   const distributionFiles =

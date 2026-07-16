@@ -26,7 +26,16 @@
     "ScoreTotals": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hits", "misses", "barelies", "combo", "maxCombo", "currentMaxHits", "maxHits", "mineHits"],
+      "required": [
+        "hits",
+        "misses",
+        "barelies",
+        "combo",
+        "maxCombo",
+        "currentMaxHits",
+        "maxHits",
+        "mineHits"
+      ],
       "properties": {
         "hits": { "type": "integer", "minimum": 0 },
         "misses": { "type": "integer", "minimum": 0 },
@@ -39,8 +48,5 @@
       }
     }
   },
-  "oneOf": [
-    { "$ref": "#/$defs/Envelope" },
-    { "$ref": "#/$defs/RenderDatagram" }
-  ]
+  "oneOf": [{ "$ref": "#/$defs/Envelope" }, { "$ref": "#/$defs/RenderDatagram" }]
 }

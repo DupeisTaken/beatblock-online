@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { calculateAccuracy, decodeRenderDatagram, EMPTY_TOTALS, encodeRenderDatagram, rankPlayers } from '../src/index.js';
+import {
+  calculateAccuracy,
+  decodeRenderDatagram,
+  EMPTY_TOTALS,
+  encodeRenderDatagram,
+  rankPlayers,
+} from '../src/index.js';
 
 describe('Beatblock score derivation', () => {
   it('matches perfect, barely, and miss scoring', () => {
@@ -31,8 +37,24 @@ describe('Beatblock score derivation', () => {
   });
 
   it('round-trips the packed 60 Hz renderer datagram', () => {
-    const encoded = encodeRenderDatagram({ sessionId: 2, sequence: 418, runTimeUs: 82431000n, beat: 42.5, paddleAngle: 187.25, tapMask: 3, flags: 1 });
+    const encoded = encodeRenderDatagram({
+      sessionId: 2,
+      sequence: 418,
+      runTimeUs: 82431000n,
+      beat: 42.5,
+      paddleAngle: 187.25,
+      tapMask: 3,
+      flags: 1,
+    });
     expect(encoded).toHaveLength(32);
-    expect(decodeRenderDatagram(encoded)).toEqual({ sessionId: 2, sequence: 418, runTimeUs: 82431000n, beat: 42.5, paddleAngle: 187.25, tapMask: 3, flags: 1 });
+    expect(decodeRenderDatagram(encoded)).toEqual({
+      sessionId: 2,
+      sequence: 418,
+      runTimeUs: 82431000n,
+      beat: 42.5,
+      paddleAngle: 187.25,
+      tapMask: 3,
+      flags: 1,
+    });
   });
 });

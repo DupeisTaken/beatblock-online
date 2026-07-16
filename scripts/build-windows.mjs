@@ -24,7 +24,16 @@ function cargo(args, env = {}) {
 // runtime artifact byte-for-byte and installs it only as an Online dependency.
 cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockTogetherRuntime']);
 cargo(
-  ['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockTogetherInstaller', '--features', 'installer-ui'],
+  [
+    'build',
+    '--manifest-path',
+    manifest,
+    '--release',
+    '--bin',
+    'BeatblockTogetherInstaller',
+    '--features',
+    'installer-ui',
+  ],
   {
     BBT_RUNTIME_EXE: runtime,
     // Release builds use the reviewed BBT fork: silent for normal Steam
@@ -36,4 +45,6 @@ cargo(
 await rm(release, { recursive: true, force: true });
 await mkdir(release, { recursive: true });
 await copyFile(installer, resolve(release, 'BeatblockTogetherInstaller.exe'));
-console.log('Built release/BeatblockTogetherInstaller.exe (self-contained installer + runtime payload).');
+console.log(
+  'Built release/BeatblockTogetherInstaller.exe (self-contained installer + runtime payload).',
+);
