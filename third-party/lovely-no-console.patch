@@ -1,0 +1,28 @@
+diff --git a/crates/lovely-core/src/log.rs b/crates/lovely-core/src/log.rs
+index 76c5df1..afaa363 100644
+--- a/crates/lovely-core/src/log.rs
++++ b/crates/lovely-core/src/log.rs
+@@ -60,7 +60,7 @@ pub fn init(log_dir: &Path) -> Result<(), SetLoggerError> {
+         .unwrap_or_else(|e| panic!("Failed to create log file at {log_path:?}: {e}"));
+ 
+     let logger = LovelyLogger {
+-        use_console: true,
++        use_console: false,
+         log_file: RwLock::new(log_file),
+         log_path: String::from(log_path.to_str().unwrap()),
+     };
+diff --git a/crates/lovely-win/src/lib.rs b/crates/lovely-win/src/lib.rs
+index 86decd2..9c9b67c 100644
+--- a/crates/lovely-win/src/lib.rs
++++ b/crates/lovely-win/src/lib.rs
+@@ -72,7 +72,9 @@ unsafe extern "system" fn DllMain(_: HINSTANCE, reason: u32, _: *const c_void) -
+         return 1;
+     }
+ 
+-    if !args.contains(&"--disable-console".to_string()) {
++    // Beatblock Together release build: stay silent by default. Developers can
++    // still opt into Lovely's diagnostic window explicitly.
++    if args.contains(&"--enable-console".to_string()) {
+         let _ = AllocConsole();
+         SetConsoleTitleW(PCWSTR(WIN_TITLE.as_ptr())).expect("Failed to set console title.");
+     }

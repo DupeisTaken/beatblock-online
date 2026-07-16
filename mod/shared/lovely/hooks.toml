@@ -11,9 +11,39 @@ name = "bbt.core"
 
 [[patches]]
 [patches.module]
+source = "bbt/dashboard_model.lua"
+before = "main.lua"
+name = "bbt.dashboard_model"
+
+[[patches]]
+[patches.module]
 source = "bbt/online_state.lua"
 before = "main.lua"
 name = "bbt.online_state"
+
+[[patches]]
+[patches.module]
+source = "bbt/renderer.lua"
+before = "main.lua"
+name = "bbt.renderer"
+
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = "cs:init()"
+position = "after"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.start() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+pattern = "love.graphics.setCanvas(shuv.canvas)"
+position = "after"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.capture(self.canv) end"
+match_indent = true
+times = 1
 
 [[patches]]
 [patches.pattern]
@@ -89,6 +119,15 @@ target = "states/SongSelect.lua"
 pattern = "function st:playLevel(filename, variant)"
 position = "after"
 payload = "if BBT and BBT.selectingOnlineChart then BBT.onChartSelected(self, filename, variant); return end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/AtomMap.lua"
+pattern = "function st:playLevel(filename, variant)"
+position = "after"
+payload = "if BBT and BBT.onOfficialChartSelected(self, filename, variant) then return end"
 match_indent = true
 times = 1
 

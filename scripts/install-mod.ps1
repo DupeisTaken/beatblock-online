@@ -157,5 +157,5 @@ if ($PSCmdlet.ShouldProcess($target, "Install Beatblock Together $Distribution d
     Copy-Item -LiteralPath $source -Destination $target -Recurse
     Write-Host "Installed Beatblock Together ($Distribution) to $target"
     Write-Host "Lovely runtime: $versionDll"
-    Write-Host 'Start the companion, launch Beatblock through Steam, and select Online.'
+    Write-Host 'Launch Beatblock through Steam and select Online; the hidden runtime starts on demand.'
 }
