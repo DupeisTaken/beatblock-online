@@ -37,13 +37,20 @@ fn main() {
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .or_else(|| {
-            let path = PathBuf::from("../obs-plugin/build/Release/beatblock-together-obs.dll");
+            // Release builds use the reviewed OBS 32 artifact. Developer
+            // builds can still override it with BBT_OBS_PLUGIN_DLL.
+            let path =
+                PathBuf::from("../obs-plugin/artifacts/obs-32.0.4/beatblock-together-obs.dll");
             path.is_file().then_some(path)
         });
-    if let Some(source) = obs {
+    if let Some(source) = obs.as_ref() {
         fs::copy(source, obs_output).expect("copy OBS plugin");
+        println!("cargo:rerun-if-changed={}", source.display());
     } else {
         fs::write(obs_output, []).expect("write empty OBS payload");
+        println!(
+            "cargo:warning=OBS plugin payload is unavailable; set BBT_OBS_PLUGIN_DLL for release builds"
+        );
     }
     println!("cargo:rerun-if-env-changed=BBT_OBS_PLUGIN_DLL");
 

@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.12.1",
   "scripts": {
     "build": "pnpm --filter @bbt/protocol build && node scripts/build-windows.mjs",
+    "build:obs": "powershell -NoProfile -File scripts/build-obs-plugin.ps1",
     "dev": "node scripts/run-cargo.mjs run --manifest-path companion/Cargo.toml --bin BeatblockTogetherRuntime --",
     "test": "pnpm --filter @bbt/protocol test && node scripts/run-cargo.mjs test --manifest-path companion/Cargo.toml --no-fail-fast",
     "test:stress": "node scripts/run-cargo.mjs test --manifest-path companion/Cargo.toml --test stress --release",

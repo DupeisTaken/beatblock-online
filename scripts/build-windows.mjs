@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { cargoCommand } from './run-cargo.mjs';
@@ -8,6 +8,10 @@ const manifest = resolve(root, 'companion/Cargo.toml');
 const runtime = resolve(root, 'companion/target/release/BeatblockTogetherRuntime.exe');
 const installer = resolve(root, 'companion/target/release/BeatblockTogetherInstaller.exe');
 const lovely = resolve(root, '.reference/lovely-injector/target/release/version.dll');
+const obsPlugin = resolve(
+  root,
+  'obs-plugin/artifacts/obs-32.0.4/beatblock-together-obs.dll',
+);
 const release = resolve(root, 'release');
 
 function cargo(args, env = {}) {
@@ -22,6 +26,9 @@ function cargo(args, env = {}) {
 
 // Build order is intentional: the one downloadable installer embeds the lean
 // runtime artifact byte-for-byte and installs it only as an Online dependency.
+await access(obsPlugin).catch(() => {
+  throw new Error(`Reviewed OBS source artifact is missing: ${obsPlugin}`);
+});
 cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockTogetherRuntime']);
 cargo(
   [
@@ -39,6 +46,7 @@ cargo(
     // Release builds use the reviewed BBT fork: silent for normal Steam
     // launches, with --enable-console retained as an explicit developer aid.
     BBT_LOVELY_DLL: lovely,
+    BBT_OBS_PLUGIN_DLL: obsPlugin,
   },
 );
 

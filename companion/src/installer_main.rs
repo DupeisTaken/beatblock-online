@@ -107,6 +107,19 @@ fn run(args: Args) -> Result<()> {
             publish,
         )?;
         if args.install_obs {
+            if let Some(path) = args.operation_file.as_deref() {
+                write_operation_status(
+                    path,
+                    &OperationProgress {
+                        operation: OperationKind::Install,
+                        phase: "optional_components".into(),
+                        percent: 96,
+                        message: "Installing and verifying the OBS 32 source".into(),
+                        severity: Severity::Info,
+                        terminal: false,
+                    },
+                )?;
+            }
             installer.install_obs_plugin()?;
         }
         if let Some(path) = args.operation_file.as_deref() {

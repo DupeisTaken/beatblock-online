@@ -59,6 +59,7 @@ slint::slint! {
         in-out property<[ComponentRow]> components;
         in-out property<string> log-text: "Beatblock Together installer started.\n";
         in-out property<bool> install-obs: false;
+        in-out property<bool> obs-available: false;
         in-out property<bool> firewall-public: false;
         in-out property<bool> remove-user-data: false;
         in-out property<bool> allow-unknown-build: false;
@@ -157,7 +158,7 @@ slint::slint! {
                             }
                             VerticalLayout { spacing: 5px;
                                 Text { text: "Optional integration"; color: #46515b; font-size: 12px; }
-                                CheckBox { enabled: !root.busy; text: "Install OBS source when detected"; checked <=> root.install-obs; }
+                                CheckBox { enabled: !root.busy && root.obs-available; text: root.obs-available ? "Install OBS 32 source (restart OBS)" : "OBS source unavailable in this build"; checked <=> root.install-obs; }
                             }
                         }
                         Rectangle {
@@ -486,6 +487,17 @@ fn begin_install(
                 Err(error) => return Err(error),
             }
             if install_obs && !installed_elevated {
+                post_progress(
+                    weak.clone(),
+                    OperationProgress {
+                        operation: OperationKind::Install,
+                        phase: "optional_components".into(),
+                        percent: 96,
+                        message: "Installing and verifying the OBS 32 source".into(),
+                        severity: crate::installer::Severity::Info,
+                        terminal: false,
+                    },
+                );
                 installer.install_obs_plugin()?;
             }
             let inspection = installer.inspect_target(&path);
@@ -495,8 +507,13 @@ fn begin_install(
                 );
             }
             Ok(format!(
-                "Beatblock Together is ready in {}.",
-                path.display()
+                "Beatblock Together is ready in {}.{}",
+                path.display(),
+                if install_obs {
+                    " The OBS source was installed and will load after OBS restarts."
+                } else {
+                    ""
+                }
             ))
         }();
         terminal(weak, "Installation complete", run, true);
@@ -506,6 +523,7 @@ fn begin_install(
 pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
     let installer = Arc::new(Installer::new(data_dir.clone()));
+    window.set_obs_available(installer.obs_plugin_available());
     if let Some(path) = installer.initial_game_directory() {
         window.set_game_path(path.display().to_string().into());
         refresh_selected(&window, &installer);

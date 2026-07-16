@@ -49,6 +49,16 @@ pub struct InstallManifest {
     pub lovely_original_sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsInstallManifest {
+    version: String,
+    obs_directory: PathBuf,
+    plugin: PathBuf,
+    locale: PathBuf,
+    plugin_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
@@ -408,20 +418,35 @@ impl Installer {
                 "Created when repaired or first used"
             },
         ));
-        let obs = self.data_dir.join("obs-install.json").is_file();
+        let obs = self.obs_plugin_ready();
+        let obs_recorded = self.data_dir.join("obs-install.json").is_file();
         components.push(component(
             "OBS plugin",
             if obs {
                 ComponentState::Ready
+            } else if obs_recorded {
+                ComponentState::Broken
             } else {
                 ComponentState::Optional
             },
-            if obs { "Installed" } else { "Optional" },
-            "Conditional",
-            if OBS_PLUGIN_PAYLOAD.is_empty() {
-                "Not included in this build"
+            if obs {
+                "Installed"
+            } else if obs_recorded {
+                "Broken"
             } else {
-                "Install when OBS is detected"
+                "Optional"
+            },
+            "Conditional",
+            if obs {
+                "Installed and hash verified"
+            } else if OBS_PLUGIN_PAYLOAD.is_empty() {
+                "Not included in this build"
+            } else if obs_recorded {
+                "Installed files failed hash verification"
+            } else if detect_obs_directory().is_none() {
+                "OBS Studio was not detected"
+            } else {
+                "OBS 32 source is available to install"
             },
         ));
         let firewall = manifest.as_ref().is_some_and(|m| m.firewall_installed);
@@ -474,7 +499,7 @@ impl Installer {
             .as_ref()
             .and_then(|value| value.runtime_path.as_ref())
             .is_some_and(|path| path.is_file());
-        let obs_plugin_present = self.data_dir.join("obs-install.json").is_file();
+        let obs_plugin_present = self.obs_plugin_ready();
         InstallStatus {
             game_directory: game_directory.clone(),
             installed: manifest.is_some(),
@@ -552,6 +577,32 @@ impl Installer {
         allow_unknown_build: bool,
         requested_distribution: Option<Distribution>,
         firewall_public: bool,
+        progress: F,
+    ) -> Result<InstallManifest>
+    where
+        F: FnMut(OperationProgress),
+    {
+        self.install_with_progress_platform(
+            explicit_game_directory,
+            allow_unknown_build,
+            requested_distribution,
+            firewall_public,
+            true,
+            progress,
+        )
+    }
+
+    /// Runs the file transaction with optional Windows integration. Production
+    /// callers always enable platform changes; disabling them lets tests cover
+    /// the real staging, swapping, hashing, backup, move, and manifest logic
+    /// without modifying the developer's firewall or uninstall registry.
+    fn install_with_progress_platform<F>(
+        &self,
+        explicit_game_directory: Option<PathBuf>,
+        allow_unknown_build: bool,
+        requested_distribution: Option<Distribution>,
+        firewall_public: bool,
+        apply_platform_changes: bool,
         mut progress: F,
     ) -> Result<InstallManifest>
     where
@@ -593,6 +644,9 @@ impl Installer {
         });
         if distribution == Distribution::BeatblockPlus && !detected_plus {
             bail!("BeatblockPlus installation method was selected, but BeatblockPlus 2.x was not detected");
+        }
+        if distribution == Distribution::Standalone && detected_plus {
+            bail!("Standalone Lovely was selected, but BeatblockPlus 2.x is installed; choose the BeatblockPlus adapter to avoid loading both BBT adapters");
         }
         let mod_directory = mods_directory.join("BeatblockTogether");
         let stage_directory =
@@ -729,9 +783,14 @@ impl Installer {
             std::fs::create_dir_all(parent)?;
         }
         let current_exe = std::env::current_exe()?;
-        if current_exe != maintenance_installer {
-            std::fs::copy(&current_exe, &maintenance_installer)?;
-        }
+        let mut maintenance_rollback = if current_exe != maintenance_installer {
+            Some(FileRollback::replace(
+                &maintenance_installer,
+                &std::fs::read(&current_exe)?,
+            )?)
+        } else {
+            None
+        };
         write(
             &mod_directory.join("installer-path.txt"),
             maintenance_installer.to_string_lossy().as_bytes(),
@@ -741,10 +800,16 @@ impl Installer {
             OperationKind::Install,
             "system_changes",
             76,
-            "Applying the program-scoped firewall rule",
+            if apply_platform_changes {
+                "Applying the program-scoped firewall rule"
+            } else {
+                "Skipping external Windows changes for isolated verification"
+            },
         ));
-        Self::configure_firewall(&runtime_path, firewall_public, true)?;
-        let firewall_installed = true;
+        if apply_platform_changes {
+            Self::configure_firewall(&runtime_path, firewall_public, true)?;
+        }
+        let firewall_installed = apply_platform_changes;
         self.prepare_renderer_profile()?;
         progress(OperationProgress::step(
             OperationKind::Install,
@@ -768,7 +833,9 @@ impl Installer {
             file_hashes,
             lovely_original_sha256,
         };
-        self.register_uninstall(&manifest)?;
+        if apply_platform_changes {
+            self.register_uninstall(&manifest)?;
+        }
         validate_staged_payload(&mod_directory, distribution)?;
         if !file_matches(&runtime_path, RUNTIME_PAYLOAD)
             || !file_matches(&lovely_target, LOVELY_PAYLOAD)
@@ -799,6 +866,9 @@ impl Installer {
         if let Some(rollback) = lovely_rollback.as_mut() {
             rollback.commit();
         }
+        if let Some(rollback) = maintenance_rollback.as_mut() {
+            rollback.commit();
+        }
         if let Some(rollback) = previous_target_rollback.as_mut() {
             rollback.commit();
         }
@@ -813,7 +883,18 @@ impl Installer {
         self.repair_with_progress(|_| {})
     }
 
-    pub fn repair_with_progress<F>(&self, mut progress: F) -> Result<InstallManifest>
+    pub fn repair_with_progress<F>(&self, progress: F) -> Result<InstallManifest>
+    where
+        F: FnMut(OperationProgress),
+    {
+        self.repair_with_progress_platform(true, progress)
+    }
+
+    fn repair_with_progress_platform<F>(
+        &self,
+        apply_platform_changes: bool,
+        mut progress: F,
+    ) -> Result<InstallManifest>
     where
         F: FnMut(OperationProgress),
     {
@@ -830,11 +911,15 @@ impl Installer {
             .ok()
             .as_deref()
             != Some(supported_game_hash());
-        let result = self.install_with_progress_options(
+        let result = self.install_with_progress_platform(
             Some(manifest.game_directory),
             allow_unknown,
-            Some(manifest.distribution),
+            // Re-detect BeatblockPlus during repair. This automatically heals
+            // an adapter mismatch if BeatblockPlus was added or removed after
+            // the original BBT installation.
+            None,
             manifest.firewall_public,
+            apply_platform_changes,
             |mut event| {
                 event.operation = OperationKind::Repair;
                 if !event.terminal {
@@ -934,30 +1019,67 @@ impl Installer {
         if OBS_PLUGIN_PAYLOAD.is_empty() {
             bail!("this installer build does not contain the OBS plugin payload");
         }
-        let program_files =
-            std::env::var_os("ProgramFiles").context("Program Files is unavailable")?;
-        let obs = PathBuf::from(program_files).join("obs-studio");
-        if !obs.is_dir() {
-            bail!("OBS Studio was not detected");
+        validate_obs_payload(OBS_PLUGIN_PAYLOAD)?;
+        let obs = detect_obs_directory().context("OBS Studio 32 x64 was not detected")?;
+        let program_data = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        self.install_obs_plugin_into(obs, &program_data)
+    }
+
+    /// Installs OBS files transactionally into a supplied ProgramData root.
+    /// The public path supplies the real Windows directory; tests use a
+    /// disposable root while exercising the identical payload and marker code.
+    fn install_obs_plugin_into(&self, obs: PathBuf, program_data: &Path) -> Result<PathBuf> {
+        // ProgramData is OBS' recommended Windows plugin layout. It avoids the
+        // legacy Program Files path that OBS has announced it will retire.
+        let (plugin, locale) = obs_program_data_paths(program_data);
+        let locale_payload = include_bytes!("../../obs-plugin/data/locale/en-US.ini");
+        let marker = self.data_dir.join("obs-install.json");
+        let record = ObsInstallManifest {
+            version: env!("CARGO_PKG_VERSION").into(),
+            obs_directory: obs,
+            plugin: plugin.clone(),
+            locale: locale.clone(),
+            plugin_sha256: hex::encode(Sha256::digest(OBS_PLUGIN_PAYLOAD)),
+        };
+        let marker_payload = serde_json::to_vec_pretty(&record)?;
+        let mut plugin_rollback =
+            FileRollback::replace(&plugin, OBS_PLUGIN_PAYLOAD).context("install OBS source DLL")?;
+        let mut locale_rollback =
+            FileRollback::replace(&locale, locale_payload).context("install OBS source locale")?;
+        let mut marker_rollback = FileRollback::replace(&marker, &marker_payload)
+            .context("record OBS source installation")?;
+        if !file_matches(&plugin, OBS_PLUGIN_PAYLOAD) || !file_matches(&locale, locale_payload) {
+            bail!("OBS source post-install hash verification failed");
         }
-        let plugin = obs.join("obs-plugins/64bit/beatblock-together-obs.dll");
-        let locale = obs.join("data/obs-plugins/beatblock-together-obs/locale/en-US.ini");
-        if let Some(parent) = plugin.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if let Some(parent) = locale.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&plugin, OBS_PLUGIN_PAYLOAD)?;
-        std::fs::write(
-            &locale,
-            include_bytes!("../../obs-plugin/data/locale/en-US.ini"),
-        )?;
-        std::fs::write(
-            self.data_dir.join("obs-install.json"),
-            serde_json::to_vec_pretty(&json_paths(&plugin, &locale))?,
-        )?;
+        plugin_rollback.commit();
+        locale_rollback.commit();
+        marker_rollback.commit();
         Ok(plugin)
+    }
+
+    pub fn obs_plugin_available(&self) -> bool {
+        !OBS_PLUGIN_PAYLOAD.is_empty()
+            && validate_obs_payload(OBS_PLUGIN_PAYLOAD).is_ok()
+            && detect_obs_directory().is_some()
+    }
+
+    fn obs_plugin_ready(&self) -> bool {
+        let marker = self.data_dir.join("obs-install.json");
+        let Ok(bytes) = std::fs::read(marker) else {
+            return false;
+        };
+        let Ok(record) = serde_json::from_slice::<ObsInstallManifest>(&bytes) else {
+            return false;
+        };
+        !OBS_PLUGIN_PAYLOAD.is_empty()
+            && record.plugin_sha256 == hex::encode(Sha256::digest(OBS_PLUGIN_PAYLOAD))
+            && file_matches(&record.plugin, OBS_PLUGIN_PAYLOAD)
+            && file_matches(
+                &record.locale,
+                include_bytes!("../../obs-plugin/data/locale/en-US.ini"),
+            )
     }
 
     /// Starts exactly the selected executable and waits for Lovely's own log
@@ -1051,7 +1173,19 @@ impl Installer {
         self.uninstall_with_progress(remove_user_data, |_| {})
     }
 
-    pub fn uninstall_with_progress<F>(&self, remove_user_data: bool, mut progress: F) -> Result<()>
+    pub fn uninstall_with_progress<F>(&self, remove_user_data: bool, progress: F) -> Result<()>
+    where
+        F: FnMut(OperationProgress),
+    {
+        self.uninstall_with_progress_platform(remove_user_data, true, progress)
+    }
+
+    fn uninstall_with_progress_platform<F>(
+        &self,
+        remove_user_data: bool,
+        apply_platform_changes: bool,
+        mut progress: F,
+    ) -> Result<()>
     where
         F: FnMut(OperationProgress),
     {
@@ -1106,12 +1240,21 @@ impl Installer {
                 65,
                 "Removing runtime and firewall registration",
             ));
-            let _ = Self::configure_firewall(runtime, false, false);
+            if apply_platform_changes {
+                let _ = Self::configure_firewall(runtime, false, false);
+            }
             let _ = std::fs::remove_file(runtime);
         }
-        let _ = self.unregister_uninstall();
+        if apply_platform_changes {
+            let _ = self.unregister_uninstall();
+        }
         if let Ok(bytes) = std::fs::read(self.data_dir.join("obs-install.json")) {
-            if let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
+            if let Ok(record) = serde_json::from_slice::<ObsInstallManifest>(&bytes) {
+                let _ = std::fs::remove_file(record.plugin);
+                let _ = std::fs::remove_file(record.locale);
+            } else if let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
+                // Alpha manifests used a two-path array in the legacy OBS
+                // Program Files layout; retain uninstall compatibility.
                 for path in paths {
                     let _ = std::fs::remove_file(path);
                 }
@@ -1452,10 +1595,19 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temporary, bytes)?;
-    if path.exists() {
-        std::fs::remove_file(path)?;
+    let replace = (|| -> std::io::Result<()> {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&temporary, path)
+    })();
+    if replace.is_err() {
+        // Failed replacements must not strand payload bytes beside the target.
+        // This is especially important when a damaged install has a directory
+        // where a managed file should be.
+        let _ = std::fs::remove_file(&temporary);
     }
-    std::fs::rename(&temporary, path)?;
+    replace?;
     Ok(())
 }
 
@@ -1591,8 +1743,49 @@ fn quote_windows(path: &Path) -> String {
     format!("\"{}\"", path.display())
 }
 
-fn json_paths(plugin: &Path, locale: &Path) -> Vec<PathBuf> {
-    vec![plugin.to_owned(), locale.to_owned()]
+fn detect_obs_directory() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(explicit) = std::env::var_os("BBT_OBS_DIR") {
+        candidates.push(PathBuf::from(explicit));
+    }
+    for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(variable) {
+            candidates.push(PathBuf::from(root).join("obs-studio"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|root| root.join("bin/64bit/obs64.exe").is_file())
+}
+
+fn obs_program_data_paths(program_data: &Path) -> (PathBuf, PathBuf) {
+    let root = program_data.join("obs-studio/plugins/beatblock-together-obs");
+    (
+        root.join("bin/64bit/beatblock-together-obs.dll"),
+        root.join("data/locale/en-US.ini"),
+    )
+}
+
+fn validate_obs_payload(payload: &[u8]) -> Result<()> {
+    if payload.len() < 4096 || !payload.starts_with(b"MZ") {
+        bail!("the bundled OBS source is not a valid Windows DLL");
+    }
+    for export in [
+        b"obs_module_load".as_slice(),
+        b"obs_module_ver".as_slice(),
+        b"obs_module_set_pointer".as_slice(),
+    ] {
+        if !payload
+            .windows(export.len())
+            .any(|candidate| candidate == export)
+        {
+            bail!(
+                "the bundled OBS source is missing required export {}",
+                String::from_utf8_lossy(export)
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1708,7 +1901,15 @@ fn other_lovely_mods(mods: &Path) -> bool {
         return false;
     };
     entries.filter_map(Result::ok).any(|entry| {
-        entry.file_name() != "BeatblockTogether" && entry.path().join("lovely").is_dir()
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Active staging/rollback folders are part of BBT's own atomic
+        // transaction and must not make an old injector look externally owned
+        // while moving the managed installation to another game folder.
+        name != "BeatblockTogether"
+            && !name.starts_with(".BeatblockTogether.stage-")
+            && !name.starts_with(".BeatblockTogether.rollback-")
+            && entry.path().join("lovely").is_dir()
     })
 }
 
@@ -1733,6 +1934,22 @@ mod tests {
         for file in ["data.zip", "obj.zip", "states.zip"] {
             std::fs::write(root.join("packed").join(file), b"zip").unwrap();
         }
+    }
+
+    fn install_isolated(
+        installer: &Installer,
+        game: &Path,
+        distribution: Option<Distribution>,
+        progress: &mut Vec<OperationProgress>,
+    ) -> Result<InstallManifest> {
+        installer.install_with_progress_platform(
+            Some(game.to_owned()),
+            true,
+            distribution,
+            false,
+            false,
+            |event| progress.push(event),
+        )
     }
 
     #[test]
@@ -1886,6 +2103,233 @@ mod tests {
     }
 
     #[test]
+    fn full_standalone_install_repair_restore_and_uninstall_round_trip() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-full-roundtrip-{}", rand::random::<u64>()));
+        let game = root.join("Beatblock copy");
+        let data = root.join("data");
+        let mods = root.join("mods");
+        fake_game(&game);
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(game.join("version.dll"), b"existing Lovely").unwrap();
+        std::fs::write(data.join("runtime.sqlite3"), b"history").unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
+
+        let rejected = installer.install_with_progress_platform(
+            Some(game.clone()),
+            false,
+            Some(Distribution::Standalone),
+            false,
+            false,
+            |_| {},
+        );
+        assert!(rejected.unwrap_err().to_string().contains("not certified"));
+        assert!(!mods.join("BeatblockTogether").exists());
+
+        let mut progress = Vec::new();
+        let manifest = install_isolated(
+            &installer,
+            &game,
+            Some(Distribution::Standalone),
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(manifest.distribution, Distribution::Standalone);
+        assert!(!manifest.firewall_installed);
+        assert!(mods
+            .join("BeatblockTogether/bbt/dashboard_model.lua")
+            .is_file());
+        assert!(mods
+            .join("BeatblockTogether/lovely/bootstrap.toml")
+            .is_file());
+        assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
+        let backup = manifest.lovely_backup.as_ref().unwrap();
+        assert_eq!(std::fs::read(backup).unwrap(), b"existing Lovely");
+        assert!(progress
+            .windows(2)
+            .all(|pair| pair[0].percent <= pair[1].percent));
+        assert_eq!(progress.iter().filter(|event| event.terminal).count(), 1);
+
+        std::fs::write(
+            mods.join("BeatblockTogether/bbt/dashboard_model.lua"),
+            b"corrupt",
+        )
+        .unwrap();
+        std::fs::write(
+            data.join("runtime/BeatblockTogetherRuntime.exe"),
+            b"corrupt runtime",
+        )
+        .unwrap();
+        std::fs::write(game.join("version.dll"), b"corrupt injector").unwrap();
+        assert!(installer.inspect_target(&game).repair_required);
+        let mut repair_progress = Vec::new();
+        installer
+            .repair_with_progress_platform(false, |event| repair_progress.push(event))
+            .unwrap();
+        assert!(repair_progress
+            .iter()
+            .all(|event| event.operation == OperationKind::Repair));
+        assert_eq!(
+            repair_progress
+                .iter()
+                .filter(|event| event.terminal)
+                .count(),
+            1
+        );
+        assert!(file_matches(
+            &mods.join("BeatblockTogether/bbt/dashboard_model.lua"),
+            include_bytes!("../../mod/shared/bbt/dashboard_model.lua")
+        ));
+        assert!(file_matches(
+            &data.join("runtime/BeatblockTogetherRuntime.exe"),
+            RUNTIME_PAYLOAD
+        ));
+        assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
+        assert_eq!(std::fs::read(backup).unwrap(), b"existing Lovely");
+
+        let fake_obs = root.join("obs-studio");
+        std::fs::create_dir_all(fake_obs.join("bin/64bit")).unwrap();
+        let installed_obs = installer
+            .install_obs_plugin_into(fake_obs, &root.join("ProgramData"))
+            .unwrap();
+        assert!(file_matches(&installed_obs, OBS_PLUGIN_PAYLOAD));
+        assert!(installer.obs_plugin_ready());
+
+        installer.restore_with_progress(|_| {}).unwrap();
+        assert!(!mods.join("BeatblockTogether").exists());
+        assert_eq!(
+            std::fs::read(game.join("version.dll")).unwrap(),
+            b"existing Lovely"
+        );
+
+        install_isolated(
+            &installer,
+            &game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        installer
+            .uninstall_with_progress_platform(false, false, |_| {})
+            .unwrap();
+        assert!(!mods.join("BeatblockTogether").exists());
+        assert_eq!(
+            std::fs::read(game.join("version.dll")).unwrap(),
+            b"existing Lovely"
+        );
+        assert!(!data.join("install-manifest.json").exists());
+        assert!(!data.join("runtime/BeatblockTogetherRuntime.exe").exists());
+        assert!(!installed_obs.exists());
+        assert!(data.join("runtime.sqlite3").is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_transaction_rolls_back_after_lovely_replacement_failure() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-full-rollback-{}", rand::random::<u64>()));
+        let game = root.join("game");
+        let data = root.join("data");
+        let mods = root.join("mods");
+        fake_game(&game);
+        std::fs::create_dir_all(game.join("version.dll")).unwrap();
+        std::fs::create_dir_all(mods.join("BeatblockTogether")).unwrap();
+        std::fs::write(mods.join("BeatblockTogether/previous.txt"), b"previous mod").unwrap();
+        let runtime = data.join("runtime/BeatblockTogetherRuntime.exe");
+        std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+        std::fs::write(&runtime, b"previous runtime").unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
+
+        let result = install_isolated(
+            &installer,
+            &game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&runtime).unwrap(), b"previous runtime");
+        assert_eq!(
+            std::fs::read(mods.join("BeatblockTogether/previous.txt")).unwrap(),
+            b"previous mod"
+        );
+        assert!(!mods
+            .join("BeatblockTogether/bbt/dashboard_model.lua")
+            .exists());
+        assert!(!data.join("install-manifest.json").exists());
+        assert!(!std::fs::read_dir(&game)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("version.dll.")
+            }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn move_installation_and_adapter_detection_are_exclusive() {
+        let root = std::env::temp_dir().join(format!("bbt-full-move-{}", rand::random::<u64>()));
+        let old_game = root.join("old game");
+        let new_game = root.join("new game");
+        let data = root.join("data");
+        let mods = root.join("mods");
+        fake_game(&old_game);
+        fake_game(&new_game);
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
+
+        install_isolated(
+            &installer,
+            &old_game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(old_game.join("version.dll").is_file());
+        install_isolated(
+            &installer,
+            &new_game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(!old_game.join("version.dll").exists());
+        assert!(new_game.join("version.dll").is_file());
+        assert_eq!(
+            installer.load_manifest().unwrap().unwrap().game_directory,
+            new_game
+        );
+
+        std::fs::create_dir_all(mods.join("BeatblockPlus")).unwrap();
+        std::fs::write(
+            mods.join("BeatblockPlus/mod.json"),
+            r#"{"id":"beatblock-plus","version":"2.1.0"}"#,
+        )
+        .unwrap();
+        let wrong_adapter = install_isolated(
+            &installer,
+            &new_game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        );
+        assert!(wrong_adapter
+            .unwrap_err()
+            .to_string()
+            .contains("avoid loading both BBT adapters"));
+        let plus = install_isolated(&installer, &new_game, None, &mut Vec::new()).unwrap();
+        assert_eq!(plus.distribution, Distribution::BeatblockPlus);
+        assert!(mods.join("BeatblockTogether/mod.json").is_file());
+        assert!(!mods
+            .join("BeatblockTogether/lovely/bootstrap.toml")
+            .exists());
+        installer
+            .uninstall_with_progress_platform(true, false, |_| {})
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn uninstall_preserves_data_unless_explicitly_requested() {
         let root = std::env::temp_dir().join(format!("bbt-uninstall-{}", rand::random::<u64>()));
         let data = root.join("data");
@@ -2034,5 +2478,76 @@ mod tests {
         });
         let manifest: InstallManifest = serde_json::from_value(value).unwrap();
         assert!(!manifest.firewall_public);
+    }
+
+    #[test]
+    fn embedded_obs_source_is_a_real_module_with_required_exports() {
+        validate_obs_payload(OBS_PLUGIN_PAYLOAD).unwrap();
+        assert!(OBS_PLUGIN_PAYLOAD.len() > 8_000);
+        let source = include_str!("../../obs-plugin/src/plugin.c");
+        assert!(source.contains(r"BeatblockTogether\\BeatblockTogether\\data\\render-streams"));
+        assert!(source.contains("beatblock_together_player_stream"));
+    }
+
+    #[test]
+    fn invalid_obs_payloads_are_rejected_before_installation() {
+        assert!(validate_obs_payload(&[]).is_err());
+        assert!(validate_obs_payload(&vec![b'X'; 8192]).is_err());
+    }
+
+    #[test]
+    fn obs_uses_recommended_program_data_layout() {
+        let (plugin, locale) = obs_program_data_paths(Path::new(r"C:\ProgramData"));
+        assert_eq!(
+            plugin,
+            PathBuf::from(
+                r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\bin\64bit\beatblock-together-obs.dll"
+            )
+        );
+        assert_eq!(
+            locale,
+            PathBuf::from(
+                r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\data\locale\en-US.ini"
+            )
+        );
+    }
+
+    #[test]
+    fn verified_obs_component_does_not_report_a_stale_failure() {
+        let root = std::env::temp_dir().join(format!("bbt-obs-state-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let plugin = root.join("beatblock-together-obs.dll");
+        let locale = root.join("en-US.ini");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(&plugin, OBS_PLUGIN_PAYLOAD).unwrap();
+        std::fs::write(
+            &locale,
+            include_bytes!("../../obs-plugin/data/locale/en-US.ini"),
+        )
+        .unwrap();
+        let marker = ObsInstallManifest {
+            version: env!("CARGO_PKG_VERSION").into(),
+            obs_directory: root.clone(),
+            plugin,
+            locale,
+            plugin_sha256: hex::encode(Sha256::digest(OBS_PLUGIN_PAYLOAD)),
+        };
+        std::fs::write(
+            data.join("obs-install.json"),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+
+        let installer = Installer::with_mods_directory(data, root.join("mods"));
+        let inspection = installer.inspect_target(&root.join("game"));
+        let obs = inspection
+            .components
+            .iter()
+            .find(|component| component.name == "OBS plugin")
+            .unwrap();
+        assert_eq!(obs.state, ComponentState::Ready);
+        assert_eq!(obs.label, "Installed");
+        assert_eq!(obs.details, "Installed and hash verified");
+        let _ = std::fs::remove_dir_all(root);
     }
 }
