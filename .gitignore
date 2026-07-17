@@ -1,41 +1,91 @@
 # JavaScript / TypeScript
 node_modules/
 .pnpm-store/
+.npm/
 dist/
 coverage/
+.turbo/
+.vite/
+.eslintcache
 *.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Rust and native toolchains
 target/
 build/
+out/
+Debug/
+Release/
+x64/
+x86/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+.vs/
 *.obj
 *.o
+*.dll
+*.exe
 *.pdb
 *.ilk
 *.exp
 *.lib
+*.idb
+*.ipch
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
 
 # Generated release outputs. GitHub Actions publishes these instead of Git.
 artifacts/
 release/
+releases/
 obs-plugin/artifacts/
 mod/releases/
 
 # Repository-local tools, fixtures, and runtime data
 .tools/
 .cache/
+.pytest_cache/
+.ruff_cache/
 .test/
 .reference/
 companion-data/
 exports/
 reports/ui/
 .dev-mods/
+__pycache__/
+*.py[cod]
+
+# Temporary, interrupted, and editor-created files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+*.partial
+*.bak
+*.swp
+*.swo
+*~
 
 # Local configuration and operating-system noise
 .env
+.env.*
+!.env.example
 *.log
+*.dmp
+*.stackdump
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
+Desktop.ini
