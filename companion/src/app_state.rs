@@ -769,11 +769,7 @@ impl AppState {
                 total,
                 ..
             } => {
-                let percent = if total == 0 {
-                    0
-                } else {
-                    received.saturating_mul(100) / total
-                };
+                let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
                 let _ = self.events.send(Envelope::new(
                     "chart.transfer_progress",
                     0,
