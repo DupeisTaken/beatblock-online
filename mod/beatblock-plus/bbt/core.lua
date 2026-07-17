@@ -1,6 +1,6 @@
 local BBT = {
   version = '0.3.0-alpha.2',
-  protocolVersion = 2,
+  protocolVersion = 3,
   sequence = 0,
   runSequence = 0,
   snapshotTimer = 0,
@@ -570,6 +570,9 @@ local function handleCommand(raw)
     BBT.runtimeSnapshot = message.payload
     BBT.lastLobby = message.payload.room or BBT.lastLobby
     BBT.renderers = message.payload.renderers or {}
+    BBT.broadcastPlan = message.payload.broadcastPlan or BBT.broadcastPlan
+    BBT.commentatorStatuses = message.payload.commentatorStatuses or {}
+    BBT.mirrorEnabled = message.payload.mirrorEnabled == true
     BBT.history = message.payload.history or {}
     BBT.settings = message.payload.settings or BBT.settings
     BBT.connectionStatus = message.payload.connection or BBT.connectionStatus
@@ -583,6 +586,30 @@ local function handleCommand(raw)
     BBT.renderers = message.payload.renderers or BBT.renderers
     BBT.diagnostics = BBT.diagnostics or {}
     BBT.diagnostics.rendererBudgetWarning = message.payload.budgetWarning
+  elseif message.type == 'broadcast.plan' then
+    if not BBT.broadcastPlan or (message.payload.revision or 0) > (BBT.broadcastPlan.revision or 0) then
+      BBT.broadcastPlan = message.payload
+    end
+  elseif message.type == 'broadcast.revoked' then
+    BBT.mirrorEnabled = false
+  elseif message.type == 'chart.transfer_offer' then
+    BBT.chartTransfer = {
+      state = message.payload.containsExecutableContent and 'consent' or 'offer',
+      requestId = message.payload.requestId,
+      name = message.payload.name,
+      size = message.payload.size,
+      containsExecutableContent = message.payload.containsExecutableContent == true,
+    }
+  elseif message.type == 'chart.transfer_progress' then
+    BBT.chartTransfer = BBT.chartTransfer or {}
+    BBT.chartTransfer.state = 'progress'
+    BBT.chartTransfer.percent = message.payload.percent or 0
+    BBT.chartTransfer.requestId = message.payload.requestId
+  elseif message.type == 'chart.transfer_complete' then
+    BBT.chartTransfer = {state='complete',requestId=message.payload.requestId}
+  elseif message.type == 'chart.transfer_failed' then
+    BBT.chartTransfer = {state='failed'}
+    BBT.lastError = message.payload.message or 'Chart transfer failed'
   elseif message.type == 'control.progress' then
     if message.payload.requestId == BBT.pendingRequestId then
       BBT.pendingRequestProgress = message.payload.stage or message.payload.message

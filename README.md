@@ -1,6 +1,6 @@
 # Beatblock Online
 
-Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 telemetry spectators. The host manages charts, readiness, starts, rankings, spectator streams, OBS exports, and match history from inside Beatblock.
+Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
 ## Player quick start
 
@@ -9,7 +9,7 @@ Beatblock Online is a Windows direct-IP competition mod. One player hosts a pass
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
 5. Open **Online**, then host a room or join with the host's `IP:port` and password.
-6. Follow the dashboard's highlighted next action to select or verify the chart, ready players, and start the race. Select a roster row for participant details; the bottom utility bar opens Setlist, Spectate + OBS, History, and Settings without losing dashboard position.
+6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; Setlist, Broadcast, History, Settings, and Help are dedicated workspaces. A Spectator only receives Broadcast when the host grants Commentator access.
 7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
 
 ![Concentrated host dashboard](reports/trial-runs/dashboard-room-latest.png)
@@ -31,7 +31,8 @@ The maximum-room network recommendation is intentionally conservative: the curre
 Install Node workspace dependencies once with `pnpm install`. Rust must be available on `PATH`.
 
 ```text
-pnpm generate:protocol  Regenerate protocol v2 schemas
+pnpm generate:protocol  Regenerate protocol v3 schemas
+pnpm test:ui           Render and compare all 600x360 UI scenarios
 pnpm test:mod           Package and fully validate both Lua adapters against .test
 pnpm test:mod:source    Run the source-safe adapter gate used by GitHub Actions
 pnpm test               Run protocol and Rust unit tests
@@ -49,7 +50,7 @@ pnpm build              Reproduce all dependencies and build the Windows release
 - [Adaptive Online dashboard and controls](docs/mod-guide.md)
 - [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
 - [OBS streams, local API, and text exports](docs/obs-setup.md)
-- [Protocol v2](docs/protocol.md)
+- [Protocol v3](docs/protocol.md)
 - [Installer/runtime architecture](docs/architecture.md)
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
@@ -61,7 +62,7 @@ The latest automated gate is [full-capability-latest.md](reports/trial-runs/full
 - `mod`: shared Lua telemetry/gameplay core and mutually exclusive standalone Lovely and BeatblockPlus adapters.
 - `companion`: feature-gated Rust installer and hidden runtime sharing installer, networking, SQLite, renderer, API, and export libraries.
 - `obs-plugin`: native Stream A-D video source and shared-memory frame integration.
-- `protocol`: protocol v2 JSON Schema and TypeScript conformance implementation.
+- `protocol`: protocol v3 JSON Schema and TypeScript conformance implementation; archived v2 remains for compatibility diagnostics.
 - `reports/trial-runs`: machine-readable and Markdown acceptance evidence.
 
 ## Current alpha scope

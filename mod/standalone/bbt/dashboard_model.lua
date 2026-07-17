@@ -49,6 +49,53 @@ function Dashboard.participantStatus(participant)
   return 'CHECK CHART','yellow'
 end
 
+function Dashboard.visibleParticipants(context, filter)
+  local visible = {}
+  local current = activeRoom(context)
+  for _,participant in ipairs(current and current.participants or {}) do
+    local pending = participant.admitted ~= true
+    local include = filter == nil or filter == 'all'
+      or (filter == 'pending' and pending)
+      or (filter == 'players' and not pending and participant.role ~= 'spectator')
+      or (filter == 'spectators' and not pending and participant.role == 'spectator')
+    if include then visible[#visible+1] = participant end
+  end
+  table.sort(visible,function(a,b)
+    if (a.admitted ~= true) ~= (b.admitted ~= true) then return a.admitted ~= true end
+    if a.role ~= b.role then return a.role ~= 'spectator' end
+    return string.lower(a.displayName or '') < string.lower(b.displayName or '')
+  end)
+  return visible
+end
+
+function Dashboard.selectedParticipant(context, filter, sessionId)
+  local visible = Dashboard.visibleParticipants(context,filter)
+  for _,participant in ipairs(visible) do
+    if participant.sessionId == sessionId then return participant,visible end
+  end
+  return visible[1],visible
+end
+
+function Dashboard.score(participant, lifecycle)
+  if not participant or participant.role == 'spectator' then return {rank='—',accuracy='—'} end
+  local active = lifecycle == 'playing' or lifecycle == 'results' or lifecycle == 'set_complete'
+  if not active then return {rank=nil,accuracy=nil} end
+  if participant.validity == 'dnf' then return {rank='DNF',accuracy='—',tone='red'} end
+  if participant.validity == 'invalid' then return {rank='INVALID',accuracy='—',tone='red'} end
+  local rank = participant.rank and ('#'..tostring(participant.rank)) or '—'
+  local accuracy = participant.accuracy ~= nil and string.format('%.2f%%',participant.accuracy) or '—'
+  return {rank=rank,accuracy=accuracy,tone='white'}
+end
+
+function Dashboard.canBroadcast(context)
+  if context.isHost then return true,'host' end
+  local me = context.me
+  if me and me.admitted and me.role == 'spectator' and me.commentatorAccess then
+    return true,'commentator'
+  end
+  return false,nil
+end
+
 function Dashboard.scroll(selection, offset, count, delta, pageSize)
   pageSize = pageSize or 8
   if count <= 0 then return 1,0 end
@@ -132,7 +179,7 @@ end
 
 function Dashboard.help(context, overlay)
   if overlay == 'setlist' then return 'SETLIST','Choose the active chart, arrange an ordered set, and advance after results.' end
-  if overlay == 'obs' then return 'SPECTATE + OBS','Assign the selected participant to Stream A-D. The featured stream drives shared text exports.' end
+  if overlay == 'broadcast' then return 'BROADCAST','Assign Players to Stream A-D. The featured stream drives delayed video, audio, and text exports.' end
   if overlay == 'history' then return 'MATCH HISTORY','Review saved room results. Raw event journals can be pruned independently from summaries.' end
   if overlay == 'settings' then return 'SETTINGS','Control the gameplay HUD and inspect runtime, network, renderer, and local API status.' end
   local phase = Dashboard.phase(context)

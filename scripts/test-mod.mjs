@@ -6,10 +6,11 @@ import { listZipEntries } from './verify-release.mjs';
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(resolve(root, path), 'utf8');
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const [core, dashboard, online, ipc, renderer, hooks, commands, readme, obsPlugin] =
+const [core, dashboard, components, online, ipc, renderer, hooks, commands, readme, obsPlugin] =
   await Promise.all([
     read('mod/shared/bbt/core.lua'),
     read('mod/shared/bbt/dashboard_model.lua'),
+    read('mod/shared/bbt/dashboard_components.lua'),
     read('mod/shared/bbt/online_state.lua'),
     read('mod/shared/bbt/ipc_thread.lua'),
     read('mod/shared/bbt/renderer.lua'),
@@ -25,7 +26,7 @@ if (bootstrap.includes('{{lovely_hack::patch_dir}}'))
   throw new Error('Standalone bootstrap contains the invalid double-colon patch_dir placeholder');
 
 for (const contract of [
-  [core, 'protocolVersion = 2'],
+  [core, 'protocolVersion = 3'],
   [core, 'function BBT.startOnlineRuntime()'],
   [core, 'function BBT.exitOnline()'],
   [core, "gsub('[\\r\\n]', '')"],
@@ -33,7 +34,7 @@ for (const contract of [
   [core, "BBT.command('runtime.session_end'"],
   [ipc, 'runtime-path.txt'],
   [ipc, 'CreateProcessA'],
-  [ipc, 'beatblock-online-v2'],
+  [ipc, 'beatblock-online-v3'],
   [ipc, 'runtime.disconnected'],
   [ipc, 'PeekNamedPipe'],
   [ipc, 'ERROR_PIPE_BUSY'],
@@ -76,8 +77,12 @@ for (const contract of [
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
-  [online, 'Room password must contain 4-128 characters.'],
-  [online, "love.graphics.printf(BBT.lastError,74,239,452,'center')"],
+  [online, "workspace='room'"],
+  [online, "BBT.command('room.commentator_set'"],
+  [online, "BBT.command('broadcast.mirror_set'"],
+  [online, "BBT.command('chart.transfer_decision'"],
+  [components, 'font:getHeight()'],
+  [components, 'height < 22'],
 ]) {
   if (!contract[0].includes(contract[1]))
     throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
@@ -156,10 +161,10 @@ if (`${core}\n${online}`.includes('manager.open_request'))
 for (const contrastContract of [
   'muted={1,1,1,.68}',
   'dimBlack={0,0,0,.55}',
-  'setc(available and C.black or C.dimBlack)',
-  'setc(active and C.black or C.white)',
+  "enabled and 'black' or 'dimBlack'",
+  "selected and 'black'",
 ]) {
-  if (!online.includes(contrastContract))
+  if (!`${online}\n${components}`.includes(contrastContract))
     throw new Error(`Online font contrast contract is missing ${contrastContract}`);
 }
 if (online.includes('local PAGES ='))
@@ -167,13 +172,13 @@ if (online.includes('local PAGES ='))
 for (const dashboardContract of [
   "require('bbt.dashboard_model')",
   "{id='setlist',label='SETLIST'}",
-  'for row=1,8 do',
-  'self.rosterOffset',
-  "self.sideMenu='participant'",
-  'local function requestConfirm',
+  "{id='broadcast',label='BROADCAST'}",
+  "self.rosterFilter='all'",
+  'self.selectedSessionId',
+  'local function openConfirm',
   'local function drawHelp',
-  'local function drawOverlay',
-  "self.focusZone='primary'",
+  'local function drawBroadcast',
+  "self.workspace~='room'",
 ]) {
   if (!online.includes(dashboardContract))
     throw new Error(`Concentrated dashboard contract is missing ${dashboardContract}`);
@@ -182,6 +187,10 @@ for (const modelContract of [
   'function Dashboard.phase(context)',
   'function Dashboard.summary(context)',
   'function Dashboard.primary(context)',
+  'function Dashboard.visibleParticipants(context, filter)',
+  'function Dashboard.selectedParticipant(context, filter, sessionId)',
+  'function Dashboard.score(participant, lifecycle)',
+  'function Dashboard.canBroadcast(context)',
   "return action('select_chart','SELECT CHART'",
   "return action('locate_chart','LOCATE MATCHING CHART'",
   "return action('start_race','START RACE'",
@@ -221,9 +230,14 @@ const requiredCommands = [
   'room.official_chart_select',
   'room.admission_set',
   'room.role_set',
+  'room.commentator_set',
   'room.kick',
   'setlist.advance',
   'renderer.configure',
+  'broadcast.mirror_set',
+  'chart.transfer_request',
+  'chart.transfer_decision',
+  'chart.cache_clear',
   'history.list',
   'settings.update',
   'diagnostics.get',
@@ -238,18 +252,18 @@ for (const command of requiredCommands) {
 
 for (const capability of [
   'HOST A ROOM',
-  'JOIN ROOM',
+  'JOIN AS PLAYER',
   'JOIN AS SPECTATOR',
-  'PLAY ONLINE',
-  'SELECT FREEPLAY CHART',
+  'PLAY TOGETHER',
+  'SELECT OFFICIAL',
   'SELECT CUSTOM',
   'LOCATE MATCHING CHART',
   'READY',
   'START RACE',
-  'FORCE START',
-  'SPECTATE + OBS',
+  'BROADCAST',
   'MATCH HISTORY',
-  'SETTINGS + DIAGNOSTICS',
+  'TRANSFER CACHE',
+  'COMMENTATOR',
 ]) {
   if (!`${online}\n${dashboard}`.includes(capability))
     throw new Error(`Online dashboard is missing ${capability}`);
@@ -257,8 +271,8 @@ for (const capability of [
 for (const interaction of [
   "pressed('select')",
   'mouse.pressed==1',
-  'love.keyboard.isDown',
-  'ROOM ADDRESS',
+  'love.keyboard.setTextInput',
+  'HOST ADDRESS',
 ]) {
   if (!online.includes(interaction))
     throw new Error(`Online state is missing interaction contract: ${interaction}`);
@@ -278,11 +292,7 @@ for (const handoff of [
 ]) {
   if (!hooks.includes(handoff)) throw new Error(`Main-menu music handoff is missing ${handoff}`);
 }
-for (const handoff of [
-  'em.clear({self.menuMusicManager})',
-  'self.menuMusicManager:update(dt)',
-  'cs.menuMusicManager=music',
-]) {
+for (const handoff of ['self.menuMusicManager:update(dt)', 'cs.menuMusicManager=music']) {
   if (!online.includes(handoff)) throw new Error(`Online music continuity is missing ${handoff}`);
 }
 for (const handoff of [
@@ -300,6 +310,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
   for (const file of [
     'core.lua',
     'dashboard_model.lua',
+    'dashboard_components.lua',
     'online_state.lua',
     'ipc_thread.lua',
     'renderer.lua',
@@ -323,6 +334,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
   for (const required of [
     'bbt/core.lua',
     'bbt/dashboard_model.lua',
+    'bbt/dashboard_components.lua',
     'bbt/online_state.lua',
     'bbt/renderer.lua',
     'lovely/hooks.toml',

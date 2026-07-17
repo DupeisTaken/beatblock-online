@@ -1,112 +1,53 @@
-# Adaptive Online dashboard
+# Online shell and room roles
 
-Opening **Online** lazily starts the hidden runtime, localhost API, and atomic exports. There are no equal-weight page tabs: one dashboard changes between Connect, Lobby, and Results while keeping the room, chart, verification, readiness, roster, connection, and next action visible together.
+Opening **Online** lazily starts the hidden runtime. The interface always uses Beatblock's `600×360` logical canvas and shows one workspace at a time. Only forms, destructive confirmations, transfer consent, and full error details use a modal.
 
-![Host dashboard with a full room](../reports/trial-runs/dashboard-room-latest.png)
+The header identifies the runtime and protocol. Beneath it, the pinned session strip shows the current room/chart, verification context, and exactly one next action: host, select chart, locate chart, ready, start, wait, advance set, or view results. Button labels use measured font metrics and every interactive control is at least 22 logical pixels high.
 
-## What stays on screen
+## Room workspace
 
-| Area                | Purpose                                                                                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Header              | Room name, runtime link state, room lifecycle, and contextual Help.                                                                                |
-| Chart strip         | Locked song, variant, and this client's verification result.                                                                                       |
-| Roster              | Eight visible rows with host/player/spectator marker, connection or ready state, rank, and accuracy. The footer shows the visible range and total. |
-| Status/control card | Local role and status, one highlighted next action, a short current-state description, and admission/result alerts.                                |
-| Utility bar         | Focused Setlist, Spectate + OBS, History, and Settings overlays.                                                                                   |
-| Footer              | Description of the focused control and the shared keyboard/controller bindings.                                                                    |
+The roster has **All**, **Players**, **Spectators**, and **Pending** filters. Selection is stored by `sessionId`, so sorting, reconnects, filter changes, and workspace changes cannot silently target a different person. The participant inspector remains visible beside the roster and contains role, connection, chart, run state, and only the actions permitted to the local user.
 
-Roster markers are `[H]` host, `[P]` player, and `[S]` spectator. Important states always use text or a symbol as well as color: green is ready/success, yellow needs attention, cyan is informational/navigation, and red is destructive or invalid.
+Before play the roster shows readiness/verification state and never fabricates a `100.00` score. During play and Current Results it shows separate **Rank** and **Accuracy** columns. Missing values render as `—`; invalid outcomes render as **DNF** or **INVALID**. Current Results is a room phase, including cumulative set total where applicable. **History** is only the archive.
 
-## State-driven next action
+The terms are intentionally distinct:
 
-The large button is derived from the protocol-v2 room snapshot and local role. An explicit participant verification result takes priority over any older local status, so a mismatch cannot appear ready.
+- **Player** competes and must locally verify the locked chart.
+- **Spectator** follows room state and rankings without competing.
+- **Commentator** is a host-granted permission layered on an admitted Spectator. It does not change room capacity or make that participant a Player.
 
-| State                                          | Highlighted action                                                        |
-| ---------------------------------------------- | ------------------------------------------------------------------------- |
-| Runtime unavailable                            | **Open Installer**                                                        |
-| Not in a room                                  | **Host a Room**; Join Room and Join as Spectator remain directly below it |
-| Host, no locked chart                          | **Select Chart**                                                          |
-| Player package or variant mismatch             | **Locate Matching Chart**                                                 |
-| Verified player                                | **Ready**                                                                 |
-| Ready non-host                                 | **You Are Ready** (waiting for host)                                      |
-| Host, every assigned player ready and verified | **Start Race**                                                            |
-| Countdown or gameplay                          | **Race in Progress**; administrative actions are locked                   |
-| Results with another setlist chart             | **Advance Setlist**                                                       |
-| Completed set                                  | **View Results**                                                          |
+The host grants or revokes Commentator from the participant inspector. A role change, removal, revocation, room exit, or shutdown clears the grant's active subscriptions and stale local renderer state.
 
-![Chart mismatch action](../reports/trial-runs/dashboard-mismatch-latest.png)
+## Global workspaces
 
-## Connecting
+- **Setlist** selects official/custom charts and builds the ordered room set.
+- **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; Advanced contains mode, resolution, FPS, delay, exports, and diagnostics.
+- **History** lists saved match summaries.
+- **Settings** controls the gameplay HUD, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**.
+- **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
 
-The Connect state shows Online service status, configured UDP port, localhost API, and export state in one panel.
+Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model.
 
-- **Host a Room** asks for room name, UDP port, password, display name, and optional host approval.
-- **Join Room** asks for the host `IP:port`, password, and display name.
-- **Join as Spectator** uses the same form but requests the spectator role.
+## Chart matching and host fallback
 
-Room spectators stay on the adaptive Online dashboard and receive live roster, ranking, lifecycle, and result snapshots. They do not launch the competitive chart and do not receive a remote video feed; reconstructed player video is a host-side OBS slot feature.
+For every locked chart, Online tries the current selection and managed hash/path indexes before asking the Player. Official charts are local-only. For a custom chart, **Select Local Chart** verifies the canonical package hash, variant, and note count. If the host enabled transfers, **Request Host Transfer** requests the original archive (or a bounded archive produced from the host's selected directory).
 
-- **Exit Online** asks for confirmation before terminating session services.
+The offer shows size and whether script/executable content exists. Normal packages can be accepted once or with **Trust This Room**, which auto-accepts later ordinary packages only for that live room. Script/executable content always requires a separate confirmation and never inherits room trust.
 
-Passwords travel only through the local runtime control channel and the room's password-authenticated handshake. They are never included in room snapshots, join links, exports, or logs.
+Transfers use an authenticated QUIC file stream, one stream at a time per peer, with backpressure, a 30-second stall timeout, a 120-second send timeout, cancellation on disconnect, and a 1 GiB limit. The runtime validates archive SHA-256, traversal, links, entry count, expanded size, executable content, and the final canonical chart hash.
 
-![Direct-IP Connect state](../reports/trial-runs/dashboard-connect-latest.png)
+Accepted content is extracted by hash under BBT's read-only Online cache, not the user's Custom Levels library. The cache has a 2 GiB LRU budget and never evicts the active chart.
 
-If the runtime cannot start, the primary action becomes **Open Installer** and the footer shows the concrete repair error.
+## Commentator Broadcast mirror
 
-![Runtime repair state](../reports/trial-runs/dashboard-runtime-error-latest.png)
+The host owns the authoritative revisioned **Host Plan**. A granted Commentator sees it read-only and must explicitly enable **This PC** after a performance warning. This may start up to four hidden Beatblock renderer children. If the chart is missing, assignments and text remain visible but video stays disabled until local matching or an accepted host transfer succeeds.
 
-## Roster and contextual controls
+Only active assigned Player telemetry is relayed, and only to authorized Commentators that enabled mirroring. Stable protocol-v3 render-source IDs map remote samples into local Stream A–D frame rings. Featured text exports and video use the same delayed clock. Only the featured renderer receives audio; the previous featured child is stopped before the new one starts audibly.
 
-Move focus left from the primary action to enter the roster. Up/down scrolls through all admitted participants and pending requests while preserving an eight-row viewport. Selecting a row opens a compact participant card without leaving the dashboard.
+Long renderer failures are bounded in the workspace. **Details** opens the full message without hiding slot controls. See [OBS setup](obs-setup.md) for source and application-audio configuration.
 
-Everyone can inspect role, connection, verification, rank, accuracy, and validity. The host additionally receives context-appropriate controls:
+## Screenshot verification
 
-- approve or reject a pending admission;
-- switch an admitted participant between player and spectator while the room is unlocked;
-- remove an admitted participant while the room is unlocked.
+`pnpm test:ui` stages the tracked harness in a temporary directory, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, renders 25 states sequentially in one process, and cleans the stage. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
 
-Reject, remove, close-room, force-start, history deletion, token rotation, and runtime restart use confirmation dialogs. Back closes only the topmost card, dialog, drawer, or overlay.
-
-![Pending participant card](../reports/trial-runs/dashboard-participant-latest.png)
-
-**Room Options** holds controls that should not compete with the next action: copy the password-free `bbt://` link, Force Start, Unready, Leave Room, Close Room, and Exit Online according to role and lifecycle.
-
-## Focused utilities
-
-The utility overlays temporarily cover the dashboard. Closing one restores the same roster selection, scroll offset, and room state.
-
-- **Setlist:** lock a Freeplay or custom chart, append official/custom charts, reorder or remove entries, and locate the host's exact chart as a participant.
-- **Spectate + OBS:** assign the selected roster participant to stable Stream A-D, choose the featured slot, stop a renderer, and open text exports.
-- **History:** refresh saved summaries, delete a selected result, or prune raw journals older than 30 days while retaining summaries.
-- **Settings:** toggle the gameplay HUD; inspect protocol, runtime, connection, peers, renderer budget, and local API; open logs/exports; rotate the API token; restart the runtime; or open the installer.
-
-![Setlist overlay](../reports/trial-runs/dashboard-setlist-latest.png)
-
-![Spectate and OBS overlay](../reports/trial-runs/dashboard-obs-latest.png)
-
-## Help and navigation
-
-**Help** opens a right-side drawer whose explanation follows the current phase or open utility. It also provides Open Logs and Open Installer troubleshooting shortcuts and remains available offline.
-
-![Contextual Help drawer](../reports/trial-runs/dashboard-help-latest.png)
-
-Mouse, keyboard, and controller use one focus order: roster, primary action, contextual action, utility bar, and Help. Arrow inputs move focus, **Select/Enter** activates it, and **Back/Escape** closes one layer. Mouse hover and controller focus use the same highlighted state and Beatblock menu sounds.
-
-The minimal gameplay HUD remains enabled by default and shows rank, accuracy delta, link state, and warnings. Disable it from Settings; this does not stop telemetry or OBS exports.
-
-Chart selection becomes authoritative only after both the selected variant's
-event data and any required audio have finished preloading. Official charts use
-Beatblock's Freeplay list (`levels/Songwheel/`), keeping variant resolution,
-event loading, and audio preview in the same SongSelect state. Selecting too
-early returns to Online with a concrete retry message instead of launching a
-Game state that can wait forever. Custom Song Select follows the same
-chart-plus-audio readiness rule.
-
-## Session shutdown
-
-**Exit Online** closes or leaves the room, stops renderer children, flushes SQLite and exports, shuts down the localhost API, and terminates the hidden runtime. Online Song Select, gameplay, and Results keep the same session alive. If the runtime disconnects, the current control action fails immediately, the header switches to reconnecting, and hidden relaunch attempts continue with an eight-second maximum backoff. Control requests also have bounded response deadlines, so a host or join button cannot remain busy indefinitely.
-
-Force Start still launches every verified participant, even when they have not
-readied. An assigned participant that never reaches Game is finalized as DNF
-after a 30-second launch grace period, allowing the room to reach Results.
+The gate compares approved files under `tests/ui-baselines` at threshold `0.1` and fails above `0.05%` changed pixels. It also fails on out-of-canvas text and controls below 22 logical pixels. Baselines change only through `pnpm test:ui:update` followed by human review.

@@ -5,6 +5,7 @@ local Renderer = {
   width = tonumber(os.getenv('BBT_RENDERER_WIDTH')) or 1280,
   height = tonumber(os.getenv('BBT_RENDERER_HEIGHT')) or 720,
   fps = tonumber(os.getenv('BBT_RENDERER_FPS')) or 60,
+  audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0, previousTapMask = 0,
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
   playing = false, droppedFrames = 0, nextFrameAt = nil,
@@ -154,7 +155,7 @@ function Renderer.start()
   -- Gameplay's Play Song event expects preloadSoundData to be a table even
   -- when it has no matching preloaded track. Zero the disposable child's audio
   -- settings before that event takes the normal synchronous-load fallback.
-  if savedata and savedata.options and savedata.options.audio then
+  if not Renderer.audioEnabled and savedata and savedata.options and savedata.options.audio then
     for key, value in pairs(savedata.options.audio) do
       if type(value) == 'number' then savedata.options.audio[key] = 0 end
     end
@@ -170,7 +171,7 @@ function Renderer.start()
   -- preserves that shape and lets Beatblock load the song without attempting
   -- to index a boolean sentinel.
   cs:init(chart, variantInfo, nil, {})
-  if cs.source and cs.source.setVolume then cs.source:setVolume(0) end
+  if not Renderer.audioEnabled and cs.source and cs.source.setVolume then cs.source:setVolume(0) end
 end
 
 function Renderer.update()

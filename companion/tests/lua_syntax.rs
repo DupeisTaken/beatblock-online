@@ -22,7 +22,10 @@ fn workspace() -> PathBuf {
 
 #[test]
 fn every_distributed_lua_chunk_compiles_with_beatblocks_lua_runtime() {
-    let library_path = workspace().join(".test/Beatblock/lua51.dll");
+    let library_path = std::env::var_os("BBT_UI_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"E:\beatblock-online\.test\ui-harness"))
+        .join("lua51.dll");
     let wide = library_path
         .as_os_str()
         .encode_wide()
@@ -46,6 +49,7 @@ fn every_distributed_lua_chunk_compiles_with_beatblocks_lua_runtime() {
     let files = [
         "mod/shared/bbt/core.lua",
         "mod/shared/bbt/dashboard_model.lua",
+        "mod/shared/bbt/dashboard_components.lua",
         "mod/shared/bbt/online_state.lua",
         "mod/shared/bbt/ipc_thread.lua",
         "mod/shared/bbt/renderer.lua",

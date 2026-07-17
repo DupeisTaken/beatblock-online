@@ -19,6 +19,15 @@ struct PendingExports {
     // The outer option means "a featured update is pending"; the inner option
     // distinguishes a new featured state from an explicit clear operation.
     featured: Option<Option<GameplayState>>,
+    broadcast_metadata: Option<BroadcastExportMetadata>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastExportMetadata {
+    pub plan_revision: u64,
+    pub authority: &'static str,
+    pub local_mirror_enabled: bool,
 }
 
 enum ExportSignal {
@@ -116,6 +125,23 @@ impl ExportPublisher {
         self.wake();
     }
 
+    pub fn publish_broadcast_metadata(
+        &self,
+        plan_revision: u64,
+        authority: &'static str,
+        local_mirror_enabled: bool,
+    ) {
+        self.pending
+            .lock()
+            .expect("export queue poisoned")
+            .broadcast_metadata = Some(BroadcastExportMetadata {
+            plan_revision,
+            authority,
+            local_mirror_enabled,
+        });
+        self.wake();
+    }
+
     fn wake(&self) {
         if !self.wake_queued.swap(true, Ordering::AcqRel) {
             let _ = self.signals.send(ExportSignal::Wake);
@@ -171,6 +197,12 @@ fn write_pending(
             } else {
                 clear_featured_exports_with(directory, &mut write)?;
             }
+        }
+        if let Some(metadata) = batch.broadcast_metadata {
+            write(
+                directory.join("broadcast_metadata.json"),
+                &serde_json::to_string_pretty(&metadata)?,
+            )?;
         }
         Ok(())
     })();

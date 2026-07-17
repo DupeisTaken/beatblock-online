@@ -16,8 +16,6 @@ pub mod renderer;
 pub mod room;
 pub mod storage;
 
-// Archive-transfer code is quarantined to its security tests until an
-// authenticated transport and explicit in-game consent flow are implemented.
-// Production advertises verify-only charts and cannot call this module.
-#[cfg(test)]
-mod transfer;
+// Protocol-v3 chart fallback uses this hardened archive/cache boundary after
+// authenticated room consent and before mounting content for Online.
+pub mod transfer;

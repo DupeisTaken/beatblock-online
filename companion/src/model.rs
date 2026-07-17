@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 3;
 pub const DEFAULT_HOST_PORT: u16 = 32145;
 pub const MAX_PLAYERS: usize = 16;
 pub const MAX_SPECTATORS: usize = 32;
@@ -168,6 +168,7 @@ pub enum AdmissionMode {
 #[serde(rename_all = "snake_case")]
 pub enum ChartTransferMode {
     VerifyOnly,
+    HostTransfer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +235,8 @@ pub struct Participant {
     pub validity: RunValidity,
     pub invalid_reason: Option<String>,
     pub last_sequence: Option<u64>,
+    #[serde(default)]
+    pub commentator_access: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +267,8 @@ pub struct RoomSnapshot {
     pub host_session_id: String,
     pub lifecycle: RoomLifecycle,
     pub admission_mode: AdmissionMode,
+    #[serde(default = "default_true")]
+    pub allow_chart_transfers: bool,
     pub participants: Vec<Participant>,
     pub chart: Option<ChartLock>,
     pub setlist: Vec<SetlistEntry>,
@@ -305,6 +310,98 @@ pub struct RendererSlot {
     pub last_frame_at_ms: Option<u64>,
     #[serde(default)]
     pub last_error: Option<String>,
+}
+
+/// The authoritative, health-free renderer configuration distributed by the
+/// host. Each machine combines this plan with its own local renderer health so
+/// a slow Commentator never makes the host's slot look unhealthy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastSlotPlan {
+    pub id: String,
+    pub participant_id: Option<String>,
+    pub participant_name: Option<String>,
+    pub render_source_id: Option<u32>,
+    pub mode: RendererMode,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub delay_ms: u32,
+    pub featured: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastPlan {
+    pub revision: u64,
+    pub updated_at_ms: u64,
+    pub slots: Vec<BroadcastSlotPlan>,
+}
+
+impl BroadcastPlan {
+    pub fn empty() -> Self {
+        Self {
+            revision: 0,
+            updated_at_ms: 0,
+            slots: (0..MAX_RENDER_STREAMS)
+                .map(|index| BroadcastSlotPlan {
+                    id: ((b'A' + index as u8) as char).to_string(),
+                    participant_id: None,
+                    participant_name: None,
+                    render_source_id: None,
+                    mode: RendererMode::Clean,
+                    width: 1280,
+                    height: 720,
+                    fps: 60,
+                    delay_ms: 500,
+                    featured: index == 0,
+                    active: false,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn from_slots(revision: u64, updated_at_ms: u64, slots: &[RendererSlot]) -> Self {
+        Self {
+            revision,
+            updated_at_ms,
+            slots: slots
+                .iter()
+                .map(|slot| BroadcastSlotPlan {
+                    id: slot.id.clone(),
+                    participant_id: slot.participant_id.clone(),
+                    participant_name: slot.participant_name.clone(),
+                    render_source_id: slot.participant_id.as_deref().map(render_source_id),
+                    mode: slot.mode,
+                    width: slot.width,
+                    height: slot.height,
+                    fps: slot.fps,
+                    delay_ms: slot.delay_ms,
+                    featured: slot.featured,
+                    active: slot.active,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentatorMirrorStatus {
+    pub enabled: bool,
+    pub healthy_slots: u32,
+    pub error: Option<String>,
+    pub updated_at_ms: u64,
+}
+
+/// A stable, non-zero source id carried by protocol-v3 render datagrams.
+/// Collisions are resolved when a plan is built by comparing participant ids;
+/// the SHA-derived value avoids exposing UUID text in every 60 Hz packet.
+pub fn render_source_id(session_id: &str) -> u32 {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(session_id.as_bytes());
+    u32::from_le_bytes(digest[..4].try_into().expect("SHA-256 prefix")).max(1)
 }
 
 impl RendererSlot {

@@ -40,7 +40,7 @@ Installed layout:
   installer\BeatblockOnlineInstaller.exe
 ```
 
-Lovely loads beside `Beatblock.exe` and applies signatures while LÖVE loads Lua chunks. BBT does not rewrite `Beatblock.exe` or packed archives. The standalone bootstrap uses Lovely's supported `{{lovely_hack:patch_dir}}` placeholder. Opening Online starts a literal-source LÖVE worker thread, passes the installed mod path through a channel, launches the GUI-subsystem runtime without a console, and connects to `\\.\pipe\beatblock-online-v2`. Bundled LuaSocket on `127.0.0.1:8975` remains the isolated fallback when LuaJIT FFI is unavailable. Normal menus never create this thread.
+Lovely loads beside `Beatblock.exe` and applies signatures while LÖVE loads Lua chunks. BBT does not rewrite `Beatblock.exe` or packed archives. The standalone bootstrap uses Lovely's supported `{{lovely_hack:patch_dir}}` placeholder. Opening Online starts a literal-source LÖVE worker thread, passes the installed mod path through a channel, launches the GUI-subsystem runtime without a console, and connects to `\\.\pipe\beatblock-online-v3`. Bundled LuaSocket on `127.0.0.1:8975` remains the isolated fallback when LuaJIT FFI is unavailable. Normal menus never create this thread.
 
 The bundled injector is built reproducibly from Lovely v0.9 with the default console disabled; `--enable-console` is retained for developer diagnosis. The maintained delta is recorded in `third-party/lovely-no-console.patch`. Existing Lovely installations are backed up and restored according to the installer transaction rather than overwritten blindly.
 

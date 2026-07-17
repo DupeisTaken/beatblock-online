@@ -381,6 +381,7 @@ impl RendererManager {
             .env("BBT_RENDERER_HEIGHT", slot.height.to_string())
             .env("BBT_RENDERER_FPS", slot.fps.to_string())
             .env("BBT_RENDERER_DELAY_MS", slot.delay_ms.to_string())
+            .env("BBT_RENDERER_AUDIO", if slot.featured { "1" } else { "0" })
             .env("BBT_RENDERER_CHART", chart_path)
             .env("BBT_RENDERER_VARIANT", variant)
             .env("APPDATA", renderer_profile)
@@ -427,6 +428,13 @@ impl RendererManager {
             .lock()
             .expect("renderer observations poisoned")
             .remove(&reset.id);
+    }
+
+    /// Stops only the child process while preserving its desired slot config.
+    /// Feature switches use this to silence the old audio source before either
+    /// process is relaunched with its new authority.
+    pub fn stop_process(&self, slot_id: &str) {
+        self.kill_process(slot_id);
     }
 
     pub fn stop_participant(&self, participant_id: &str) {
@@ -794,6 +802,7 @@ mod tests {
         assert_eq!(env("APPDATA"), Some(profile.clone()));
         assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("A")));
+        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
         assert_eq!(
             env("BBT_RENDERER_ERROR_PATH"),
             Some(manager.error_path("A"))

@@ -22,6 +22,8 @@
     "test:patch-validation": "node --test scripts/validate-patches.test.mjs",
     "test:installer": "powershell -NoProfile -File scripts/test-install-mod.ps1",
     "test:runtime": "node scripts/test-runtime-lifecycle.mjs",
+    "test:ui": "node scripts/test-ui.mjs",
+    "test:ui:update": "node scripts/test-ui.mjs --update",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "package:mods": "node scripts/package-mods.mjs"

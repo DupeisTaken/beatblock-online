@@ -18,11 +18,12 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
-const AUTH_IDENTITY: &[u8] = b"beatblock-online-room-v2";
+const AUTH_IDENTITY: &[u8] = b"beatblock-online-room-v3";
 const MAX_CONTROL_FRAME: usize = 1_048_576;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_PASSWORD_FAILURE_IPS: usize = 4_096;
@@ -48,11 +49,33 @@ pub enum NetworkEvent {
         session_id: String,
         sample: RenderSample,
     },
+    ChartTransferProgress {
+        session_id: String,
+        request_id: String,
+        received: u64,
+        total: u64,
+    },
+    ChartTransferReceived {
+        session_id: String,
+        header: ChartTransferHeader,
+        path: std::path::PathBuf,
+    },
     Disconnected {
         session_id: String,
         reason: String,
     },
     Diagnostic(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartTransferHeader {
+    pub request_id: String,
+    pub name: String,
+    pub size: u64,
+    pub archive_sha256: String,
+    pub chart_hash: String,
+    pub contains_executable_content: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +322,68 @@ impl NetworkHub {
         bail!("render datagrams are sent by participants, not the host")
     }
 
+    /// Relays an already validated render sample only to authorized
+    /// Commentators. This avoids broadcasting high-rate telemetry to ordinary
+    /// spectators and keeps local mirror enablement an explicit subscription.
+    pub async fn send_render_sample_to(
+        &self,
+        session_ids: &[String],
+        sample: &RenderSample,
+    ) -> Result<()> {
+        let bytes = sample.encode().to_vec();
+        let connections = self.peer_connections.read().await;
+        for session_id in session_ids {
+            if let Some(connection) = connections.get(session_id) {
+                connection.send_datagram(bytes.clone().into())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends one bounded chart archive on a QUIC uni stream. Control messages
+    /// carry consent and metadata; package bytes never compete with the room's
+    /// ordered control stream.
+    pub async fn send_chart_transfer(
+        &self,
+        session_id: &str,
+        header: &ChartTransferHeader,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        if header.size > crate::transfer::MAX_TRANSFER_BYTES {
+            bail!("chart transfer exceeds 1 GiB");
+        }
+        let connection = self
+            .peer_connections
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .context("chart transfer peer is not connected")?;
+        let mut stream = connection.open_uni().await?;
+        write_frame(&mut stream, header).await?;
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut sent = 0u64;
+        loop {
+            let count = file.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            sent = sent.saturating_add(count as u64);
+            if sent > header.size || sent > crate::transfer::MAX_TRANSFER_BYTES {
+                stream.reset(2u32.into())?;
+                bail!("chart package changed or exceeded its offered size");
+            }
+            stream.write_all(&buffer[..count]).await?;
+        }
+        if sent != header.size {
+            stream.reset(2u32.into())?;
+            bail!("chart package size changed during transfer");
+        }
+        stream.finish()?;
+        Ok(())
+    }
+
     pub async fn shutdown(&self) {
         self.shutdown_with_reason("Runtime stopped").await;
     }
@@ -358,7 +443,8 @@ impl NetworkHub {
                 &AuthWelcome {
                     accepted: false,
                     session_id: String::new(),
-                    message: "Incompatible protocol version".into(),
+                    message: "This room uses Beatblock Online protocol v3; update every client"
+                        .into(),
                     resume_token: None,
                 },
             )
@@ -514,6 +600,68 @@ impl NetworkHub {
                     }
                 }
             });
+            let transfer_events = events.clone();
+            let transfer_session = session_id.clone();
+            let transfer_connection = connection.clone();
+            let transfers = tokio::spawn(async move {
+                while let Ok(mut stream) = transfer_connection.accept_uni().await {
+                    let result = async {
+                        let header: ChartTransferHeader = read_frame(&mut stream).await?;
+                        if header.size > crate::transfer::MAX_TRANSFER_BYTES {
+                            bail!("incoming chart transfer exceeds 1 GiB");
+                        }
+                        let directory = std::env::temp_dir().join("beatblock-online-transfers");
+                        tokio::fs::create_dir_all(&directory).await?;
+                        let path = directory.join(format!("{}.partial", header.request_id));
+                        let mut file = tokio::fs::File::create(&path).await?;
+                        let mut received = 0u64;
+                        loop {
+                            let chunk = tokio::time::timeout(
+                                Duration::from_secs(30),
+                                stream.read_chunk(64 * 1024, true),
+                            )
+                            .await
+                            .context("chart transfer stalled for 30 seconds")??;
+                            let Some(chunk) = chunk else { break };
+                            received = received.saturating_add(chunk.bytes.len() as u64);
+                            if received > header.size
+                                || received > crate::transfer::MAX_TRANSFER_BYTES
+                            {
+                                bail!("incoming chart transfer exceeded its offered size");
+                            }
+                            file.write_all(&chunk.bytes).await?;
+                            let _ = transfer_events
+                                .send(NetworkEvent::ChartTransferProgress {
+                                    session_id: transfer_session.clone(),
+                                    request_id: header.request_id.clone(),
+                                    received,
+                                    total: header.size,
+                                })
+                                .await;
+                        }
+                        file.flush().await?;
+                        if received != header.size {
+                            bail!("incoming chart transfer ended before completion");
+                        }
+                        let _ = transfer_events
+                            .send(NetworkEvent::ChartTransferReceived {
+                                session_id: transfer_session.clone(),
+                                header,
+                                path,
+                            })
+                            .await;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        let _ = transfer_events
+                            .send(NetworkEvent::Diagnostic(format!(
+                                "chart transfer failed: {error}"
+                            )))
+                            .await;
+                    }
+                }
+            });
             while let Ok(bytes) = connection.read_datagram().await {
                 match RenderSample::decode(&bytes) {
                     Ok(sample) => {
@@ -532,6 +680,7 @@ impl NetworkHub {
                 }
             }
             reliable.abort();
+            transfers.abort();
             peers.write().await.remove(&session_id);
             peer_connections.write().await.remove(&session_id);
             let reason = match connection.close_reason() {
@@ -838,6 +987,59 @@ mod tests {
             }
         };
         assert_eq!(close_reason, "Removed from the room by the host");
+        host.shutdown().await;
+        client.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn streams_one_bounded_chart_archive_without_blocking_control() {
+        let (host_events_tx, mut host_events) = mpsc::channel(32);
+        let host = NetworkHub::new(host_events_tx);
+        let address = host.start_host(0, "correct horse".into()).await.unwrap();
+        let (client_events_tx, mut client_events) = mpsc::channel(32);
+        let client = NetworkHub::new(client_events_tx);
+        client
+            .join(address, "correct horse", "Player", ParticipantRole::Player)
+            .await
+            .unwrap();
+        let peer = loop {
+            if let NetworkEvent::Authenticated {
+                session_id,
+                hosting: true,
+                ..
+            } = host_events.recv().await.unwrap()
+            {
+                break session_id;
+            }
+        };
+        let root = std::env::temp_dir().join(format!("bbt-quic-file-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("chart.zip");
+        std::fs::write(&source, b"bounded chart bytes").unwrap();
+        let header = ChartTransferHeader {
+            request_id: "transfer-1".into(),
+            name: "chart.zip".into(),
+            size: std::fs::metadata(&source).unwrap().len(),
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: false,
+        };
+        host.send_chart_transfer(&peer, &header, &source)
+            .await
+            .unwrap();
+        let received = loop {
+            match tokio::time::timeout(Duration::from_secs(3), client_events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                NetworkEvent::ChartTransferReceived { path, .. } => break path,
+                _ => {}
+            }
+        };
+        assert_eq!(std::fs::read(&received).unwrap(), b"bounded chart bytes");
+        let _ = std::fs::remove_file(received);
+        let _ = std::fs::remove_dir_all(root);
         host.shutdown().await;
         client.shutdown().await;
     }

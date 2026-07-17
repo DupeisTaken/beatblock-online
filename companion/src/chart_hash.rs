@@ -8,7 +8,13 @@ use std::{
 };
 use walkdir::WalkDir;
 
-const JUNK: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+const JUNK: &[&str] = &[
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    ".bbt-import.json",
+    ".bbt-chart-hash",
+];
 const MAX_CHART_FILES: usize = 20_000;
 const MAX_CHART_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_CHART_PATH_BYTES: usize = 1_024;

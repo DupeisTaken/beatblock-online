@@ -75,7 +75,7 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 "Binding UDP and preparing the room",
             )
             .await;
-            tokio::time::timeout(
+            let hosted = tokio::time::timeout(
                 Duration::from_secs(12),
                 state.host_room(
                     name,
@@ -90,7 +90,16 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             )
             .await
             .context("room setup timed out while binding or mapping the host port")?
-            .map(|_| ())
+            .map(|_| ());
+            if hosted.is_ok() {
+                state.room.write().await.snapshot.allow_chart_transfers = message
+                    .payload
+                    .get("allowChartTransfers")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                state.publish_room().await?;
+            }
+            hosted
         }
         "room.join_request" | "lobby.join_request" => {
             let address = required(&message.payload, "address")?;
@@ -169,14 +178,18 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             state.admit(id, admit, role).await
         }
         "room.role_set" => {
-            state.require_host_control()?;
             let id = required(&message.payload, "sessionId")?;
             let role = parse_role(message.payload.get("role"))?;
-            state.room.write().await.set_role(id, role)?;
-            if role == ParticipantRole::Spectator {
-                state.renderer.stop_participant(id);
-            }
-            state.publish_room().await
+            state.set_participant_role(id, role).await
+        }
+        "room.commentator_set" => {
+            let id = required(&message.payload, "sessionId")?;
+            let enabled = message
+                .payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            state.set_commentator_access(id, enabled).await
         }
         "room.kick" => {
             let id = required(&message.payload, "sessionId")?;
@@ -202,12 +215,17 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             publish_snapshots(state).await
         }
         "renderer.stop" => {
-            state.require_host_control()?;
             let slot = required(&message.payload, "slot")?;
-            if state.renderer.slot(slot).is_none() {
-                anyhow::bail!("unknown renderer slot");
-            }
-            state.renderer.stop_slot(slot);
+            state.stop_renderer_slot(slot).await?;
+            publish_snapshots(state).await
+        }
+        "broadcast.mirror_set" => {
+            let enabled = message
+                .payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            state.set_local_broadcast_mirror(enabled).await?;
             publish_snapshots(state).await
         }
         "history.list" => publish_snapshots(state).await,
@@ -231,6 +249,62 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             publish_snapshots(state).await
         }
         "settings.update" => update_settings(state, &message.payload).await,
+        "chart.cache_clear" => {
+            let active_hash = state
+                .room
+                .read()
+                .await
+                .snapshot
+                .chart
+                .as_ref()
+                .map(|chart| chart.hash.clone());
+            crate::transfer::clear_cache(
+                &state.data_dir.join("chart-cache"),
+                active_hash.as_deref(),
+            )?;
+            publish_snapshots(state).await
+        }
+        "chart.transfer_request" => {
+            if state.is_host.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::bail!("the host already owns the locked chart package");
+            }
+            let room = state.room.read().await.snapshot.clone();
+            let chart = room.chart.context("the host has not locked a chart")?;
+            if chart.official || chart.transfer_mode != ChartTransferMode::HostTransfer {
+                anyhow::bail!("this chart is local-only or the host disabled transfers");
+            }
+            state
+                .network
+                .broadcast(Envelope::new(
+                    "chart.transfer_request",
+                    0,
+                    json!({"chartHash":chart.hash}),
+                ))
+                .await;
+            Ok(())
+        }
+        "chart.transfer_decision" => {
+            state
+                .decide_chart_transfer(
+                    required(&message.payload, "requestId")?,
+                    message
+                        .payload
+                        .get("accept")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    message
+                        .payload
+                        .get("trustRoom")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    message
+                        .payload
+                        .get("executableContentConfirmed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+                .await
+        }
         "runtime.snapshot_request" | "diagnostics.get" => publish_snapshots(state).await,
         "api.token_rotate" => {
             let token = hex::encode(rand::random::<[u8; 24]>());
@@ -288,16 +362,21 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "room.official_chart_verify"
             | "room.admission_set"
             | "room.role_set"
+            | "room.commentator_set"
             | "room.kick"
             | "setlist.remove"
             | "setlist.move"
             | "setlist.advance"
             | "renderer.configure"
             | "renderer.stop"
+            | "broadcast.mirror_set"
             | "history.list"
             | "history.delete"
             | "history.prune"
             | "settings.update"
+            | "chart.cache_clear"
+            | "chart.transfer_request"
+            | "chart.transfer_decision"
             | "runtime.snapshot_request"
             | "diagnostics.get"
             | "api.token_rotate"
@@ -454,14 +533,6 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
 }
 
 async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
-    if message
-        .payload
-        .get("allowTransfer")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        anyhow::bail!("host chart transfer is not available; every player must install and verify the chart locally");
-    }
     let path = required(&message.payload, "path")?;
     let result = canonical_chart_hash_cached(path, state.data_dir.join("chart-cache"))?;
     let selecting = message.kind.ends_with("chart_select_request");
@@ -492,6 +563,12 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
                 .unwrap_or(path)
                 .to_owned(),
         );
+        let official = message
+            .payload
+            .get("official")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let allow_transfer = state.room.read().await.snapshot.allow_chart_transfers;
         let chart = ChartLock {
             hash: result.hash.clone(),
             package_name: result.package_name.clone(),
@@ -503,12 +580,12 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
                 .to_owned(),
             variant: variant.clone(),
             expected_max_hits,
-            official: message
-                .payload
-                .get("official")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            transfer_mode: ChartTransferMode::VerifyOnly,
+            official,
+            transfer_mode: if !official && allow_transfer {
+                ChartTransferMode::HostTransfer
+            } else {
+                ChartTransferMode::VerifyOnly
+            },
         };
         state.lock_chart(chart, append).await?;
     }
@@ -527,6 +604,20 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
         "custom chart",
     );
     let verified = reason.is_none();
+    if verified {
+        let local_path = message
+            .payload
+            .get("levelPath")
+            .and_then(Value::as_str)
+            .unwrap_or(path)
+            .to_owned();
+        *state.selected_chart_path.write().await = Some(local_path.clone());
+        state
+            .chart_paths
+            .write()
+            .await
+            .insert(result.hash.clone(), local_path);
+    }
     state.set_local_verified(verified, reason.clone()).await?;
     publish(
         state,
