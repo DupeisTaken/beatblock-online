@@ -44,6 +44,13 @@ pnpm build              Reproduce all dependencies and build the Windows release
 
 `pnpm build` runs on Windows, downloads checksum-pinned OBS inputs, builds the exact pinned Lovely source with the reviewed patch, and writes ignored outputs under `artifacts/`, `release/`, and `mod/releases/`. Development scripts operate on the repository and disposable `.test` copy. Players install and launch through the GUI and Steam.
 
+Test runs may create owned directories named `bbt-*` under `%TEMP%`. Successful UI
+runs remove their `bbt-ui-*` stage automatically, but a terminated process can
+leave a stage behind. Before deleting leftovers, stop only BBT processes started
+by the test, verify every target is inside `%TEMP%`, and preserve the
+`E:\beatblock-online\.test\ui-harness` fixture. See
+[temporary artifact hygiene](docs/benchmarking.md#temporary-artifact-hygiene).
+
 ## Detailed documentation
 
 - [Installation, repair, adapters, and injection](docs/injection.md)

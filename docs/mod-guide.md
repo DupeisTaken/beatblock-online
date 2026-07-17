@@ -48,6 +48,6 @@ Long renderer failures are bounded in the workspace. **Details** opens the full 
 
 ## Screenshot verification
 
-`pnpm test:ui` stages the tracked harness in a temporary directory, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, renders 25 states sequentially in one process, and cleans the stage. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
+`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 25 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
 
 The gate compares approved files under `tests/ui-baselines` at threshold `0.1` and fails above `0.05%` changed pixels. It also fails on out-of-canvas text and controls below 22 logical pixels. Baselines change only through `pnpm test:ui:update` followed by human review.

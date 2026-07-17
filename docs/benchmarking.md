@@ -2,6 +2,30 @@
 
 Run `pnpm test:stress`, `pnpm benchmark`, or `pnpm trial` from a developer checkout. Release users do not run these commands.
 
+## Temporary artifact hygiene
+
+The Rust integration tests and screenshot gate use per-run directories under the
+current user's `%TEMP%` directory. Rust test directories use feature-specific
+`bbt-*` names, while the screenshot runner uses `bbt-ui-*`. A normal successful
+run removes its active resources, but an interrupted test, killed process, or
+Windows file lock can leave a directory behind.
+
+Treat these separately from persistent development assets:
+
+- `E:\beatblock-online\.test\ui-harness` is the intentionally retained, ignored
+  LÖVE fixture used by `BBT_UI_FIXTURE`.
+- `tests/ui-baselines` is tracked review evidence and must not be cleaned.
+- `reports/ui`, `artifacts`, `release`, `mod/releases`, `companion/target`, and
+  `node_modules` are ignored build or review outputs, not OS-temporary stages.
+- A sibling Git worktree should be removed with `git worktree remove` after its
+  branch is merged. If Git has already unregistered it, inspect the directory
+  before removing any orphaned dependency links.
+
+Before cleanup, confirm that no test-owned runtime, installer, renderer, or
+`love-ui-qa` process is still active. Resolve every candidate to an absolute path
+under `%TEMP%`, constrain deletion to the known `bbt-*` prefix and the relevant
+run window, and never delete user-provided screenshots or the persistent fixture.
+
 The Rust suite covers scoring results, duplicates/gaps, DNF/set totals, setlist advancement, admission authority, role capacity, authenticated reconnect identity, SPAKE2/QUIC exchange, renderer datagrams, safe restart-to-Offline behavior, atomic exports, installer/OBS transactions, selected arbitrary/Unicode targets, missing or corrupt payload detection, monotonic progress, Lovely-module inventory conformance, protocol-v1 rejection, and Lua compilation using Beatblock's own `lua51.dll`. The pure dashboard model is also executed by that runtime to verify phase selection, role permissions, primary-action precedence, eight-row scrolling, focus transitions, and contextual Help.
 
 `companion/examples/host_room_trial.rs` writes a 16-player/32-spectator machine-readable simulation. The benchmark records chart cache, completed coalesced export publication (not just queue latency), buffered NDJSON journals, batched SQLite journals, recovery counts, and direct-room throughput. The runtime lifecycle gate verifies lazy hidden execution, mutex enforcement, explicit shutdown, parent cleanup, and the 30 MB idle working-set target. `scripts/run-trials.mjs` produces `full-capability-latest.json` and `.md` without requiring pnpm's workspace wrapper.
