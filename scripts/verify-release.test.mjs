@@ -89,6 +89,13 @@ test('hosted workflows preserve source-only and artifact-backed test boundaries'
   const fullRustSuite = release.indexOf(
     '- run: cargo test --manifest-path companion/Cargo.toml --lib --bins',
   );
+  const pinnedNightly = release.indexOf('toolchain: nightly-2026-07-15');
+  const stableReset = release.indexOf('- run: rustup default stable');
+  assert.ok(pinnedNightly >= 0, 'release workflow must install the pinned Lovely toolchain');
+  assert.ok(
+    pinnedNightly < stableReset && stableReset < buildStep,
+    'release workflow must restore stable before building and testing the companion',
+  );
   assert.ok(buildStep >= 0, 'release workflow must build publishable artifacts');
   assert.ok(
     buildStep < fullRustSuite,
