@@ -39,6 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: companion
+      - run: powershell -NoProfile -File scripts/test-release-utils.ps1
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
       # These five gates require either the user's isolated game fixture or the
       # verified binary payloads built by the Release workflow. Every source-only

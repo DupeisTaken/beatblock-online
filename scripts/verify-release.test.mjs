@@ -99,6 +99,14 @@ test('hosted workflows preserve source-only and artifact-backed test boundaries'
     -1,
     'release workflow should build artifacts exactly once',
   );
+
+  for (const workflow of [ci, release]) {
+    assert.match(
+      workflow,
+      /powershell -NoProfile -File scripts\/test-release-utils\.ps1/,
+      'hosted Windows workflows must exercise the legacy-compatible checksum helper',
+    );
+  }
 });
 
 test('checksumLine is stable and uses only the asset filename', () => {

@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'release-utils.ps1')
 $tag = 'v0.9.0'
 $commit = '91759da5702618c3b940fbbe8135954414c0ef34'
 $toolchain = 'nightly-2026-07-15'
@@ -97,4 +98,4 @@ if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
 New-Item -ItemType Directory -Force (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $built -Destination $OutputPath -Force
 Write-Host "Built $OutputPath"
-Write-Host "SHA-256 $((Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash)"
+Write-Host "SHA-256 $(Get-Sha256Hex -LiteralPath $OutputPath)"
