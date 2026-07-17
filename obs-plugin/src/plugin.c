@@ -10,6 +10,9 @@ OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-together-obs", "en-US")
 
 #define HEADER_SIZE 64
 #define FRAME_MAGIC "BBTFRAME"
+#define FRAME_VERSION 2
+#define MAPPING_RETRY_NS 500000000ULL
+#define STALE_FRAME_NS 1500000000ULL
 
 struct bbt_video {
     obs_source_t *source;
@@ -22,20 +25,124 @@ struct bbt_video {
     uint8_t *pixels;
     size_t pixel_capacity;
     uint64_t last_frame_ns;
+    uint64_t next_mapping_attempt_ns;
+    uint64_t mapping_opened_ns;
+    HANDLE frame_file;
+    HANDLE frame_mapping;
+    const uint8_t *mapped;
+    size_t mapped_size;
     wchar_t path[MAX_PATH * 2];
 };
 
-static void clear_stale_texture(struct bbt_video *ctx)
+static void close_frame_mapping(struct bbt_video *ctx)
 {
-    if (!ctx->texture || os_gettime_ns() - ctx->last_frame_ns < 1500000000ULL)
-        return;
+    if (ctx->mapped)
+        UnmapViewOfFile(ctx->mapped);
+    if (ctx->frame_mapping)
+        CloseHandle(ctx->frame_mapping);
+    if (ctx->frame_file && ctx->frame_file != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->frame_file);
+    ctx->mapped = NULL;
+    ctx->frame_mapping = NULL;
+    ctx->frame_file = NULL;
+    ctx->mapped_size = 0;
+    ctx->mapping_opened_ns = 0;
+}
+
+static void retry_frame_mapping_later(struct bbt_video *ctx)
+{
+    close_frame_mapping(ctx);
+    ctx->next_mapping_attempt_ns = os_gettime_ns() + MAPPING_RETRY_NS;
+}
+
+static bool ensure_frame_mapping(struct bbt_video *ctx)
+{
+    if (ctx->mapped)
+        return true;
+    uint64_t now = os_gettime_ns();
+    if (now < ctx->next_mapping_attempt_ns)
+        return false;
+    HANDLE file = CreateFileW(ctx->path, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        ctx->next_mapping_attempt_ns = now + MAPPING_RETRY_NS;
+        return false;
+    }
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < HEADER_SIZE ||
+        (uint64_t)size.QuadPart > SIZE_MAX) {
+        CloseHandle(file);
+        ctx->next_mapping_attempt_ns = now + MAPPING_RETRY_NS;
+        return false;
+    }
+    HANDLE mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!mapping) {
+        CloseHandle(file);
+        ctx->next_mapping_attempt_ns = now + MAPPING_RETRY_NS;
+        return false;
+    }
+    const uint8_t *mapped = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!mapped) {
+        CloseHandle(mapping);
+        CloseHandle(file);
+        ctx->next_mapping_attempt_ns = now + MAPPING_RETRY_NS;
+        return false;
+    }
+    ctx->frame_file = file;
+    ctx->frame_mapping = mapping;
+    ctx->mapped = mapped;
+    ctx->mapped_size = (size_t)size.QuadPart;
+    ctx->next_mapping_attempt_ns = 0;
+    ctx->mapping_opened_ns = now;
+    return true;
+}
+
+// The frame view is deliberately FILE_MAP_READ. A locked interlocked
+// read-modify-write faults on that mapping even when the exchange value is
+// unchanged. The sequence field is 8-byte aligned and the plugin is x64-only,
+// so aligned loads are atomic; barriers keep the two snapshots around the
+// pixel copy from being reordered.
+static uint64_t read_committed_sequence(const uint8_t *header)
+{
+    uint64_t sequence;
+    MemoryBarrier();
+    memcpy(&sequence, header + 32, sizeof(sequence));
+    MemoryBarrier();
+    return sequence;
+}
+
+static void clear_video_frame(struct bbt_video *ctx)
+{
     obs_enter_graphics();
-    gs_texture_destroy(ctx->texture);
+    if (ctx->texture)
+        gs_texture_destroy(ctx->texture);
     ctx->texture = NULL;
     obs_leave_graphics();
     ctx->width = 0;
     ctx->height = 0;
-    ctx->sequence = 0;
+    bfree(ctx->pixels);
+    ctx->pixels = NULL;
+    ctx->pixel_capacity = 0;
+}
+
+static void clear_stale_resources(struct bbt_video *ctx)
+{
+    uint64_t now = os_gettime_ns();
+    if (!ctx->last_frame_ns) {
+        if (ctx->mapped && ctx->mapping_opened_ns &&
+            now - ctx->mapping_opened_ns >= STALE_FRAME_NS)
+            retry_frame_mapping_later(ctx);
+        return;
+    }
+    if (now - ctx->last_frame_ns < STALE_FRAME_NS)
+        return;
+    clear_video_frame(ctx);
+    // A mapped view continues pointing at the old file after an atomic file
+    // replacement. Reopen after a quiet renderer so a restarted slot can
+    // publish through a newly-created backing file.
+    retry_frame_mapping_later(ctx);
+    ctx->last_frame_ns = 0;
 }
 
 static const char *video_name(void *unused)
@@ -59,17 +166,26 @@ static void video_update(void *data, obs_data_t *settings)
 {
     struct bbt_video *ctx = data;
     const char *slot = obs_data_get_string(settings, "slot");
-    ctx->slot = slot && *slot ? slot[0] : 'A';
-    if (ctx->slot >= 'a' && ctx->slot <= 'd')
-        ctx->slot -= ('a' - 'A');
+    char requested_slot = slot && *slot ? slot[0] : 'A';
+    if (requested_slot >= 'a' && requested_slot <= 'd')
+        requested_slot -= ('a' - 'A');
+    if (requested_slot < 'A' || requested_slot > 'D')
+        requested_slot = 'A';
+    if (ctx->slot == requested_slot && ctx->path[0])
+        return;
+    ctx->slot = requested_slot;
     build_path(ctx);
+    close_frame_mapping(ctx);
+    clear_video_frame(ctx);
+    ctx->sequence = 0;
+    ctx->last_frame_ns = 0;
+    ctx->next_mapping_attempt_ns = 0;
 }
 
 static void *video_create(obs_data_t *settings, obs_source_t *source)
 {
     struct bbt_video *ctx = bzalloc(sizeof(*ctx));
     ctx->source = source;
-    ctx->slot = 'A';
     video_update(ctx, settings);
     return ctx;
 }
@@ -77,11 +193,8 @@ static void *video_create(obs_data_t *settings, obs_source_t *source)
 static void video_destroy(void *data)
 {
     struct bbt_video *ctx = data;
-    obs_enter_graphics();
-    if (ctx->texture)
-        gs_texture_destroy(ctx->texture);
-    obs_leave_graphics();
-    bfree(ctx->pixels);
+    clear_video_frame(ctx);
+    close_frame_mapping(ctx);
     bfree(ctx);
 }
 
@@ -108,17 +221,16 @@ static void video_tick(void *data, float seconds)
 {
     UNUSED_PARAMETER(seconds);
     struct bbt_video *ctx = data;
-    FILE *file = NULL;
-    if (_wfopen_s(&file, ctx->path, L"rb") || !file) {
-        clear_stale_texture(ctx);
+    if (!ensure_frame_mapping(ctx)) {
+        clear_stale_resources(ctx);
         return;
     }
-
-    uint8_t header[HEADER_SIZE];
-    if (fread(header, 1, sizeof(header), file) != sizeof(header) ||
-        memcmp(header, FRAME_MAGIC, 8) != 0) {
-        fclose(file);
-        clear_stale_texture(ctx);
+    const uint8_t *header = ctx->mapped;
+    uint32_t version;
+    memcpy(&version, header + 8, 4);
+    if (memcmp(header, FRAME_MAGIC, 8) != 0 || version != FRAME_VERSION) {
+        retry_frame_mapping_later(ctx);
+        clear_stale_resources(ctx);
         return;
     }
     uint32_t width, height, stride, frame_count;
@@ -127,12 +239,13 @@ static void video_tick(void *data, float seconds)
     memcpy(&height, header + 16, 4);
     memcpy(&stride, header + 20, 4);
     memcpy(&frame_count, header + 24, 4);
-    memcpy(&sequence, header + 28, 8);
-    memcpy(&frame_size, header + 36, 8);
-    if (!width || !height || !stride || !frame_count || frame_size > (uint64_t)1920 * 1080 * 4 ||
+    sequence = read_committed_sequence(header);
+    memcpy(&frame_size, header + 40, 8);
+    if (!width || width > 1920 || !height || height > 1080 || stride != width * 4 ||
+        !frame_count || frame_count > 3 || !sequence || frame_size != (uint64_t)stride * height ||
+        frame_size > (uint64_t)1920 * 1080 * 4 ||
         sequence == ctx->sequence) {
-        fclose(file);
-        clear_stale_texture(ctx);
+        clear_stale_resources(ctx);
         return;
     }
     if (ctx->pixel_capacity < frame_size) {
@@ -140,10 +253,15 @@ static void video_tick(void *data, float seconds)
         ctx->pixel_capacity = (size_t)frame_size;
     }
     uint64_t index = sequence % frame_count;
-    _fseeki64(file, HEADER_SIZE + index * frame_size, SEEK_SET);
-    bool complete = fread(ctx->pixels, 1, (size_t)frame_size, file) == frame_size;
-    fclose(file);
-    if (!complete)
+    uint64_t offset = HEADER_SIZE + index * frame_size;
+    if (offset > ctx->mapped_size || frame_size > ctx->mapped_size - offset) {
+        retry_frame_mapping_later(ctx);
+        return;
+    }
+    memcpy(ctx->pixels, ctx->mapped + offset, (size_t)frame_size);
+    MemoryBarrier();
+    uint64_t confirmed = read_committed_sequence(header);
+    if (confirmed != sequence)
         return;
 
     obs_enter_graphics();

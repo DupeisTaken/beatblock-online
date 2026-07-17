@@ -8,6 +8,8 @@ use std::{
 };
 
 pub const MAX_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+const MAX_ENTRY_NAME_BYTES: usize = 1_024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +39,9 @@ pub fn inspect_offer(path: &Path, source_host: &str) -> Result<TransferOffer> {
     let mut executable = false;
     let mut archive = zip::ZipArchive::new(File::open(path)?)
         .context("transferred chart is not a valid ZIP archive")?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        bail!("chart package contains too many files");
+    }
     let mut expanded = 0u64;
     for index in 0..archive.len() {
         let item = archive.by_index(index)?;
@@ -99,10 +104,19 @@ pub fn install_received_package(
 
 fn extract_checked(archive_path: &Path, destination: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(archive_path)?)?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        bail!("chart package contains too many files");
+    }
     let canonical_destination = std::fs::canonicalize(destination)?;
+    let mut expanded = 0u64;
+    let mut copied_total = 0u64;
     for index in 0..archive.len() {
-        let mut item = archive.by_index(index)?;
+        let item = archive.by_index(index)?;
         validate_entry(&item)?;
+        expanded = expanded.saturating_add(item.size());
+        if expanded > MAX_TRANSFER_BYTES {
+            bail!("expanded chart package exceeds 1 GiB");
+        }
         let relative = item
             .enclosed_name()
             .context("archive path escapes its destination")?;
@@ -119,13 +133,21 @@ fn extract_checked(archive_path: &Path, destination: &Path) -> Result<()> {
             bail!("archive entry escapes BBT Imports");
         }
         let mut file = File::create(&output)?;
-        std::io::copy(&mut item, &mut file)?;
+        let remaining = MAX_TRANSFER_BYTES.saturating_sub(copied_total);
+        let copied = std::io::copy(&mut item.take(remaining.saturating_add(1)), &mut file)?;
+        if copied > remaining {
+            bail!("expanded chart package exceeds 1 GiB");
+        }
+        copied_total = copied_total.saturating_add(copied);
     }
     Ok(())
 }
 
 fn validate_entry<R: Read>(item: &zip::read::ZipFile<'_, R>) -> Result<()> {
     let raw = item.name().replace('\\', "/");
+    if raw.len() > MAX_ENTRY_NAME_BYTES {
+        bail!("archive entry name exceeds the safety limit");
+    }
     let path = Path::new(&raw);
     if raw.starts_with('/') || raw.starts_with("//") || raw.contains(':') {
         bail!("archive contains an absolute or device path: {raw}");

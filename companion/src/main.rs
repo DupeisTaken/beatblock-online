@@ -8,7 +8,11 @@ use clap::Parser;
 use directories::ProjectDirs;
 use rand::RngCore;
 use serde_json::Value;
-use std::{path::PathBuf, sync::atomic::Ordering, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+    time::{Duration, SystemTime},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Hidden Beatblock Together online runtime")]
@@ -39,16 +43,24 @@ fn load_config(data_dir: &std::path::Path) -> CompanionConfig {
         .unwrap_or_default();
     // Runtime does not link installer UI code. It reads the install manifest only
     // to locate Beatblock when launching isolated renderer processes.
-    if config.game_directory.is_none() {
-        config.game_directory = std::fs::read(data_dir.join("install-manifest.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| {
-                value
-                    .get("gameDirectory")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
+    if let Some(manifest) = std::fs::read(data_dir.join("install-manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    {
+        if config.game_directory.is_none() {
+            config.game_directory = manifest
+                .get("gameDirectory")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        config.firewall_installed = manifest
+            .get("firewallInstalled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        config.firewall_public = manifest
+            .get("firewallPublic")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     }
     config
 }
@@ -70,6 +82,16 @@ fn main() -> Result<()> {
     let _instance = SingleInstance::acquire()?;
     let data_dir = data_directory(args.data_dir);
     std::fs::create_dir_all(data_dir.join("logs"))?;
+    prune_managed_files(
+        &data_dir.join("logs"),
+        Duration::from_secs(14 * 86_400),
+        64 * 1024 * 1024,
+    );
+    prune_managed_files(
+        &data_dir.join("chart-cache"),
+        Duration::from_secs(30 * 86_400),
+        128 * 1024 * 1024,
+    );
     let file_appender = tracing_appender::rolling::daily(data_dir.join("logs"), "runtime.log");
     let (writer, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
@@ -99,43 +121,103 @@ fn main() -> Result<()> {
     handle.spawn(async move { network_state.run_network_events(network_events).await });
     let render_state = state.clone();
     handle.spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(8));
-        let mut health_tick = 0u8;
-        let mut snapshot_tick = 0u8;
         loop {
-            tick.tick().await;
+            let delay = render_state
+                .renderer
+                .active_input_fps()
+                .map(|fps| Duration::from_micros(1_000_000 / fps.max(1) as u64))
+                .unwrap_or(Duration::from_millis(250));
+            tokio::time::sleep(delay).await;
+            if render_state.renderer.active_input_fps().is_none() {
+                continue;
+            }
             render_state
                 .renderer
                 .write_aligned_inputs(unix_ms() * 1_000);
-            health_tick = health_tick.wrapping_add(1);
-            if health_tick >= 12 {
-                health_tick = 0;
-                render_state.renderer.refresh_health(unix_ms());
-                snapshot_tick += 1;
-                if snapshot_tick >= 5 {
-                    snapshot_tick = 0;
-                    render_state.publish_renderer_snapshot();
-                }
+        }
+    });
+    let health_state = state.clone();
+    handle.spawn(async move {
+        let mut snapshot_elapsed = Duration::ZERO;
+        loop {
+            let delay = if health_state.renderer.active_input_fps().is_some() {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(500)
+            };
+            tokio::time::sleep(delay).await;
+            health_state.renderer.refresh_health(unix_ms());
+            snapshot_elapsed += delay;
+            if snapshot_elapsed >= Duration::from_millis(500) {
+                snapshot_elapsed = Duration::ZERO;
+                health_state.publish_renderer_snapshot();
             }
         }
     });
     let export_state = state.clone();
     handle.spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(33));
         let mut had_featured_state = false;
         loop {
-            tick.tick().await;
+            let delay = if export_state.renderer.has_active_featured_slot() {
+                Duration::from_millis(33)
+            } else {
+                Duration::from_millis(250)
+            };
+            tokio::time::sleep(delay).await;
             if let Some(featured) = export_state.renderer.aligned_featured_state(unix_ms()) {
-                let _ = beatblock_together_companion::exports::write_featured_exports(
-                    &export_state.data_dir.join("exports"),
-                    &featured,
-                );
+                export_state.exports.publish_featured(Some(featured));
                 had_featured_state = true;
             } else if had_featured_state {
-                let _ = beatblock_together_companion::exports::clear_featured_exports(
-                    &export_state.data_dir.join("exports"),
-                );
+                export_state.exports.publish_featured(None);
                 had_featured_state = false;
+            }
+        }
+    });
+    let storage_state = state.clone();
+    handle.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(25));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if storage_state.storage.has_pending_events() {
+                let storage = storage_state.storage.clone();
+                let storage_result =
+                    tokio::task::spawn_blocking(move || storage.flush_pending_events()).await;
+                if let Err(error) = storage_result
+                    .map_err(anyhow::Error::from)
+                    .and_then(|result| result)
+                {
+                    tracing::warn!(%error, "journal storage batch failed");
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    });
+    let persistence_state = state.clone();
+    handle.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(25));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut room_tick = false;
+        let mut last_disconnect_scan = tokio::time::Instant::now();
+        let mut room_retry_at = tokio::time::Instant::now();
+        let mut last_room_warning = tokio::time::Instant::now() - Duration::from_secs(5);
+        loop {
+            tick.tick().await;
+            room_tick = !room_tick;
+            if room_tick && tokio::time::Instant::now() >= room_retry_at {
+                if let Err(error) = persistence_state.flush_room_updates().await {
+                    room_retry_at = tokio::time::Instant::now() + Duration::from_millis(250);
+                    if last_room_warning.elapsed() >= Duration::from_secs(5) {
+                        tracing::warn!(%error, "coalesced room publication failed");
+                        last_room_warning = tokio::time::Instant::now();
+                    }
+                }
+            }
+            if last_disconnect_scan.elapsed() >= Duration::from_secs(1) {
+                last_disconnect_scan = tokio::time::Instant::now();
+                if let Err(error) = persistence_state.expire_due_disconnects(unix_ms()).await {
+                    tracing::warn!(%error, "disconnect expiry publication failed");
+                }
             }
         }
     });
@@ -166,11 +248,71 @@ fn main() -> Result<()> {
                 }
             }
         }
+        if let Err(error) = state.flush_room_updates().await {
+            tracing::warn!(%error, "final room publication failed");
+        }
+        let storage = state.storage.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || storage.flush_pending_events())
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+        {
+            tracing::warn!(%error, "final journal storage batch failed");
+        }
+        state.journals.flush();
+        state.cancel_background_tasks();
+        state.release_nat_mapping().await;
         state.renderer.stop_all();
         state.network.shutdown().await;
+        state.exports.flush();
     });
+    // A wedged filesystem call inside spawn_blocking must not keep the hidden
+    // runtime alive forever after Beatblock has exited.
+    runtime.shutdown_timeout(Duration::from_secs(2));
     tracing::info!("runtime stopped");
     Ok(())
+}
+
+/// Applies both an age and size ceiling to runtime-owned diagnostic/cache
+/// directories. Imported charts, match summaries, and user files are outside
+/// these managed paths and are never considered for deletion.
+fn prune_managed_files(directory: &Path, max_age: Duration, max_bytes: u64) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let cutoff = SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut files = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata.is_file().then(|| {
+                (
+                    entry.path(),
+                    metadata.len(),
+                    metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    files.retain(|(path, _, modified)| {
+        if *modified < cutoff {
+            let _ = std::fs::remove_file(path);
+            false
+        } else {
+            true
+        }
+    });
+    files.sort_by_key(|(_, _, modified)| std::cmp::Reverse(*modified));
+    let mut retained = 0u64;
+    for (path, size, _) in files {
+        if retained.saturating_add(size) > max_bytes {
+            let _ = std::fs::remove_file(path);
+        } else {
+            retained = retained.saturating_add(size);
+        }
+    }
 }
 
 #[cfg(windows)]

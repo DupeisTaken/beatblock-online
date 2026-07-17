@@ -6,7 +6,13 @@
     "Envelope": {
       "additionalProperties": false,
       "type": "object",
-      "required": ["version", "type", "sequence", "runTimeUs", "payload"],
+      "required": [
+        "version",
+        "type",
+        "sequence",
+        "runTimeUs",
+        "payload"
+      ],
       "properties": {
         "version": {
           "const": 2,
@@ -140,7 +146,12 @@
     "Rules": {
       "additionalProperties": false,
       "type": "object",
-      "required": ["rate", "pauseAllowed", "retryAllowed", "forceStart"],
+      "required": [
+        "rate",
+        "pauseAllowed",
+        "retryAllowed",
+        "forceStart"
+      ],
       "properties": {
         "rate": {
           "const": 1,
@@ -596,7 +607,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "chart", "completed"],
+            "required": [
+              "id",
+              "chart",
+              "completed"
+            ],
             "properties": {
               "id": {
                 "type": "string"
@@ -681,7 +696,13 @@
     },
     "RunScoreDelta": {
       "type": "object",
-      "required": ["runSequence", "progress", "beat", "songTimeMs", "totals"],
+      "required": [
+        "runSequence",
+        "progress",
+        "beat",
+        "songTimeMs",
+        "totals"
+      ],
       "properties": {
         "runSequence": {
           "minimum": 0,
@@ -751,7 +772,12 @@
     },
     "ClientHello": {
       "type": "object",
-      "required": ["clientVersion", "gameBuildHash", "distribution", "mods"],
+      "required": [
+        "clientVersion",
+        "gameBuildHash",
+        "distribution",
+        "mods"
+      ],
       "properties": {
         "clientVersion": {
           "minLength": 1,
@@ -777,7 +803,10 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "hash"],
+            "required": [
+              "id",
+              "hash"
+            ],
             "properties": {
               "id": {
                 "type": "string"

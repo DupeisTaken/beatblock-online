@@ -115,6 +115,10 @@ pub struct ManagerConfig {
     pub admission_mode: AdmissionMode,
     pub chart_transfer_mode: ChartTransferMode,
     pub game_directory: Option<String>,
+    #[serde(default)]
+    pub firewall_installed: bool,
+    #[serde(default)]
+    pub firewall_public: bool,
     #[serde(default = "default_true")]
     pub hud_enabled: bool,
 }
@@ -132,6 +136,8 @@ impl Default for ManagerConfig {
             admission_mode: AdmissionMode::HostApproval,
             chart_transfer_mode: ChartTransferMode::VerifyOnly,
             game_directory: None,
+            firewall_installed: false,
+            firewall_public: false,
             hud_enabled: true,
         }
     }
@@ -286,6 +292,8 @@ pub struct RendererSlot {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    #[serde(default)]
+    pub actual_fps: f32,
     pub delay_ms: u32,
     pub featured: bool,
     pub active: bool,
@@ -310,6 +318,7 @@ impl RendererSlot {
             width: 1280,
             height: 720,
             fps: 60,
+            actual_fps: 0.0,
             delay_ms: 500,
             featured,
             active: false,

@@ -4,13 +4,15 @@ use crate::model::{
 };
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct RoomEngine {
     pub snapshot: RoomSnapshot,
     finalized_runs: HashSet<String>,
+    started_runs: HashSet<String>,
+    disconnect_deadlines: HashMap<String, u64>,
 }
 
 impl RoomEngine {
@@ -33,6 +35,8 @@ impl RoomEngine {
                 updated_at_ms: now,
             },
             finalized_runs: HashSet::new(),
+            started_runs: HashSet::new(),
+            disconnect_deadlines: HashMap::new(),
         }
     }
 
@@ -88,6 +92,7 @@ impl RoomEngine {
         display_name: &str,
         requested: ParticipantRole,
     ) -> Result<String> {
+        self.disconnect_deadlines.remove(&session_id);
         if self.snapshot.lifecycle == RoomLifecycle::Closed {
             bail!("room is closed");
         }
@@ -107,6 +112,12 @@ impl RoomEngine {
             participant.invalid_reason = None;
             self.touch();
             return Ok(session_id);
+        }
+        if matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            bail!("a race is in progress; retry joining after results");
         }
         let role = if requested == ParticipantRole::Host {
             ParticipantRole::Player
@@ -159,6 +170,14 @@ impl RoomEngine {
     }
 
     pub fn admit(&mut self, session_id: &str, admit: bool, role: ParticipantRole) -> Result<()> {
+        if admit
+            && matches!(
+                self.snapshot.lifecycle,
+                RoomLifecycle::Countdown | RoomLifecycle::Playing
+            )
+        {
+            bail!("participants cannot be admitted during an active race");
+        }
         let role = self.normalized_role(role);
         if admit {
             self.require_role_capacity(session_id, role)?;
@@ -170,17 +189,25 @@ impl RoomEngine {
         if !admit {
             participant.invalid_reason = Some("Join request rejected by host".into());
         }
+        self.refresh_ready_lifecycle();
         self.touch();
         Ok(())
     }
 
     /// Host-side roster mutations used by the in-game Room page.
     pub fn set_role(&mut self, session_id: &str, role: ParticipantRole) -> Result<()> {
+        if matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            bail!("participant roles are locked during an active race");
+        }
         let role = self.normalized_role(role);
         self.require_role_capacity(session_id, role)?;
         let participant = self.participant_mut(session_id)?;
         participant.role = role;
         participant.ready = false;
+        self.refresh_ready_lifecycle();
         self.touch();
         Ok(())
     }
@@ -189,13 +216,28 @@ impl RoomEngine {
         if session_id == self.snapshot.host_session_id {
             bail!("the host cannot kick itself");
         }
+        let participant = self
+            .player(session_id)
+            .ok_or_else(|| anyhow::anyhow!("participant was not found"))?;
+        // Pending approval requests can still be rejected during a race. Once
+        // admitted, a racer stays locked into the authoritative result roster.
+        if participant.admitted
+            && matches!(
+                self.snapshot.lifecycle,
+                RoomLifecycle::Countdown | RoomLifecycle::Playing
+            )
+        {
+            bail!("active participants cannot be removed during a race");
+        }
         let before = self.snapshot.participants.len();
+        self.disconnect_deadlines.remove(session_id);
         self.snapshot
             .participants
             .retain(|participant| participant.session_id != session_id);
         if before == self.snapshot.participants.len() {
             bail!("participant was not found");
         }
+        self.refresh_ready_lifecycle();
         self.touch();
         Ok(())
     }
@@ -256,6 +298,9 @@ impl RoomEngine {
     }
 
     pub fn advance_setlist(&mut self) -> Result<()> {
+        if self.snapshot.lifecycle != RoomLifecycle::Results {
+            bail!("the setlist can advance only after chart results");
+        }
         let index = self
             .snapshot
             .current_setlist_index
@@ -265,17 +310,20 @@ impl RoomEngine {
         }
         let next = index + 1;
         if next >= self.snapshot.setlist.len() {
-            self.snapshot.lifecycle = RoomLifecycle::SetComplete;
-        } else {
-            self.snapshot.current_setlist_index = Some(next);
-            self.snapshot.chart = Some(self.snapshot.setlist[next].chart.clone());
-            self.reset_for_locked_chart();
+            bail!("the setlist has no remaining chart");
         }
+        self.snapshot.current_setlist_index = Some(next);
+        self.snapshot.chart = Some(self.snapshot.setlist[next].chart.clone());
+        self.reset_for_locked_chart();
         self.touch();
         Ok(())
     }
 
     pub fn disconnect(&mut self, session_id: &str) {
+        self.disconnect_at(session_id, unix_ms());
+    }
+
+    fn disconnect_at(&mut self, session_id: &str, now_ms: u64) {
         let was_playing = matches!(
             self.snapshot.lifecycle,
             RoomLifecycle::Countdown | RoomLifecycle::Playing
@@ -287,16 +335,20 @@ impl RoomEngine {
                 participant.validity = RunValidity::Pending;
                 participant.invalid_reason = Some("Disconnected; awaiting journal recovery".into());
             }
+            self.disconnect_deadlines
+                .insert(session_id.to_owned(), now_ms.saturating_add(30_000));
+            self.refresh_ready_lifecycle();
             self.touch();
         }
     }
 
     pub fn expire_disconnect(&mut self, session_id: &str) -> bool {
+        self.disconnect_deadlines.remove(session_id);
         let playing = matches!(
             self.snapshot.lifecycle,
             RoomLifecycle::Countdown | RoomLifecycle::Playing
         );
-        let expired = if let Ok(participant) = self.participant_mut(session_id) {
+        let expired_run = if let Ok(participant) = self.participant_mut(session_id) {
             if playing && participant.admitted && !participant.connected {
                 participant.validity = RunValidity::Dnf;
                 participant.invalid_reason = Some("Disconnected for more than 30 seconds".into());
@@ -307,13 +359,49 @@ impl RoomEngine {
         } else {
             false
         };
-        if expired {
+        if expired_run {
             self.finalized_runs.insert(session_id.to_owned());
             self.rank();
             self.try_finish_chart();
             self.touch();
+            return true;
         }
-        expired
+
+        // A pre-game reconnect reservation lasts for 30 seconds. Once that
+        // grace period expires, remove the stale roster entry so abandoned
+        // admission requests cannot consume room capacity indefinitely.
+        let pregame = matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        );
+        let removable = pregame
+            && self
+                .player(session_id)
+                .is_some_and(|participant| !participant.connected);
+        if removable {
+            self.snapshot
+                .participants
+                .retain(|participant| participant.session_id != session_id);
+            self.refresh_ready_lifecycle();
+            self.touch();
+            return true;
+        }
+        false
+    }
+
+    /// Expires only disconnects whose current grace deadline has elapsed. A
+    /// reconnect followed by another drop replaces the old deadline, so stale
+    /// watchdogs cannot shorten the participant's new 30-second grace period.
+    pub fn expire_due_disconnects(&mut self, now_ms: u64) -> Vec<String> {
+        let due = self
+            .disconnect_deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now_ms)
+            .map(|(session_id, _)| session_id.clone())
+            .collect::<Vec<_>>();
+        due.into_iter()
+            .filter(|session_id| self.expire_disconnect(session_id))
+            .collect()
     }
 
     pub fn lock_chart(&mut self, chart: ChartLock, append_to_setlist: bool) -> Result<()> {
@@ -358,6 +446,12 @@ impl RoomEngine {
         verified: bool,
         reason: Option<String>,
     ) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("chart verification is locked in the current room state");
+        }
         let participant = self.participant_mut(session_id)?;
         participant.verified = verified;
         if !verified {
@@ -370,9 +464,9 @@ impl RoomEngine {
     }
 
     pub fn set_ready(&mut self, session_id: &str, ready: bool) -> Result<()> {
-        if matches!(
+        if !matches!(
             self.snapshot.lifecycle,
-            RoomLifecycle::Countdown | RoomLifecycle::Playing | RoomLifecycle::Closed
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
         ) {
             bail!("ready state is locked");
         }
@@ -387,6 +481,12 @@ impl RoomEngine {
     }
 
     pub fn schedule_start(&mut self, force: bool, delay_ms: u64) -> Result<u64> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("the room cannot start from its current lifecycle");
+        }
         if self.snapshot.chart.is_none() {
             bail!("select a chart first");
         }
@@ -409,8 +509,92 @@ impl RoomEngine {
             }
         }
         self.finalized_runs.clear();
+        self.started_runs.clear();
         self.touch();
         Ok(start)
+    }
+
+    pub fn start_run(&mut self, session_id: &str, max_hits: u64) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            bail!("room is not accepting run starts");
+        }
+        let expected_max_hits = self
+            .snapshot
+            .chart
+            .as_ref()
+            .context("room has no locked chart")?
+            .expected_max_hits;
+        if max_hits != expected_max_hits {
+            bail!(
+                "run note count does not match the locked chart: expected {expected_max_hits}, got {max_hits}"
+            );
+        }
+        let participant = self.participant_mut(session_id)?;
+        if !participant.admitted
+            || !matches!(
+                participant.role,
+                ParticipantRole::Player | ParticipantRole::Host
+            )
+        {
+            bail!("only admitted players can start a run");
+        }
+        if !participant.verified {
+            bail!("the locked chart must be verified before starting a run");
+        }
+        participant.totals.max_hits = max_hits;
+        self.started_runs.insert(session_id.to_owned());
+        self.touch();
+        Ok(())
+    }
+
+    /// Finalizes assigned players that never reached the game after a bounded
+    /// launch grace period. This prevents Force Start or a failed client load
+    /// from leaving the room permanently stuck in Countdown/Playing.
+    pub fn expire_unstarted_runs(&mut self) -> bool {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            return false;
+        }
+        let mut changed = false;
+        for participant in &mut self.snapshot.participants {
+            let assigned = participant.admitted
+                && matches!(
+                    participant.role,
+                    ParticipantRole::Player | ParticipantRole::Host
+                );
+            if assigned
+                && !self.started_runs.contains(&participant.session_id)
+                && !self.finalized_runs.contains(&participant.session_id)
+            {
+                participant.validity = RunValidity::Dnf;
+                participant.accuracy = 0.0;
+                participant.invalid_reason =
+                    Some("Game did not start within the 30-second launch grace period".into());
+                self.finalized_runs.insert(participant.session_id.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.rank();
+            self.try_finish_chart();
+            self.touch();
+        }
+        changed
+    }
+
+    pub fn expire_due_unstarted_runs(&mut self, now_ms: u64) -> bool {
+        let Some(start_ms) = self.snapshot.scheduled_start_time_ms else {
+            return false;
+        };
+        if now_ms < start_ms.saturating_add(30_000) {
+            return false;
+        }
+        self.expire_unstarted_runs()
     }
 
     pub fn mark_playing(&mut self) {
@@ -486,9 +670,11 @@ impl RoomEngine {
         Ok(())
     }
 
-    pub fn finish_run(&mut self, session_id: &str, run_id: &str) -> Result<()> {
-        let final_key = format!("{session_id}:{run_id}");
-        if self.finalized_runs.contains(&final_key) {
+    pub fn finish_run(&mut self, session_id: &str, _run_id: &str) -> Result<()> {
+        // One participant contributes once per scheduled chart. Trusting the
+        // client-provided run id here allowed duplicate ids to finish a room
+        // before the other participants had reported results.
+        if self.finalized_runs.contains(session_id) {
             return Ok(());
         }
         let participant = self.participant_mut(session_id)?;
@@ -500,7 +686,7 @@ impl RoomEngine {
             0.0
         };
         participant.set_total = ((participant.set_total + contribution) * 100.0).floor() / 100.0;
-        self.finalized_runs.insert(final_key);
+        self.finalized_runs.insert(session_id.to_owned());
         self.try_finish_chart();
         self.touch();
         Ok(())
@@ -509,6 +695,7 @@ impl RoomEngine {
     pub fn close(&mut self) {
         self.snapshot.lifecycle = RoomLifecycle::Closed;
         self.snapshot.scheduled_start_time_ms = None;
+        self.disconnect_deadlines.clear();
         self.touch();
     }
 
@@ -540,7 +727,12 @@ impl RoomEngine {
     }
 
     fn refresh_ready_lifecycle(&mut self) {
-        if self.snapshot.chart.is_some() {
+        if self.snapshot.chart.is_some()
+            && matches!(
+                self.snapshot.lifecycle,
+                RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+            )
+        {
             self.snapshot.lifecycle = if self.all_assigned_ready() {
                 RoomLifecycle::Ready
             } else {
@@ -852,6 +1044,22 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_replaces_the_old_disconnect_deadline() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.disconnect_at(&player, 1_000);
+        room.request_join_with_id(player.clone(), "Player", ParticipantRole::Player)
+            .unwrap();
+        room.disconnect_at(&player, 2_000);
+
+        assert!(room.expire_due_disconnects(31_000).is_empty());
+        assert_eq!(room.expire_due_disconnects(32_000), vec![player.clone()]);
+        assert!(room.player(&player).is_none());
+    }
+
+    #[test]
     fn disconnect_expiry_marks_dnf_and_allows_results_to_complete() {
         let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
         let host = room.snapshot.host_session_id.clone();
@@ -872,5 +1080,137 @@ mod tests {
         assert!(room.expire_disconnect(&player));
         assert_eq!(room.player(&player).unwrap().validity, RunValidity::Dnf);
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+    }
+
+    #[test]
+    fn pregame_disconnect_expiry_releases_capacity_and_recomputes_ready_state() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.disconnect(&player);
+
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
+        assert!(room.expire_disconnect(&player));
+        assert!(room.player(&player).is_none());
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
+    }
+
+    #[test]
+    fn role_changes_recompute_chart_readiness() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        for session in [&host, &player] {
+            room.set_verified(session, true, None).unwrap();
+            room.set_ready(session, true).unwrap();
+        }
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
+
+        room.set_role(&player, ParticipantRole::Spectator).unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
+        room.set_role(&player, ParticipantRole::Player).unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
+    }
+
+    #[test]
+    fn completed_room_rejects_ready_verification_and_restart_actions() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+        room.mark_playing();
+        room.finish_run(&host, "finished").unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+
+        assert!(room.set_ready(&host, false).is_err());
+        assert!(room.set_verified(&host, true, None).is_err());
+        assert!(room.schedule_start(true, 2_000).is_err());
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+    }
+
+    #[test]
+    fn active_race_rejects_new_join_and_admission_but_allows_authenticated_resume() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::HostApproval);
+        let host = room.snapshot.host_session_id.clone();
+        let pending = room
+            .request_join("Pending", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+
+        assert!(room.request_join("Late", ParticipantRole::Player).is_err());
+        assert!(room.admit(&pending, true, ParticipantRole::Player).is_err());
+        room.disconnect(&pending);
+        room.request_join_with_id(pending.clone(), "Ignored", ParticipantRole::Spectator)
+            .unwrap();
+        assert!(room.player(&pending).unwrap().connected);
+        assert!(!room.player(&pending).unwrap().admitted);
+    }
+
+    #[test]
+    fn active_race_allows_rejecting_pending_request_but_not_kicking_racer() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::HostApproval);
+        let host = room.snapshot.host_session_id.clone();
+        let racer = room.request_join("Racer", ParticipantRole::Player).unwrap();
+        room.admit(&racer, true, ParticipantRole::Player).unwrap();
+        let pending = room
+            .request_join("Pending", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        for session in [&host, &racer] {
+            room.set_verified(session, true, None).unwrap();
+            room.set_ready(session, true).unwrap();
+        }
+        room.schedule_start(false, 2_000).unwrap();
+
+        assert!(room.kick(&racer).is_err());
+        room.kick(&pending).unwrap();
+        assert!(room.player(&pending).is_none());
+    }
+
+    #[test]
+    fn finish_is_participant_scoped_and_unstarted_watchdog_completes_room() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        for session in [&host, &player] {
+            room.set_verified(session, true, None).unwrap();
+            room.set_ready(session, true).unwrap();
+        }
+        let scheduled = room.schedule_start(false, 2_000).unwrap();
+        room.start_run(&host, 100).unwrap();
+        room.finish_run(&host, "first-id").unwrap();
+        room.finish_run(&host, "different-id").unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Countdown);
+
+        assert!(!room.expire_due_unstarted_runs(scheduled + 29_999));
+        assert!(room.expire_due_unstarted_runs(scheduled + 30_000));
+        assert_eq!(room.player(&player).unwrap().validity, RunValidity::Dnf);
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+    }
+
+    #[test]
+    fn setlist_cannot_advance_before_results() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        room.lock_chart(named_chart("First", 'a'), true).unwrap();
+        room.lock_chart(named_chart("Second", 'b'), true).unwrap();
+        assert!(room.advance_setlist().is_err());
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
     }
 }

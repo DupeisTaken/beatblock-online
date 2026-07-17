@@ -30,7 +30,9 @@ name = "bbt.renderer"
 [[patches]]
 [patches.pattern]
 target = "main.lua"
-pattern = "cs:init()"
+# Qualify the startup initialization so the editor hotkey's cs:init() is not
+# treated as a second candidate by Lovely.
+pattern = "cs = bs.load(project.initState)\n\tcs:init()"
 position = "after"
 payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.start() end"
 match_indent = true
@@ -41,7 +43,7 @@ times = 1
 target = "states/Game.lua"
 pattern = "love.graphics.setCanvas(shuv.canvas)"
 position = "after"
-payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.capture(self.canv) end"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.captureSafe(self.canv) end"
 match_indent = true
 times = 1
 
@@ -50,7 +52,9 @@ times = 1
 target = "states/Game.lua"
 pattern = "st:setUpdate(function(self,dt)"
 position = "after"
-payload = "if BBT then BBT.update(dt) end; if BBTRenderer and BBTRenderer.active and BBTRenderer.shouldHold() then return end"
+# Let Beatblock's startPending branch finish the threaded chart preload before
+# holding gameplay on the remote participant's paused state.
+payload = "if BBT then BBT.update(dt) end; if BBTRenderer and BBTRenderer.active and BBTRenderer.shouldHold() and not self.startPending then return end"
 match_indent = true
 
 [[patches]]
@@ -124,10 +128,10 @@ times = 1
 
 [[patches]]
 [patches.pattern]
-target = "states/AtomMap.lua"
-pattern = "function st:playLevel(filename, variant)"
+target = "states/SongSelect.lua"
+pattern = "function st:quitToMenu()"
 position = "after"
-payload = "if BBT and BBT.onOfficialChartSelected(self, filename, variant) then return end"
+payload = "if BBT and BBT.cancelChartSelection(self) then return end"
 match_indent = true
 times = 1
 
@@ -146,13 +150,18 @@ target = "states/Menu.lua"
 pattern = "self.mainMenu:addOption('credits',function()"
 position = "before"
 payload = '''
-self.mainMenu:addOption('Online', function()
+-- RadialList localizes option keys and substitutes a question-mark icon when
+-- none is supplied. Register the label for the active language and reuse the
+-- native Play glyph so the injected entry looks intentional on every launch.
+loc.json.bbtOnline = loc.json.bbtOnline or {}
+loc.json.bbtOnline[loc.lang] = 'Online'
+self.mainMenu:addOption('bbtOnline', function()
   local bbtMenuMusicManager = self.menuMusicManager
   cs = bs.load('Online')
   bbtMenuMusicManager:clearOnBeatHooks()
   self:leave()
   cs.menuMusicManager = bbtMenuMusicManager
   cs:init()
-end, 51)
+end, 51, nil, sprites.menu.play)
 '''
 match_indent = true

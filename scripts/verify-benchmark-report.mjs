@@ -19,11 +19,22 @@ if (!(report.metrics?.chartCachedMs < report.metrics?.chartColdMs)) {
 if (!(report.metrics?.exportP95Ms < report.thresholds?.exportP95Ms)) {
   failures.push('export p95 exceeded its threshold');
 }
+if (!(report.metrics?.exportFilesWritten <= report.thresholds?.exportFilesWritten)) {
+  failures.push('coalesced exports wrote too many files');
+}
 if (!(report.metrics?.journalEventsPerSecond > report.thresholds?.journalEventsPerSecond)) {
   failures.push('journal throughput did not exceed its threshold');
 }
+if (
+  !(report.metrics?.sqliteJournalEventsPerSecond > report.thresholds?.sqliteJournalEventsPerSecond)
+) {
+  failures.push('batched SQLite journal throughput did not exceed its threshold');
+}
 if (report.metrics?.journalRecoveredEvents !== report.workload?.journalEvents) {
   failures.push('the benchmark did not recover every journal event');
+}
+if (report.metrics?.sqliteJournalRecoveredEvents !== report.workload?.journalEvents) {
+  failures.push('the benchmark did not recover every batched SQLite journal event');
 }
 
 if (failures.length > 0) {

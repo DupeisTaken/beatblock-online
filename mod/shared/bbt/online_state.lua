@@ -93,9 +93,9 @@ end
 
 local function copyJoinLink()
   if not love.system then return end
-  local address=BBT.settings and BBT.settings.hostAddress or '127.0.0.1'
-  local port=BBT.settings and BBT.settings.hostPort or 32145
-  love.system.setClipboardText('bbt://'..tostring(address)..':'..tostring(port)..'?v=2')
+  local address=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress
+  if not address or address=='' then BBT.lastError='A shareable join address is not available yet.'; return end
+  love.system.setClipboardText('bbt://'..tostring(address)..'?v=2')
 end
 
 local function ensureRoster(self)
@@ -158,7 +158,7 @@ local function participantActions(self,target)
     if not target.admitted then
       addAction(list,'approve','APPROVE','Admit this participant to the room.','green',function()
         BBT.command('room.admission_set',{sessionId=target.sessionId,admit=true,role=target.role}); self.sideMenu=nil
-      end)
+      end,not locked(current))
       addAction(list,'reject','REJECT','Reject this admission request.','red',function()
         requestConfirm(self,'REJECT REQUEST','Reject '..short(target.displayName,24)..' from this room?','REJECT',function()
           BBT.command('room.admission_set',{sessionId=target.sessionId,admit=false,role=target.role}); self.sideMenu=nil
@@ -188,7 +188,7 @@ local function roomOptionActions(self)
       requestConfirm(self,'FORCE START','Start before every player is verified and ready?','FORCE START',function()
         BBT.command('room.start_request',{force=true}); self.sideMenu=nil
       end)
-    end,current.chart~=nil and not locked(current))
+    end,current.chart~=nil and (current.lifecycle=='chart_locked' or current.lifecycle=='ready'))
     addAction(list,'close_room','CLOSE ROOM','Close the room for every participant.','red',function()
       requestConfirm(self,'CLOSE ROOM','Close this room and disconnect every participant?','CLOSE ROOM',function()
         BBT.command('room.close_request',{}); self.sideMenu=nil
@@ -212,21 +212,23 @@ end
 local function overlayActions(self)
   local list,current={},room()
   if self.overlay=='setlist' then
+    local selectionAllowed=current and not locked(current) and BBT.pendingRequestId==nil
+    local verificationAllowed=current and (current.lifecycle=='forming' or current.lifecycle=='chart_locked' or current.lifecycle=='ready') and BBT.pendingRequestId==nil
     if current and host() then
-      addAction(list,'official','SELECT ATOM MAP','Lock an official Beatblock chart.','cyan',function() BBT.openOfficialSelect('host') end)
-      addAction(list,'custom','SELECT CUSTOM','Lock a custom chart package.','cyan',function() BBT.openChartSelect('host') end)
-      addAction(list,'add_official','ADD OFFICIAL','Append an official chart to the set.','green',function() BBT.openOfficialSelect('setlist') end)
-      addAction(list,'add_custom','ADD CUSTOM','Append a custom chart to the set.','green',function() BBT.openChartSelect('setlist') end)
+      addAction(list,'official','SELECT FREEPLAY CHART','Lock an official chart through Beatblock Freeplay.','cyan',function() BBT.openOfficialSelect('host') end,selectionAllowed)
+      addAction(list,'custom','SELECT CUSTOM','Lock a custom chart package.','cyan',function() BBT.openChartSelect('host') end,selectionAllowed)
+      addAction(list,'add_official','ADD FREEPLAY','Append an official chart from Beatblock Freeplay.','green',function() BBT.openOfficialSelect('setlist') end,selectionAllowed)
+      addAction(list,'add_custom','ADD CUSTOM','Append a custom chart to the set.','green',function() BBT.openChartSelect('setlist') end,selectionAllowed)
       local count=#(current.setlist or {}); local index=self.setlistSelection or 1
-      addAction(list,'up','MOVE UP','Move the selected chart earlier.','white',function() BBT.command('setlist.move',{from=index-1,to=math.max(0,index-2)}) end,count>1 and index>1)
-      addAction(list,'down','MOVE DOWN','Move the selected chart later.','white',function() BBT.command('setlist.move',{from=index-1,to=math.min(count-1,index)}) end,count>1 and index<count)
+      addAction(list,'up','MOVE UP','Move the selected chart earlier.','white',function() BBT.command('setlist.move',{from=index-1,to=math.max(0,index-2)}) end,selectionAllowed and count>1 and index>1)
+      addAction(list,'down','MOVE DOWN','Move the selected chart later.','white',function() BBT.command('setlist.move',{from=index-1,to=math.min(count-1,index)}) end,selectionAllowed and count>1 and index<count)
       addAction(list,'remove','REMOVE','Remove the selected setlist chart.','red',function()
         requestConfirm(self,'REMOVE CHART','Remove this chart from the setlist?','REMOVE',function() BBT.command('setlist.remove',{index=index-1}) end)
-      end,count>0)
+      end,selectionAllowed and count>0)
     elseif current and current.chart then
       addAction(list,'locate','LOCATE CHART','Select the exact chart locked by the host.','cyan',function()
         if current.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
-      end)
+      end,verificationAllowed)
     end
   elseif self.overlay=='obs' then
     local target=selectedParticipant(self)
@@ -275,11 +277,12 @@ local function formFields(mode)
     {id='password',label='PASSWORD',max=128,secret=true}, {id='displayName',label='DISPLAY NAME',max=48},
     {id='approval',label='HOST APPROVAL',toggle=true},
   } end
-  return {{id='address',label='HOST IP:PORT',max=80},{id='password',label='PASSWORD',max=128,secret=true},{id='displayName',label='DISPLAY NAME',max=48}}
+  return {{id='address',label='ROOM ADDRESS',max=80},{id='password',label='PASSWORD',max=128,secret=true},{id='displayName',label='DISPLAY NAME',max=48}}
 end
 
 local function openForm(self,mode,spectator)
   self.formMode=mode; self.formSpectator=spectator==true; self.formField=1; self.keyLatch={}; self.formSubmitting=nil
+  BBT.lastError=nil
   local settings=BBT.settings or {}
   local port=tostring(settings.hostPort or 32145)
   local address=tostring(settings.hostAddress or '127.0.0.1')..':'..port
@@ -315,7 +318,8 @@ end
 
 local function submitForm(self)
   local value=self.formValues
-  if value.password=='' then BBT.lastError='A room password is required.'; return end
+  local passwordLength=utf8 and utf8.len and utf8.len(value.password) or #value.password
+  if not passwordLength or passwordLength<4 or passwordLength>128 then BBT.lastError='Room password must contain 4-128 characters.'; return end
   if value.displayName=='' then BBT.lastError='A display name is required.'; return end
   BBT.context.playerName=value.displayName
   if self.formMode=='host' then
@@ -330,6 +334,10 @@ end
 
 local function updateForm(self)
   local fields=formFields(self.formMode); local submitIndex=#fields+1
+  -- Room snapshots are authoritative. If the acknowledgement was delayed or
+  -- lost after a successful operation, leave the form instead of presenting a
+  -- retry button over an already active room.
+  if self.formSubmitting and room() then closeForm(self); return end
   if self.formSubmitting then
     if BBT.pendingRequestId==nil then
       if BBT.lastError then self.formSubmitting=nil else closeForm(self); return end
@@ -406,7 +414,10 @@ local function drawConnect(self)
   local joinAddress=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress
   love.graphics.printf(short(joinAddress or tostring(BBT.settings and BBT.settings.hostPort or 32145),24),156,204,196,'right')
   love.graphics.print('LOCAL API',24,226); love.graphics.printf(BBT.companionConnected and '127.0.0.1:8974' or 'WAITING',202,226,150,'right')
-  love.graphics.print('OBS EXPORTS',24,248); love.graphics.printf(BBT.companionConnected and 'ACTIVE' or 'WAITING',202,248,150,'right')
+  local firewall=BBT.diagnostics and BBT.diagnostics.firewallInstalled
+  local firewallLabel=firewall and ((BBT.diagnostics.firewallPublic and 'PRIVATE + PUBLIC') or 'PRIVATE') or 'RULE MISSING'
+  love.graphics.print('FIREWALL',24,248); setc(firewall and C.green or C.yellow); love.graphics.printf(firewallLabel,202,248,150,'right')
+  setc(C.muted); love.graphics.print('OBS EXPORTS',24,266); love.graphics.printf(BBT.companionConnected and 'ACTIVE' or 'WAITING',202,266,150,'right')
 
   local primary=primaryAction(self); setc(C.muted); love.graphics.print('NEXT ACTION',388,90)
   button(388,110,188,36,primary.label,self.focusZone=='primary',primary.tone,primary.enabled)
@@ -515,7 +526,8 @@ local function drawOverlayList(self)
       setc(active and C.black or (stream.healthy and C.green or (stream.active and C.yellow or C.white))); love.graphics.print('STREAM '..id,46,y)
       love.graphics.printf(short(stream.participantName or 'UNASSIGNED',24),148,y,210,'right')
       local health=stream.healthy and 'LIVE' or (stream.active and 'STARTING' or 'STOPPED')
-      local detail=stream.lastError and short(stream.lastError,42) or (health..'  '..tostring(stream.fps or 60)..'fps  DROP '..tostring(stream.droppedFrames or 0))
+      local actual=stream.actualFps and string.format('%.1f',stream.actualFps) or '--'
+      local detail=stream.lastError and short(stream.lastError,42) or (health..'  '..actual..'/'..tostring(stream.fps or 60)..'fps  DROP '..tostring(stream.droppedFrames or 0))
       setc(active and C.dimBlack or (stream.lastError and C.red or C.muted)); love.graphics.printf(detail,46,y+18,312,'right')
     end
   elseif self.overlay=='history' then
@@ -577,9 +589,14 @@ local function drawSideMenu(self)
     chip(360,113,96,status,statusTone); chip(462,113,114,string.upper(target.role or 'player'),'white')
     setc(C.muted); love.graphics.print('ACCURACY',360,140); setc(C.white); love.graphics.printf(string.format('%.2f',target.accuracy or 100),476,140,100,'right')
     setc(C.muted); love.graphics.print('VERIFIED',360,157); setc(target.verified and C.green or C.yellow); love.graphics.printf(target.verified and 'YES' or 'NO',476,157,100,'right')
+  elseif self.sideMenu=='room' then
+    local endpoint=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress or 'NOT ADVERTISED'
+    local nat=BBT.runtimeSnapshot and BBT.runtimeSnapshot.natMethod or 'CHECKING REACHABILITY'
+    setc(C.muted); love.graphics.print('JOIN',360,113); setc(C.white); love.graphics.printf(short(tostring(endpoint),24),422,113,154,'right')
+    setc(C.muted); love.graphics.print('NETWORK',360,132); setc(C.white); love.graphics.printf(short(string.upper(tostring(nat)),24),422,132,154,'right')
   end
   local actions=sideActions(self); self.sideActions=actions
-  local start=self.sideMenu=='participant' and 181 or 112
+  local start=self.sideMenu=='participant' and 181 or 158
   for index,item in ipairs(actions) do button(360,start+(index-1)*24,216,20,item.label,self.sideSelection==index,item.tone,item.enabled) end
 end
 
@@ -621,7 +638,7 @@ local function drawForm(self)
     local y=78+(index-1)*34; local active=self.formField==index
     setc(active and C.cyan or C.muted); love.graphics.print(field.label,74,y)
     if field.toggle then
-      chip(354,y-4,172,self.formValues[field.id] and 'REQUIRED' or 'PASSWORD ONLY',self.formValues[field.id] and 'green' or 'white')
+      chip(354,y-4,172,self.formValues[field.id] and 'HOST APPROVES' or 'PASSWORD ADMITS',self.formValues[field.id] and 'green' or 'white')
     else
       setc(C.raised); love.graphics.rectangle('fill',230,y-5,296,23,2,2)
       setc(C.black); local value=self.formValues[field.id] or ''; if field.secret then value=string.rep('*',#value) end
@@ -629,12 +646,14 @@ local function drawForm(self)
       if active then setc(C.white); love.graphics.rectangle('line',230.5,y-4.5,295,22,2,2) end
     end
   end
-  local submitLabel=self.formSubmitting and 'WORKING...' or (self.formMode=='host' and 'CREATE ROOM' or 'CONNECT')
+  local submitLabel=self.formSubmitting and string.upper(BBT.pendingRequestProgress or 'WORKING...') or (self.formMode=='host' and 'CREATE ROOM' or 'CONNECT')
   button(178,270,244,28,submitLabel,self.formField==#fields+1,'green',not self.formSubmitting)
   -- Paste guidance is useful only while an editable field has focus. Keep it in the
   -- reserved gap above the action button, away from the persistent form controls.
   local activeField=fields[self.formField]
-  if activeField and not activeField.toggle and not self.formSubmitting then
+  if BBT.lastError and not self.formSubmitting then
+    setc(C.red); love.graphics.printf(BBT.lastError,74,239,452,'center')
+  elseif activeField and not activeField.toggle and not self.formSubmitting then
     setc(C.muted); love.graphics.printf('PASTE  CTRL+V / LEFT-RIGHT',74,246,452,'center')
   end
   setc(C.muted); love.graphics.printf('UP/DOWN FIELDS   ENTER CONTINUE   ESC CANCEL',74,307,452,'center')
@@ -724,7 +743,7 @@ local function updateSideMenu(self)
   local actions=sideActions(self); if #actions==0 then self.sideMenu=nil; return end
   if pressed('menu_up') then self.sideSelection=(self.sideSelection-2)%#actions+1; sound('click') end
   if pressed('menu_down') then self.sideSelection=self.sideSelection%#actions+1; sound('click') end
-  local start=self.sideMenu=='participant' and 181 or 112
+  local start=self.sideMenu=='participant' and 181 or 158
   for index,item in ipairs(actions) do if clicked(360,start+(index-1)*24,216,20) then self.sideSelection=index; activate(item); return end end
   if accept() then activate(actions[self.sideSelection]) elseif pressed('back') then self.sideMenu=nil end
 end
@@ -804,7 +823,8 @@ return function()
       elseif self.previousTextInput then self.previousTextInput(text) end
     end
     love.textinput=self.onlineTextInput
-    BBT.startOnlineRuntime(); BBT.command('runtime.snapshot_request',{})
+    BBT.startOnlineRuntime()
+    if not BBT.pendingRequestId then BBT.command('runtime.snapshot_request',{}) end
   end)
   function st:leave()
     if love.textinput==self.onlineTextInput then love.textinput=self.previousTextInput end
@@ -812,6 +832,8 @@ return function()
   end
   st:setUpdate(function(self,dt)
     if self.menuMusicManager then self.menuMusicManager:update(dt) end
+    -- Online is its own state; the separate Lovely hook advances BBT only while
+    -- states/Game.lua is active during a competitive chart.
     BBT.update(dt); if BBT.maybeLaunchScheduledChart() then return end; update(self)
   end)
   st:setFgDraw(function(self)

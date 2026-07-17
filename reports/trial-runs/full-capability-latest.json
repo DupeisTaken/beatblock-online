@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-15T16:09:53.194Z",
+  "generatedAt": "2026-07-17T14:41:43.822Z",
   "passed": true,
   "environment": {
     "platform": "win32",
@@ -11,47 +11,47 @@
     {
       "name": "Protocol v2 typecheck",
       "passed": true,
-      "durationMs": 567
+      "durationMs": 530
     },
     {
       "name": "Protocol v2 schema generation",
       "passed": true,
-      "durationMs": 151
+      "durationMs": 133
     },
     {
       "name": "Protocol v2 tests",
       "passed": true,
-      "durationMs": 946
+      "durationMs": 867
     },
     {
       "name": "Rust runtime, installer, Lua, and stress tests",
       "passed": true,
-      "durationMs": 65795
+      "durationMs": 179748
     },
     {
       "name": "Package both in-game adapters",
       "passed": true,
-      "durationMs": 2962
+      "durationMs": 1484
     },
     {
       "name": "In-game mod conformance",
       "passed": true,
-      "durationMs": 86
+      "durationMs": 75
     },
     {
       "name": "Hidden runtime lifecycle and resource gate",
       "passed": true,
-      "durationMs": 8202
+      "durationMs": 7882
     },
     {
       "name": "16-player / 32-spectator direct-host simulation",
       "passed": true,
-      "durationMs": 13197
+      "durationMs": 37289
     },
     {
       "name": "Runtime I/O benchmark report",
       "passed": true,
-      "durationMs": 50
+      "durationMs": 46
     }
   ],
   "hostRoom": {
@@ -69,11 +69,11 @@
       "spectators32": true
     },
     "metrics": {
-      "elapsedMs": 7.4576,
+      "elapsedMs": 7.6663,
       "renderTelemetryKiBPerSecondPerPlayer": 1.875,
-      "scheduledStartUnixMs": 1784131795126,
-      "scoreEventsPerSecond": 520289.95325519954,
-      "scoreIngestMs": 7.3805
+      "scheduledStartUnixMs": 1784299305760,
+      "scoreEventsPerSecond": 506643.09368939087,
+      "scoreIngestMs": 7.5793
     },
     "passed": true,
     "scenario": "direct-host-16-player-32-spectator",
@@ -200,22 +200,29 @@
     }
   },
   "runtime": {
-    "generatedAtMs": 1784131767685,
+    "generatedAtMs": 1784299256033,
     "metrics": {
-      "chartCacheSpeedup": 37.43944832798035,
-      "chartCachedMs": 0.5293,
-      "chartColdMs": 19.8167,
-      "exportMeanMs": 35.18428600000001,
-      "exportP95Ms": 39.274499999999996,
-      "journalEventsPerSecond": 2409.051094046464,
-      "journalRecoveredEvents": 5000
+      "chartCacheSpeedup": 38.66489007328448,
+      "chartCachedMs": 0.30019999999999997,
+      "chartColdMs": 11.6072,
+      "exportBytesWritten": 8116,
+      "exportEnqueueP95Ms": 0.0111,
+      "exportFilesWritten": 56,
+      "exportMeanMs": 0.7875320000000002,
+      "exportP95Ms": 1.1502000000000001,
+      "journalEventsPerSecond": 915281.5406018891,
+      "journalRecoveredEvents": 5000,
+      "sqliteJournalEventsPerSecond": 326236.5998316619,
+      "sqliteJournalRecoveredEvents": 5000
     },
     "passed": true,
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "thresholds": {
       "cacheHitFasterThanCold": true,
+      "exportFilesWritten": 60,
       "exportP95Ms": 100,
-      "journalEventsPerSecond": 100
+      "journalEventsPerSecond": 100,
+      "sqliteJournalEventsPerSecond": 1000
     },
     "workload": {
       "chartBytes": 4194304,
@@ -225,11 +232,11 @@
   },
   "lifecycle": {
     "schemaVersion": 2,
-    "generatedAt": "2026-07-15T16:09:35.061Z",
+    "generatedAt": "2026-07-17T14:41:01.772Z",
     "passed": true,
     "readiness": "runtime.ready",
     "protocolVersion": 2,
-    "workingSetBytes": 16248832,
+    "workingSetBytes": 17326080,
     "idleWorkingSetTargetBytes": 31457280,
     "idleWorkingSetTargetMet": true,
     "duplicateMutexRejected": true,

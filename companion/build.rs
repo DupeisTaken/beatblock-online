@@ -15,11 +15,10 @@ fn main() {
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("lovely-version.dll");
     let explicit = env::var_os("BBT_LOVELY_DLL").map(PathBuf::from);
-    // Release and developer builds use the reviewed, pinned Lovely artifact.
-    // Never pull a DLL out of a mutable injected test game: doing so makes the
-    // installer payload depend on whatever a previous trial happened to leave.
-    let repository_fixture =
-        PathBuf::from("../.reference/lovely-injector/target/release/version.dll");
+    // Release and developer builds consume the generated, pinned Lovely
+    // artifact. The release orchestrator creates it from the exact upstream
+    // commit plus our reviewed patch; no binary input lives in Git.
+    let repository_fixture = PathBuf::from("../artifacts/lovely/version.dll");
     let source = explicit
         .filter(|path| path.is_file())
         .or_else(|| repository_fixture.is_file().then_some(repository_fixture));
@@ -37,10 +36,9 @@ fn main() {
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .or_else(|| {
-            // Release builds use the reviewed OBS 32 artifact. Developer
+            // Release builds use the generated OBS 32 artifact. Developer
             // builds can still override it with BBT_OBS_PLUGIN_DLL.
-            let path =
-                PathBuf::from("../obs-plugin/artifacts/obs-32.0.4/beatblock-together-obs.dll");
+            let path = PathBuf::from("../artifacts/obs/beatblock-together-obs.dll");
             path.is_file().then_some(path)
         });
     if let Some(source) = obs.as_ref() {

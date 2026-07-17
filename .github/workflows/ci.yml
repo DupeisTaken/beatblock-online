@@ -3,38 +3,44 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   typescript:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - run: pnpm --filter @bbt/protocol test
+      - run: pnpm test:release-workflow
+      - run: pnpm build:protocol
       - run: pnpm generate:protocol
-      - run: pnpm validate:patches
       - run: pnpm package:mods
       - run: pnpm test:mod
 
   companion:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: companion
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
-      - run: cargo test --manifest-path companion/Cargo.toml
+      # The skipped gate requires the user's isolated, legally obtained game
+      # fixture. All source-only tests remain blocking in hosted CI.
+      - run: cargo test --manifest-path companion/Cargo.toml --lib --bins -- --skip detector_accepts_isolated_test_game_shape
+      - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
       - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1

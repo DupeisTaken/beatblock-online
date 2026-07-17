@@ -9,6 +9,7 @@ use beatblock_together_companion::{
 };
 use serde_json::json;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn temporary(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("bbt-{name}-{}", rand::random::<u64>()))
@@ -66,6 +67,7 @@ async fn broadcasts_to_32_consumers_and_exports_only_complete_snapshots() {
         .await
         .unwrap();
     }
+    app.exports.flush();
     for receiver in &mut receivers {
         for expected in 0..100 {
             assert_eq!(receiver.recv().await.unwrap().sequence, expected);
@@ -76,6 +78,37 @@ async fn broadcasts_to_32_consumers_and_exports_only_complete_snapshots() {
             .unwrap();
     assert_eq!(exported.player_name, "Player 99");
     assert!(!root.join("exports/gameplay.tmp").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gameplay_ingest_never_waits_for_durable_obs_export_writes() {
+    let root = temporary("nonblocking-exports");
+    let app = state(root.clone(), 8);
+    let started = Instant::now();
+    for sequence in 0..1_000 {
+        app.ingest(message(
+            "gameplay.snapshot",
+            sequence,
+            json!({
+                "state":"playing","playerName":"Host","songName":"Load Test",
+                "lobbyName":"Room","accuracy":99.9,"combo":sequence,"misses":0,
+                "rank":1,"progress":0.5,"connected":true,"updatedAtMs":sequence
+            }),
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "telemetry ingestion was blocked by filesystem exports: {:?}",
+        started.elapsed()
+    );
+    app.exports.flush();
+    let exported: GameplayState =
+        serde_json::from_slice(&std::fs::read(root.join("exports/gameplay.json")).unwrap())
+            .unwrap();
+    assert_eq!(exported.combo, 999);
     let _ = std::fs::remove_dir_all(root);
 }
 

@@ -827,10 +827,17 @@ fn needs_elevation(error: &anyhow::Error) -> bool {
 #[cfg(windows)]
 fn copy_to_clipboard(text: &str) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
     };
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            unsafe { CloseClipboard() };
+        }
+    }
     const CF_UNICODETEXT: u32 = 13;
     let wide = std::ffi::OsStr::new(text)
         .encode_wide()
@@ -840,20 +847,25 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             anyhow::bail!("Windows clipboard is busy");
         }
-        EmptyClipboard();
+        let _clipboard = ClipboardGuard;
+        if EmptyClipboard() == 0 {
+            anyhow::bail!("Windows clipboard could not be cleared");
+        }
         let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
         if memory.is_null() {
-            CloseClipboard();
             anyhow::bail!("clipboard allocation failed");
         }
         let target = GlobalLock(memory) as *mut u16;
+        if target.is_null() {
+            GlobalFree(memory);
+            anyhow::bail!("clipboard memory could not be locked");
+        }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
         GlobalUnlock(memory);
         if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
-            CloseClipboard();
+            GlobalFree(memory);
             anyhow::bail!("clipboard transfer failed");
         }
-        CloseClipboard();
     }
     Ok(())
 }

@@ -13,7 +13,9 @@ const missing = fixture.patchPatterns.filter(
 if (missing.length)
   throw new Error(`Lovely patch manifest is missing fixture signatures: ${missing.join(', ')}`);
 
-const reference = resolve(root, '.reference/Beatblock/packed');
+// Patch acceptance is intentionally tied to the isolated `.test` game copy;
+// release validation must never inspect or launch the user's Steam install.
+const reference = resolve(root, '.test/Beatblock/packed');
 const blocks = hooks.match(/\[\[patches\]\][\s\S]*?(?=\[\[patches\]\]|$)/g) ?? [];
 let sourceValidated = 0;
 for (const block of blocks) {
@@ -48,5 +50,5 @@ if (missingManagerHooks.length)
     `GameManager hooks are absent from the pinned source: ${missingManagerHooks.join(', ')}`,
   );
 console.log(
-  `Validated ${sourceValidated} Lovely source signatures and ${fixture.gameManagerHooks.length} GameManager hooks against the pinned reference.`,
+  `Validated ${sourceValidated} Lovely source signatures and ${fixture.gameManagerHooks.length} GameManager hooks against the isolated .test build.`,
 );

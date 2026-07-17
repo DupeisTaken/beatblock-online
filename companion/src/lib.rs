@@ -7,6 +7,7 @@ pub mod gui;
 pub mod http;
 pub mod installer;
 pub mod ipc;
+pub mod journal;
 pub mod mod_payload;
 pub mod model;
 pub mod nat;

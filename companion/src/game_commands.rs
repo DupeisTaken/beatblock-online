@@ -6,10 +6,46 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
+    if !is_control_command(&message.kind) {
+        return Ok(false);
+    }
+    let result = execute(state, message).await;
+    match result {
+        Ok(()) => {
+            publish(
+                state,
+                "control.ack",
+                json!({"requestId":message.request_id,"command":message.kind}),
+            )
+            .await
+        }
+        Err(error) => {
+            let (code, stage, retryable) = classify_error(&error.to_string());
+            publish(
+                state,
+                "control.error",
+                json!({
+                    "requestId":message.request_id,
+                    "command":message.kind,
+                    "code":code,
+                    "stage":stage,
+                    "retryable":retryable,
+                    "message":error.to_string()
+                }),
+            )
+            .await
+        }
+    }
+    Ok(true)
+}
+
+async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
     let result = match message.kind.as_str() {
         "room.host_request" | "lobby.create_request" => {
+            progress(state, message, "validating", "Checking room settings").await;
             let name = message
                 .payload
                 .get("name")
@@ -29,11 +65,19 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
                 .unwrap_or(true);
             if let Some(display_name) = message.payload.get("displayName").and_then(Value::as_str) {
                 state
-                    .save_profile(display_name.to_owned(), None, ParticipantRole::Host)
+                    .save_host_profile(display_name.to_owned(), port)
                     .await?;
             }
-            state
-                .host_room(
+            progress(
+                state,
+                message,
+                "starting",
+                "Binding UDP and preparing the room",
+            )
+            .await;
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                state.host_room(
                     name,
                     password,
                     port,
@@ -42,13 +86,18 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
                     } else {
                         crate::model::AdmissionMode::PasswordOnly
                     },
-                )
-                .await
-                .map(|_| ())
+                ),
+            )
+            .await
+            .context("room setup timed out while binding or mapping the host port")?
+            .map(|_| ())
         }
         "room.join_request" | "lobby.join_request" => {
             let address = required(&message.payload, "address")?;
-            let address = resolve_address(address).await?;
+            progress(state, message, "resolving", "Resolving the host address").await;
+            let address = tokio::time::timeout(Duration::from_secs(5), resolve_address(address))
+                .await
+                .context("host address resolution timed out")??;
             let password = required(&message.payload, "password")?;
             let display_name = message
                 .payload
@@ -69,10 +118,20 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state
                 .save_profile(display_name.clone(), Some(address), role)
                 .await?;
-            state
-                .join_room(address, password, &display_name, role)
-                .await
-                .map(|_| ())
+            progress(
+                state,
+                message,
+                "connecting",
+                "Connecting and authenticating",
+            )
+            .await;
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                state.join_room(address, password, &display_name, role),
+            )
+            .await
+            .context("room connection timed out")?
+            .map(|_| ())
         }
         "room.ready_request" | "lobby.ready_request" => {
             let ready = message
@@ -124,13 +183,9 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state.kick(id).await
         }
         "setlist.remove" => {
-            state.require_host_control()?;
             state
-                .room
-                .write()
+                .remove_setlist(required_index(&message.payload, "index")?)
                 .await
-                .remove_setlist(required_index(&message.payload, "index")?)?;
-            state.publish_room().await
         }
         "setlist.move" => {
             state.require_host_control()?;
@@ -172,6 +227,7 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
             state
                 .storage
                 .prune_raw_events(crate::room::unix_ms().saturating_sub(days * 86_400_000))?;
+            state.journals.prune_days(days);
             publish_snapshots(state).await
         }
         "settings.update" => update_settings(state, &message.payload).await,
@@ -201,13 +257,86 @@ pub async fn handle(state: &AppState, message: &Envelope) -> Result<bool> {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
-        _ => return Ok(false),
+        // Keep the dispatcher fail-closed if the command inventory and
+        // executor ever drift. Panicking here would strand the IPC control
+        // guard in its busy state and make every later room action fail.
+        _ => anyhow::bail!("unsupported control command {}", message.kind),
     };
-    match result {
-        Ok(()) => publish(state, "control.ack", json!({"requestId":message.request_id,"command":message.kind})).await,
-        Err(error) => publish(state, "control.error", json!({"requestId":message.request_id,"command":message.kind,"message":error.to_string()})).await,
+    result
+}
+
+pub(crate) fn is_control_command(kind: &str) -> bool {
+    matches!(
+        kind,
+        "room.host_request"
+            | "lobby.create_request"
+            | "room.join_request"
+            | "lobby.join_request"
+            | "room.ready_request"
+            | "lobby.ready_request"
+            | "room.start_request"
+            | "lobby.start_request"
+            | "room.close_request"
+            | "lobby.close_request"
+            | "room.leave_request"
+            | "lobby.leave_request"
+            | "room.chart_select_request"
+            | "room.chart_verify_request"
+            | "lobby.chart_select_request"
+            | "lobby.chart_verify_request"
+            | "room.official_chart_select"
+            | "room.official_chart_verify"
+            | "room.admission_set"
+            | "room.role_set"
+            | "room.kick"
+            | "setlist.remove"
+            | "setlist.move"
+            | "setlist.advance"
+            | "renderer.configure"
+            | "renderer.stop"
+            | "history.list"
+            | "history.delete"
+            | "history.prune"
+            | "settings.update"
+            | "runtime.snapshot_request"
+            | "diagnostics.get"
+            | "api.token_rotate"
+            | "paths.open_exports"
+            | "paths.open_logs"
+            | "runtime.session_end"
+            | "runtime.restart_request"
+    )
+}
+
+async fn progress(state: &AppState, message: &Envelope, stage: &str, detail: &str) {
+    publish(
+        state,
+        "control.progress",
+        json!({
+            "requestId":message.request_id,
+            "command":message.kind,
+            "stage":stage,
+            "message":detail,
+        }),
+    )
+    .await;
+}
+
+fn classify_error(message: &str) -> (&'static str, &'static str, bool) {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("resolve") {
+        ("network.resolve_failed", "resolving", true)
+    } else if normalized.contains("timed out") {
+        ("network.timeout", "connecting", true)
+    } else if normalized.contains("password") || normalized.contains("authentication") {
+        ("auth.rejected", "authenticating", true)
+    } else if normalized.contains("address") || normalized.contains("bind") {
+        ("network.bind_failed", "binding", true)
+    } else if normalized.contains("protocol") {
+        ("protocol.incompatible", "negotiating", false)
+    } else {
+        ("runtime.command_failed", "runtime", true)
     }
-    Ok(true)
 }
 
 fn parse_role(value: Option<&Value>) -> Result<ParticipantRole> {
@@ -276,6 +405,12 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1);
+    let append = message
+        .payload
+        .get("appendToSetlist")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let had_active_chart = state.room.read().await.snapshot.chart.is_some();
     if selecting {
         *state.selected_chart_path.write().await = Some(chart_id.to_owned());
         state
@@ -294,13 +429,15 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
                     official: true,
                     transfer_mode: ChartTransferMode::VerifyOnly,
                 },
-                message
-                    .payload
-                    .get("appendToSetlist")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                append,
             )
             .await?;
+    }
+    // Appending a later setlist entry must not replace or invalidate the
+    // host's currently selected chart. It becomes verifiable only after the
+    // host advances the setlist and that entry becomes active.
+    if selecting && append && had_active_chart {
+        return Ok(());
     }
     let expected = state.room.read().await.snapshot.chart.clone();
     let reason = chart_mismatch_reason(
@@ -308,7 +445,7 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
         &hash,
         variant,
         expected_max_hits,
-        "Atom Map",
+        "Freeplay",
     );
     let verified = reason.is_none();
     state.set_local_verified(verified, reason.clone()).await?;
@@ -340,6 +477,12 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1);
+    let append = message
+        .payload
+        .get("appendToSetlist")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let had_active_chart = state.room.read().await.snapshot.chart.is_some();
     if selecting {
         *state.selected_chart_path.write().await = Some(
             message
@@ -367,12 +510,10 @@ async fn chart(state: &AppState, message: &Envelope) -> Result<()> {
                 .unwrap_or(false),
             transfer_mode: ChartTransferMode::VerifyOnly,
         };
-        let append = message
-            .payload
-            .get("appendToSetlist")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         state.lock_chart(chart, append).await?;
+    }
+    if selecting && append && had_active_chart {
+        return Ok(());
     }
     // Read the lock after a host selection. The previous implementation kept
     // the pre-selection hash, which made changing an existing custom chart

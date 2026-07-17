@@ -17,24 +17,24 @@
 
 The Rust suite now executes the actual staging, hashing, atomic directory swap, injector backup, maintenance payload, renderer profile, manifest, move, repair, restore, OBS payload, and uninstall paths inside isolated directories. Only firewall and uninstall-registry mutations are disabled in these isolated tests; production callers always enable them.
 
-| Scenario | Result | Evidence |
-|---|---|---|
-| Supported reference shape and fingerprint | Pass | Pinned `Beatblock.exe` SHA-256 matches |
-| Arbitrary Unicode/spaced folder | Pass | Valid structure, uncertified policy applied |
-| Unknown build without override | Pass | Rejected before mutation |
-| Standalone fresh install | Pass | Every payload and manifest hash verified |
-| Existing Lovely install | Pass | Original bytes backed up once and preserved through repair |
-| Corrupt Lua/runtime/injector repair | Pass | All three restored; original Lovely backup unchanged |
-| Restore game files | Pass | Mod removed and original injector restored |
-| Uninstall, preserve user data | Pass | Runtime/mod/OBS removed; history retained |
-| Uninstall, remove user data | Pass | Retention files removed |
-| Move between game folders | Pass | Old BBT-owned injector removed, new target activated |
-| BeatblockPlus automatic adapter | Pass | Plus payload installed without standalone bootstrap |
-| BeatblockPlus missing | Pass | Explicit Plus selection rejected |
-| Standalone/BeatblockPlus conflict | Pass | Explicit Standalone selection rejected |
-| Mid-transaction Lovely failure | Pass | Previous mod/runtime restored; no manifest or temp payload left |
-| OBS payload and marker | Pass | DLL exports, layout, file hashes, locale, and uninstall verified |
-| Progress contract | Pass | Monotonic progress and exactly one terminal event |
+| Scenario                                  | Result | Evidence                                                         |
+| ----------------------------------------- | ------ | ---------------------------------------------------------------- |
+| Supported reference shape and fingerprint | Pass   | Pinned `Beatblock.exe` SHA-256 matches                           |
+| Arbitrary Unicode/spaced folder           | Pass   | Valid structure, uncertified policy applied                      |
+| Unknown build without override            | Pass   | Rejected before mutation                                         |
+| Standalone fresh install                  | Pass   | Every payload and manifest hash verified                         |
+| Existing Lovely install                   | Pass   | Original bytes backed up once and preserved through repair       |
+| Corrupt Lua/runtime/injector repair       | Pass   | All three restored; original Lovely backup unchanged             |
+| Restore game files                        | Pass   | Mod removed and original injector restored                       |
+| Uninstall, preserve user data             | Pass   | Runtime/mod/OBS removed; history retained                        |
+| Uninstall, remove user data               | Pass   | Retention files removed                                          |
+| Move between game folders                 | Pass   | Old BBT-owned injector removed, new target activated             |
+| BeatblockPlus automatic adapter           | Pass   | Plus payload installed without standalone bootstrap              |
+| BeatblockPlus missing                     | Pass   | Explicit Plus selection rejected                                 |
+| Standalone/BeatblockPlus conflict         | Pass   | Explicit Standalone selection rejected                           |
+| Mid-transaction Lovely failure            | Pass   | Previous mod/runtime restored; no manifest or temp payload left  |
+| OBS payload and marker                    | Pass   | DLL exports, layout, file hashes, locale, and uninstall verified |
+| Progress contract                         | Pass   | Monotonic progress and exactly one terminal event                |
 
 Automated totals:
 
@@ -50,14 +50,14 @@ Automated totals:
 
 The self-contained release helper was run against disposable targets under `.test/installer-acceptance`. Every failure returned exit code 1, wrote one terminal error record, and left no active mod, injector, runtime, maintenance copy, or manifest.
 
-| Scenario | Exact terminal diagnosis | Rollback |
-|---|---|---|
-| Missing folder | `does not contain Beatblock.exe` | Clean |
-| Uncertified executable | `this Beatblock build is not certified` | Clean |
-| BeatblockPlus selected but absent | `BeatblockPlus 2.x was not detected` | Clean |
-| Standalone selected with BeatblockPlus | `avoid loading both BBT adapters` | Clean |
-| Unknown-build override without elevation | Windows Firewall requires administrator | Clean |
-| Supported build without elevation | Windows Firewall requires administrator | Clean |
+| Scenario                                 | Exact terminal diagnosis                | Rollback |
+| ---------------------------------------- | --------------------------------------- | -------- |
+| Missing folder                           | `does not contain Beatblock.exe`        | Clean    |
+| Uncertified executable                   | `this Beatblock build is not certified` | Clean    |
+| BeatblockPlus selected but absent        | `BeatblockPlus 2.x was not detected`    | Clean    |
+| Standalone selected with BeatblockPlus   | `avoid loading both BBT adapters`       | Clean    |
+| Unknown-build override without elevation | Windows Firewall requires administrator | Clean    |
+| Supported build without elevation        | Windows Firewall requires administrator | Clean    |
 
 The complete six-case matrix was rerun against the current hash after moving the workspace to `E:\beatblock-online`; every case returned its expected terminal diagnostic and left no managed files or transaction directories behind.
 
