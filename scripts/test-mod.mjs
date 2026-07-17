@@ -69,7 +69,10 @@ for (const contract of [
   [renderer, "love.graphics.push('all')"],
   [renderer, "love.graphics.setBlendMode('alpha', 'alphamultiply')"],
   [renderer, 'love.graphics.pop()'],
-  [renderer, 'local scale = math.min(Renderer.width / sourceWidth, Renderer.height / sourceHeight)'],
+  [
+    renderer,
+    'local scale = math.min(Renderer.width / sourceWidth, Renderer.height / sourceHeight)',
+  ],
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
