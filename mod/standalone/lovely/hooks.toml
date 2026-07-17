@@ -41,15 +41,6 @@ times = 1
 [[patches]]
 [patches.pattern]
 target = "states/Game.lua"
-pattern = "love.graphics.setCanvas(shuv.canvas)"
-position = "after"
-payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.captureSafe(self.canv) end"
-match_indent = true
-times = 1
-
-[[patches]]
-[patches.pattern]
-target = "states/Game.lua"
 pattern = "st:setUpdate(function(self,dt)"
 position = "after"
 # Let Beatblock's startPending branch finish the threaded chart preload before
@@ -114,6 +105,19 @@ target = "states/Game.lua"
 pattern = "self.gm:endOnTopShader()"
 position = "after"
 payload = "if BBT then BBT.drawRaceHud() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
+# Capture after Beatblock has composited the gameplay canvas and shaders into
+# shuv.canvas. Clean mode receives the raw gameplay canvas; full mode receives
+# the final composition. Capturing at the earlier setCanvas call produced a
+# sparse synthetic image before the visible game frame existed.
+pattern = "if self.vfx.onTopUI then"
+position = "before"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.captureSafe(self.canv, shuv.canvas) end"
 match_indent = true
 times = 1
 

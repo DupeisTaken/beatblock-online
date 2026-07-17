@@ -2694,6 +2694,16 @@ mod tests {
             frame_cleanup.contains("ctx->pixel_capacity = 0"),
             "stale cleanup must release its retained CPU frame buffer"
         );
+        let video_render = source
+            .split("static void video_render")
+            .nth(1)
+            .and_then(|source| source.split("static struct obs_source_info").next())
+            .expect("OBS source contains its custom render callback");
+        assert!(
+            video_render.contains(r#"gs_effect_get_param_by_name(draw, "image")"#)
+                && video_render.contains("gs_effect_set_texture_srgb(image, ctx->texture)"),
+            "custom-draw sources must bind their texture to the OBS base effect"
+        );
     }
 
     #[test]

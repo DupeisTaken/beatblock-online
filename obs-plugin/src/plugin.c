@@ -290,6 +290,15 @@ static void video_render(void *data, gs_effect_t *effect)
     if (!ctx->texture)
         return;
     gs_effect_t *draw = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    if (!draw)
+        return;
+    // Custom-draw sources own the base effect setup. gs_draw_sprite only emits
+    // geometry; without binding the texture to `image`, OBS renders a correctly
+    // sized black rectangle even though the shared-memory pixels are valid.
+    gs_eparam_t *image = gs_effect_get_param_by_name(draw, "image");
+    if (!image)
+        return;
+    gs_effect_set_texture_srgb(image, ctx->texture);
     while (gs_effect_loop(draw, "Draw"))
         gs_draw_sprite(ctx->texture, 0, ctx->width, ctx->height);
 }
