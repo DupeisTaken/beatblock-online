@@ -1,8 +1,8 @@
 [package]
-name = "beatblock-together-companion"
-version = "0.3.0-alpha.1"
+name = "beatblock-online-companion"
+version = "0.3.0-alpha.2"
 edition = "2021"
-description = "Installer and hidden direct-room runtime for Beatblock Together"
+description = "Installer and hidden direct-room runtime for Beatblock Online"
 license = "MIT"
 
 [features]
@@ -59,7 +59,7 @@ name = "BeatblockOnlineRuntime"
 path = "src/main.rs"
 
 [[bin]]
-name = "BeatblockTogetherInstaller"
+name = "BeatblockOnlineInstaller"
 path = "src/installer_main.rs"
 required-features = ["installer-ui"]
 

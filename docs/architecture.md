@@ -1,7 +1,7 @@
 # Installer-only architecture
 
 ```text
-BeatblockTogetherInstaller.exe (maintenance only, exits)
+BeatblockOnlineInstaller.exe (maintenance only, exits)
     -> Lovely + one adapter + hidden runtime + optional OBS plugin
 
 Steam -> Beatblock -> adaptive Online dashboard -> LÖVE channel -> named pipe v2
@@ -39,7 +39,7 @@ The runtime/API never publishes passwords, API tokens, absolute chart paths, or 
 
 ## Supported-build IPC details
 
-The gameplay hooks only enqueue compact Lua tables. A dedicated LÖVE thread owns all IPC and therefore keeps pipe, network, export, hashing, and storage work off the gameplay thread. On the supported reference build it uses LuaJIT FFI with `CreateFileW`/`ReadFile`/`WriteFile` against `\\.\pipe\beatblock-together-v2`. Writes are completed in a loop, outbound work is capped at 16 messages per pass, and carriage returns/newlines introduced by Beatblock's JSON encoder are removed before newline framing.
+The gameplay hooks only enqueue compact Lua tables. A dedicated LÖVE thread owns all IPC and therefore keeps pipe, network, export, hashing, and storage work off the gameplay thread. On the supported reference build it uses LuaJIT FFI with `CreateFileW`/`ReadFile`/`WriteFile` against `\\.\pipe\beatblock-online-v2`. Writes are completed in a loop, outbound work is capped at 16 messages per pass, and carriage returns/newlines introduced by Beatblock's JSON encoder are removed before newline framing.
 
 The dashboard derives a UI-only normalized view from protocol-v2 room, participant, renderer, history, and diagnostics snapshots. `dashboard_model.lua` owns phase selection, roster totals and scrolling, focus transitions, and next-action precedence without changing the wire protocol. CI executes this pure module with Beatblock's bundled Lua 5.1 runtime.
 

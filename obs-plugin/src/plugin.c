@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-together-obs", "en-US")
+OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-online-obs", "en-US")
 
 #define HEADER_SIZE 64
 #define FRAME_MAGIC "BBTFRAME"
@@ -158,7 +158,7 @@ static void build_path(struct bbt_video *ctx)
     if (!length)
         wcscpy_s(root, MAX_PATH, L".");
     _snwprintf_s(ctx->path, MAX_PATH * 2, _TRUNCATE,
-        L"%s\\BeatblockTogether\\BeatblockTogether\\data\\render-streams\\stream-%c.bbtframe",
+        L"%s\\BeatblockOnline\\BeatblockOnline\\data\\render-streams\\stream-%c.bbtframe",
         root, ctx->slot);
 }
 
@@ -295,7 +295,7 @@ static void video_render(void *data, gs_effect_t *effect)
 }
 
 static struct obs_source_info video_info = {
-    .id = "beatblock_together_player_stream",
+    .id = "beatblock_online_player_stream",
     .type = OBS_SOURCE_TYPE_INPUT,
     .output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
     .get_name = video_name,
@@ -314,6 +314,6 @@ static struct obs_source_info video_info = {
 bool obs_module_load(void)
 {
     obs_register_source(&video_info);
-    blog(LOG_INFO, "[Beatblock Together] OBS player stream source registered");
+    blog(LOG_INFO, "[Beatblock Online] OBS player stream source registered");
     return true;
 }

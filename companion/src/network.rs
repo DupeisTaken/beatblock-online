@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
-const AUTH_IDENTITY: &[u8] = b"beatblock-together-room-v2";
+const AUTH_IDENTITY: &[u8] = b"beatblock-online-room-v2";
 const MAX_CONTROL_FRAME: usize = 1_048_576;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_PASSWORD_FAILURE_IPS: usize = 4_096;
@@ -125,7 +125,7 @@ impl NetworkHub {
         if password.chars().count() < 4 || password.chars().count() > 128 {
             bail!("room password must contain 4-128 characters");
         }
-        let certified = generate_simple_self_signed(vec!["beatblock-together.local".into()])?;
+        let certified = generate_simple_self_signed(vec!["beatblock-online.local".into()])?;
         let cert_der = certified.cert.der().clone();
         let key = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
         let mut server_config = quinn::ServerConfig::with_single_cert(vec![cert_der], key.into())?;
@@ -213,7 +213,7 @@ impl NetworkHub {
         let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
         endpoint.set_default_client_config(insecure_client_config()?);
         let connection = endpoint
-            .connect(address, "beatblock-together.local")?
+            .connect(address, "beatblock-online.local")?
             .await
             .context("connect to host QUIC endpoint")?;
         let (mut send, mut recv) = connection.open_bi().await?;
@@ -752,7 +752,7 @@ mod tests {
             Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
         endpoint.set_default_client_config(insecure_client_config().unwrap());
         let connection = endpoint
-            .connect(address, "beatblock-together.local")
+            .connect(address, "beatblock-online.local")
             .unwrap()
             .await
             .unwrap();

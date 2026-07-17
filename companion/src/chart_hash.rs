@@ -72,7 +72,7 @@ pub fn canonical_chart_hash_cached(
 pub fn canonical_chart_hash(path: impl AsRef<Path>) -> Result<ChartHash> {
     let path = path.as_ref();
     let mut hasher = Sha256::new();
-    hasher.update(b"beatblock-together-chart-package-v1\0");
+    hasher.update(b"beatblock-online-chart-package-v1\0");
     let file_count = if path.is_file()
         && path
             .extension()

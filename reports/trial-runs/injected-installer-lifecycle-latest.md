@@ -2,7 +2,7 @@
 
 **Result:** PASS  
 **Date:** 2026-07-15 (Windows x64)  
-**Payload:** `release/BeatblockTogetherInstaller.exe` (`aa971c1dec7ecea3ec3ad65c62a0039ecf81630f751baa096436732c23a5efcb`)
+**Payload:** `release/BeatblockOnlineInstaller.exe` (`aa971c1dec7ecea3ec3ad65c62a0039ecf81630f751baa096436732c23a5efcb`)
 
 The final packaged standalone-Lovely payload was installed into the disposable `.test/Beatblock` copy and launched as a normal game process. Lovely produced no console window. The hidden runtime was absent before Online, started after entering Online, exposed the token-protected local API, and received real Lua gameplay snapshots through the v2 named pipe.
 

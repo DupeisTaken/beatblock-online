@@ -13,7 +13,7 @@ $runtimeArchive = Join-Path $cache "OBS-Studio-$ObsVersion-Windows-x64.zip"
 $source = Join-Path $cache "obs-studio-$ObsVersion-sources\libobs"
 $runtimeRoot = Join-Path $cache 'obs-runtime'
 if (-not $OutputPath) {
-    $OutputPath = Join-Path $root 'artifacts\obs\beatblock-together-obs.dll'
+    $OutputPath = Join-Path $root 'artifacts\obs\beatblock-online-obs.dll'
 }
 
 # Both checksums are published on the corresponding official OBS release.
@@ -109,12 +109,12 @@ $batch = Join-Path $cache 'compile.cmd'
 @echo off
 call "$devCommand" -arch=x64 >nul
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /LD /O2 /MD /std:c17 /DUNICODE /D_UNICODE /I"$source" /I"$(Split-Path -Parent $source)\deps\w32-pthreads" /Fo"$build\\" /Fe"$build\beatblock-together-obs.dll" "$pluginSource" "$importLibrary" /link /INCREMENTAL:NO
+cl /nologo /LD /O2 /MD /std:c17 /DUNICODE /D_UNICODE /I"$source" /I"$(Split-Path -Parent $source)\deps\w32-pthreads" /Fo"$build\\" /Fe"$build\beatblock-online-obs.dll" "$pluginSource" "$importLibrary" /link /INCREMENTAL:NO
 "@ | Set-Content -Encoding ascii $batch
 cmd.exe /d /c $batch
 if ($LASTEXITCODE -ne 0) { throw 'OBS plugin compilation failed.' }
 
-$built = Join-Path $build 'beatblock-together-obs.dll'
+$built = Join-Path $build 'beatblock-online-obs.dll'
 New-Item -ItemType Directory -Force (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $built -Destination $OutputPath -Force
 Write-Host "Built $OutputPath"

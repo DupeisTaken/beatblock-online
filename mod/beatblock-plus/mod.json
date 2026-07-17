@@ -1,7 +1,7 @@
 {
-  "id": "beatblock-together",
-  "name": "Beatblock Together",
-  "author": "Beatblock Together contributors",
+  "id": "beatblock-online",
+  "name": "Beatblock Online",
+  "author": "Beatblock Online contributors",
   "description": "Direct-IP hosted competition, telemetry, and OBS rendering.",
   "version": "0.2.0-alpha.1",
   "config": {

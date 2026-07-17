@@ -22,17 +22,17 @@ The UAC prompt was accepted manually. The elevated helper completed, the program
 
 ## OBS source recovery evidence
 
-The previous release embedded a zero-byte `beatblock-together-obs.dll`, so selecting the checkbox could not install a loadable source. The reviewed OBS 32.0.4 x64 module is now 66,081 bytes and exports `obs_module_load`, `obs_module_ver`, and `obs_module_set_pointer`. The installer rejects an invalid embedded payload before installation, places the module and locale in OBS's ProgramData plugin layout, and verifies their hashes after elevation.
+The previous release embedded a zero-byte `beatblock-online-obs.dll`, so selecting the checkbox could not install a loadable source. The reviewed OBS 32.0.4 x64 module is now 66,081 bytes and exports `obs_module_load`, `obs_module_ver`, and `obs_module_set_pointer`. The installer rejects an invalid embedded payload before installation, places the module and locale in OBS's ProgramData plugin layout, and verifies their hashes after elevation.
 
 The physically installed module SHA-256 was `dd5052508268fef635a45ee66ef6326c3b5feb29c98aca32421e6c74d9bdbbcf`. After restarting OBS Studio 32.0.4, its current log contained:
 
 ```text
-[Beatblock Together] OBS sources registered
+[Beatblock Online] OBS sources registered
 Loaded Modules:
-  beatblock-together-obs.dll
+  beatblock-online-obs.dll
 ```
 
-The OBS Add Source menu visibly listed **Beatblock Together Player Stream** and **Beatblock Together Shared Audio**. The player source's runtime frame path was also corrected to include `data\render-streams`, matching the renderer publisher. Shared Audio is a registered contract only and does not emit audio in this alpha.
+The OBS Add Source menu visibly listed **Beatblock Online Player Stream** and **Beatblock Online Shared Audio**. The player source's runtime frame path was also corrected to include `data\render-streams`, matching the renderer publisher. Shared Audio is a registered contract only and does not emit audio in this alpha.
 
 ## Automated gates
 

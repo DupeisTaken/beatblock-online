@@ -22,7 +22,7 @@ const MAX_FRAME_SIZE: usize = 1920 * 1080 * 4;
 /// lightweight runtime binary.
 pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
     let profile = data_dir.join("renderer-profile");
-    let directory = profile.join("Beatblock/Mods/BeatblockTogetherRenderer");
+    let directory = profile.join("Beatblock/Mods/BeatblockOnlineRenderer");
     std::fs::create_dir_all(directory.join("bbt"))?;
     std::fs::create_dir_all(directory.join("lovely"))?;
     for (relative, bytes) in SHARED_MOD_PAYLOAD.iter().copied().chain(std::iter::once((
@@ -803,7 +803,7 @@ mod tests {
             "Lovely owns Beatblock's command-line parser; renderer metadata must use environment variables"
         );
         assert!(profile
-            .join("Beatblock/Mods/BeatblockTogetherRenderer/lovely/bootstrap.toml")
+            .join("Beatblock/Mods/BeatblockOnlineRenderer/lovely/bootstrap.toml")
             .is_file());
         let _ = std::fs::remove_dir_all(root);
     }

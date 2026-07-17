@@ -55,16 +55,13 @@ test('inspectZip accepts ZIP signatures and rejects other files', () => {
 });
 
 test('listZipEntries reads a ZIP central directory without platform tools', () => {
-  const archive = zipDirectoryFixture(['BeatblockTogether/', 'BeatblockTogether/bbt/core.lua']);
+  const archive = zipDirectoryFixture(['BeatblockOnline/', 'BeatblockOnline/bbt/core.lua']);
 
-  assert.deepEqual(listZipEntries(archive), [
-    'BeatblockTogether/',
-    'BeatblockTogether/bbt/core.lua',
-  ]);
+  assert.deepEqual(listZipEntries(archive), ['BeatblockOnline/', 'BeatblockOnline/bbt/core.lua']);
 });
 
 test('listZipEntries rejects malformed central-directory metadata', () => {
-  const archive = zipDirectoryFixture(['BeatblockTogether/main.lua']);
+  const archive = zipDirectoryFixture(['BeatblockOnline/main.lua']);
   archive.writeUInt32LE(123, archive.length - 6);
 
   assert.throws(() => listZipEntries(archive), /malformed ZIP central directory/);

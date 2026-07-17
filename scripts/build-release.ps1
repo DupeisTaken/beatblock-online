@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $lovely = Join-Path $root 'artifacts\lovely\version.dll'
-$obs = Join-Path $root 'artifacts\obs\beatblock-together-obs.dll'
+$obs = Join-Path $root 'artifacts\obs\beatblock-online-obs.dll'
 
 function Invoke-Checked {
     param([scriptblock]$Command, [string]$Failure)

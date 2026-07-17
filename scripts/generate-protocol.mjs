@@ -16,8 +16,8 @@ const output = resolve(root, 'protocol/schemas/v2');
 await mkdir(output, { recursive: true });
 const schema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
-  $id: 'https://beatblock-together.local/protocol/v2/protocol.json',
-  title: 'Beatblock Together protocol v2',
+  $id: 'https://beatblock-online.local/protocol/v2/protocol.json',
+  title: 'Beatblock Online protocol v2',
   $defs: {
     Envelope: EnvelopeSchema,
     ScoreTotals: ScoreTotalsSchema,

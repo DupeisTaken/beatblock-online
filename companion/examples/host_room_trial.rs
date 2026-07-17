@@ -1,4 +1,4 @@
-use beatblock_together_companion::{
+use beatblock_online_companion::{
     model::{AdmissionMode, ChartLock, ChartTransferMode, ParticipantRole, ScoreTotals},
     room::RoomEngine,
 };

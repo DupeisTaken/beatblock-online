@@ -6,9 +6,9 @@ fn main() {
             PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("installer.manifest");
         // Explicit asInvoker metadata disables Windows' filename-based installer
         // elevation heuristic; protected writes request elevation only on demand.
-        println!("cargo:rustc-link-arg-bin=BeatblockTogetherInstaller=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-bin=BeatblockOnlineInstaller=/MANIFEST:EMBED");
         println!(
-            "cargo:rustc-link-arg-bin=BeatblockTogetherInstaller=/MANIFESTINPUT:{}",
+            "cargo:rustc-link-arg-bin=BeatblockOnlineInstaller=/MANIFESTINPUT:{}",
             manifest.display()
         );
         println!("cargo:rerun-if-changed={}", manifest.display());
@@ -34,14 +34,14 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=BBT_LOVELY_DLL");
     let obs_output =
-        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("beatblock-together-obs.dll");
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("beatblock-online-obs.dll");
     let obs = env::var_os("BBT_OBS_PLUGIN_DLL")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .or_else(|| {
             // Release builds use the generated OBS 32 artifact. Developer
             // builds can still override it with BBT_OBS_PLUGIN_DLL.
-            let path = PathBuf::from("../artifacts/obs/beatblock-together-obs.dll");
+            let path = PathBuf::from("../artifacts/obs/beatblock-online-obs.dll");
             println!("cargo:rerun-if-changed={}", path.display());
             path.is_file().then_some(path)
         });
@@ -77,7 +77,7 @@ fn main() {
         // when the separately built runtime artifact is missing.
         fs::write(
             runtime_output,
-            b"MZ\0Beatblock Together test-only runtime payload",
+            b"MZ\0Beatblock Online test-only runtime payload",
         )
         .expect("write test runtime payload");
     } else {

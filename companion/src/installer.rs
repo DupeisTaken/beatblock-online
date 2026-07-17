@@ -10,7 +10,7 @@ use std::{
 
 static LOVELY_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lovely-version.dll"));
 static OBS_PLUGIN_PAYLOAD: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/beatblock-together-obs.dll"));
+    include_bytes!(concat!(env!("OUT_DIR"), "/beatblock-online-obs.dll"));
 static RUNTIME_PAYLOAD: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockOnlineRuntime.exe"));
 const RUNTIME_FILE_NAME: &str = "BeatblockOnlineRuntime.exe";
@@ -270,7 +270,7 @@ impl Installer {
             .as_ref()
             .filter(|m| m.game_directory != selected)
             .map(|m| m.game_directory.clone());
-        let mod_dir = mods_directory.join("BeatblockTogether");
+        let mod_dir = mods_directory.join("BeatblockOnline");
         let shared_ok = SHARED_MOD_PAYLOAD
             .iter()
             .all(|(relative, bytes)| file_matches(&mod_dir.join(relative), bytes));
@@ -295,9 +295,7 @@ impl Installer {
             .is_some_and(|p| p.is_file() && file_matches(p, RUNTIME_PAYLOAD));
         let renderer_ready = self
             .data_dir
-            .join(
-                "renderer-profile/Beatblock/Mods/BeatblockTogetherRenderer/bbt/dashboard_model.lua",
-            )
+            .join("renderer-profile/Beatblock/Mods/BeatblockOnlineRenderer/bbt/dashboard_model.lua")
             .is_file();
         let backup_warning = manifest
             .as_ref()
@@ -714,11 +712,11 @@ impl Installer {
         if distribution == Distribution::Standalone && detected_plus {
             bail!("Standalone Lovely was selected, but BeatblockPlus 2.x is installed; choose the BeatblockPlus adapter to avoid loading both BBT adapters");
         }
-        let mod_directory = mods_directory.join("BeatblockTogether");
+        let mod_directory = mods_directory.join("BeatblockOnline");
         let stage_directory =
-            mods_directory.join(format!(".BeatblockTogether.stage-{}", uuid::Uuid::new_v4()));
+            mods_directory.join(format!(".BeatblockOnline.stage-{}", uuid::Uuid::new_v4()));
         let rollback_directory = mods_directory.join(format!(
-            ".BeatblockTogether.rollback-{}",
+            ".BeatblockOnline.rollback-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(stage_directory.join("bbt"))?;
@@ -784,7 +782,7 @@ impl Installer {
                 )?;
                 write(
                     &stage_directory.join("README.txt"),
-                    b"Beatblock Together standalone Lovely package. Installed by BeatblockTogetherInstaller.exe.\n",
+                    b"Beatblock Online standalone Lovely package. Installed by BeatblockOnlineInstaller.exe.\n",
                     &mut installed_files,
                 )?;
             }
@@ -869,9 +867,7 @@ impl Installer {
             bail!("the release is missing its bundled no-console Lovely payload");
         }
 
-        let maintenance_installer = self
-            .data_dir
-            .join("installer/BeatblockTogetherInstaller.exe");
+        let maintenance_installer = self.data_dir.join("installer/BeatblockOnlineInstaller.exe");
         if let Some(parent) = maintenance_installer.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -1003,7 +999,7 @@ impl Installer {
     {
         let manifest = self
             .load_manifest()?
-            .context("Beatblock Together is not installed")?;
+            .context("Beatblock Online is not installed")?;
         progress(OperationProgress::step(
             OperationKind::Repair,
             "validation",
@@ -1053,8 +1049,8 @@ impl Installer {
         ));
         let manifest = self
             .load_manifest()?
-            .context("Beatblock Together is not installed")?;
-        let mod_directory = manifest.mods_directory.join("BeatblockTogether");
+            .context("Beatblock Online is not installed")?;
+        let mod_directory = manifest.mods_directory.join("BeatblockOnline");
         progress(OperationProgress::step(
             OperationKind::Restore,
             "mod_payload",
@@ -1088,7 +1084,7 @@ impl Installer {
     pub fn set_firewall_profile(&self, public: bool) -> Result<()> {
         let mut manifest = self
             .load_manifest()?
-            .context("Beatblock Together is not installed")?;
+            .context("Beatblock Online is not installed")?;
         let runtime = manifest
             .runtime_path
             .as_deref()
@@ -1101,7 +1097,7 @@ impl Installer {
 
     pub fn prepare_renderer_profile(&self) -> Result<PathBuf> {
         let profile = self.data_dir.join("renderer-profile");
-        let directory = profile.join("Beatblock/Mods/BeatblockTogetherRenderer");
+        let directory = profile.join("Beatblock/Mods/BeatblockOnlineRenderer");
         std::fs::create_dir_all(directory.join("bbt"))?;
         std::fs::create_dir_all(directory.join("lovely"))?;
         for (relative, bytes) in SHARED_MOD_PAYLOAD {
@@ -1322,11 +1318,11 @@ impl Installer {
         let Some(manifest) = self.load_manifest()? else {
             progress(OperationProgress::complete(
                 OperationKind::Uninstall,
-                "Beatblock Together is already uninstalled",
+                "Beatblock Online is already uninstalled",
             ));
             return Ok(());
         };
-        let mod_directory = manifest.mods_directory.join("BeatblockTogether");
+        let mod_directory = manifest.mods_directory.join("BeatblockOnline");
         if mod_directory.exists() {
             progress(OperationProgress::step(
                 OperationKind::Uninstall,
@@ -1549,7 +1545,7 @@ impl Installer {
     fn register_uninstall(&self, manifest: &InstallManifest) -> Result<()> {
         #[cfg(windows)]
         {
-            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BeatblockTogether";
+            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BeatblockOnline";
             let current = std::env::current_exe()?;
             let exe = manifest
                 .maintenance_installer
@@ -1558,9 +1554,9 @@ impl Installer {
                 .display()
                 .to_string();
             for (name, value) in [
-                ("DisplayName", "Beatblock Together".to_string()),
+                ("DisplayName", "Beatblock Online".to_string()),
                 ("DisplayVersion", env!("CARGO_PKG_VERSION").to_string()),
-                ("Publisher", "Beatblock Together".to_string()),
+                ("Publisher", "Beatblock Online".to_string()),
                 ("DisplayIcon", exe.clone()),
                 ("UninstallString", format!("\"{exe}\" --uninstall-now")),
             ] {
@@ -1580,7 +1576,7 @@ impl Installer {
             let mut command = std::process::Command::new("reg.exe");
             command.args([
                 "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BeatblockTogether",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BeatblockOnline",
                 "/f",
             ]);
             let _ = hidden(&mut command)?;
@@ -1849,7 +1845,7 @@ impl DirectoryRollback {
             if backup.exists() {
                 let _ = std::fs::rename(backup, target);
             }
-            return Err(error).context("activate staged Beatblock Together mod");
+            return Err(error).context("activate staged Beatblock Online mod");
         }
         Ok(Self {
             target: target.to_owned(),
@@ -1932,9 +1928,9 @@ fn detect_obs_directory() -> Option<PathBuf> {
 }
 
 fn obs_program_data_paths(program_data: &Path) -> (PathBuf, PathBuf) {
-    let root = program_data.join("obs-studio/plugins/beatblock-together-obs");
+    let root = program_data.join("obs-studio/plugins/beatblock-online-obs");
     (
-        root.join("bin/64bit/beatblock-together-obs.dll"),
+        root.join("bin/64bit/beatblock-online-obs.dll"),
         root.join("data/locale/en-US.ini"),
     )
 }
@@ -1977,7 +1973,7 @@ fn firewall_command(runtime: &Path, public: bool, add: bool) -> std::process::Co
         "firewall",
         if add { "add" } else { "delete" },
         "rule",
-        "name=Beatblock Together Host",
+        "name=Beatblock Online Host",
     ]);
     if add {
         // PathBuf preserves forward slashes that appear in a joined string.
@@ -2052,7 +2048,7 @@ fn default_mods_directory() -> Option<PathBuf> {
                 .map(|path| path.join("Beatblock/Mods"))
         })
         .or_else(|| {
-            ProjectDirs::from("org", "BeatblockTogether", "BeatblockTogether")
+            ProjectDirs::from("org", "BeatblockOnline", "BeatblockOnline")
                 .map(|dirs| dirs.data_dir().join("Mods"))
         })
 }
@@ -2079,9 +2075,9 @@ fn other_lovely_mods(mods: &Path) -> bool {
         // Active staging/rollback folders are part of BBT's own atomic
         // transaction and must not make an old injector look externally owned
         // while moving the managed installation to another game folder.
-        name != "BeatblockTogether"
-            && !name.starts_with(".BeatblockTogether.stage-")
-            && !name.starts_with(".BeatblockTogether.rollback-")
+        name != "BeatblockOnline"
+            && !name.starts_with(".BeatblockOnline.stage-")
+            && !name.starts_with(".BeatblockOnline.rollback-")
             && entry.path().join("lovely").is_dir()
     })
 }
@@ -2172,7 +2168,7 @@ mod tests {
         let mods = root.join("mods");
         let data = root.join("data");
         fake_game(&game);
-        let mod_dir = mods.join("BeatblockTogether");
+        let mod_dir = mods.join("BeatblockOnline");
         std::fs::create_dir_all(mod_dir.join("bbt")).unwrap();
         std::fs::create_dir_all(mod_dir.join("lovely")).unwrap();
         for (relative, bytes) in SHARED_MOD_PAYLOAD {
@@ -2300,7 +2296,7 @@ mod tests {
             |_| {},
         );
         assert!(rejected.unwrap_err().to_string().contains("not certified"));
-        assert!(!mods.join("BeatblockTogether").exists());
+        assert!(!mods.join("BeatblockOnline").exists());
         assert!(legacy_runtime.is_file());
 
         let mut progress = Vec::new();
@@ -2316,15 +2312,13 @@ mod tests {
         assert!(!legacy_runtime.exists());
         assert!(data.join("runtime").join(RUNTIME_FILE_NAME).is_file());
         assert!(mods
-            .join("BeatblockTogether/bbt/dashboard_model.lua")
+            .join("BeatblockOnline/bbt/dashboard_model.lua")
             .is_file());
         let installed_core =
-            std::fs::read_to_string(mods.join("BeatblockTogether/bbt/core.lua")).unwrap();
+            std::fs::read_to_string(mods.join("BeatblockOnline/bbt/core.lua")).unwrap();
         assert!(installed_core.contains("pendingRequestDeadlineMs"));
         assert!(installed_core.contains("runtime.disconnected"));
-        assert!(mods
-            .join("BeatblockTogether/lovely/bootstrap.toml")
-            .is_file());
+        assert!(mods.join("BeatblockOnline/lovely/bootstrap.toml").is_file());
         assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
         let backup = manifest.lovely_backup.as_ref().unwrap();
         assert_eq!(std::fs::read(backup).unwrap(), b"existing Lovely");
@@ -2334,7 +2328,7 @@ mod tests {
         assert_eq!(progress.iter().filter(|event| event.terminal).count(), 1);
 
         std::fs::write(
-            mods.join("BeatblockTogether/bbt/core.lua"),
+            mods.join("BeatblockOnline/bbt/core.lua"),
             b"stale Online command lifecycle",
         )
         .unwrap();
@@ -2360,7 +2354,7 @@ mod tests {
             1
         );
         assert!(file_matches(
-            &mods.join("BeatblockTogether/bbt/core.lua"),
+            &mods.join("BeatblockOnline/bbt/core.lua"),
             include_bytes!("../../mod/shared/bbt/core.lua")
         ));
         assert!(file_matches(
@@ -2379,7 +2373,7 @@ mod tests {
         assert!(installer.obs_plugin_ready());
 
         installer.restore_with_progress(|_| {}).unwrap();
-        assert!(!mods.join("BeatblockTogether").exists());
+        assert!(!mods.join("BeatblockOnline").exists());
         assert_eq!(
             std::fs::read(game.join("version.dll")).unwrap(),
             b"existing Lovely"
@@ -2395,7 +2389,7 @@ mod tests {
         installer
             .uninstall_with_progress_platform(false, false, |_| {})
             .unwrap();
-        assert!(!mods.join("BeatblockTogether").exists());
+        assert!(!mods.join("BeatblockOnline").exists());
         assert_eq!(
             std::fs::read(game.join("version.dll")).unwrap(),
             b"existing Lovely"
@@ -2417,8 +2411,8 @@ mod tests {
         let mods = root.join("mods");
         fake_game(&game);
         std::fs::create_dir_all(game.join("version.dll")).unwrap();
-        std::fs::create_dir_all(mods.join("BeatblockTogether")).unwrap();
-        std::fs::write(mods.join("BeatblockTogether/previous.txt"), b"previous mod").unwrap();
+        std::fs::create_dir_all(mods.join("BeatblockOnline")).unwrap();
+        std::fs::write(mods.join("BeatblockOnline/previous.txt"), b"previous mod").unwrap();
         let runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, b"previous runtime").unwrap();
@@ -2433,11 +2427,11 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(std::fs::read(&runtime).unwrap(), b"previous runtime");
         assert_eq!(
-            std::fs::read(mods.join("BeatblockTogether/previous.txt")).unwrap(),
+            std::fs::read(mods.join("BeatblockOnline/previous.txt")).unwrap(),
             b"previous mod"
         );
         assert!(!mods
-            .join("BeatblockTogether/bbt/dashboard_model.lua")
+            .join("BeatblockOnline/bbt/dashboard_model.lua")
             .exists());
         assert!(!data.join("install-manifest.json").exists());
         assert!(!std::fs::read_dir(&game)
@@ -2503,10 +2497,8 @@ mod tests {
             .contains("avoid loading both BBT adapters"));
         let plus = install_isolated(&installer, &new_game, None, &mut Vec::new()).unwrap();
         assert_eq!(plus.distribution, Distribution::BeatblockPlus);
-        assert!(mods.join("BeatblockTogether/mod.json").is_file());
-        assert!(!mods
-            .join("BeatblockTogether/lovely/bootstrap.toml")
-            .exists());
+        assert!(mods.join("BeatblockOnline/mod.json").is_file());
+        assert!(!mods.join("BeatblockOnline/lovely/bootstrap.toml").exists());
         installer
             .uninstall_with_progress_platform(true, false, |_| {})
             .unwrap();
@@ -2519,7 +2511,7 @@ mod tests {
         let data = root.join("data");
         let mods = root.join("mods");
         let game = root.join("game");
-        std::fs::create_dir_all(mods.join("BeatblockTogether")).unwrap();
+        std::fs::create_dir_all(mods.join("BeatblockOnline")).unwrap();
         std::fs::create_dir_all(&game).unwrap();
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(data.join("runtime.sqlite3"), b"history").unwrap();
@@ -2633,14 +2625,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn firewall_command_targets_runtime_and_selected_profiles() {
-        let runtime = Path::new(r"C:\Program Files\Beatblock Together/Runtime.exe");
+        let runtime = Path::new(r"C:\Program Files\Beatblock Online/Runtime.exe");
         let private = firewall_command(runtime, false, true)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(
-            private.contains(&r"program=C:\Program Files\Beatblock Together\Runtime.exe".into())
-        );
+        assert!(private.contains(&r"program=C:\Program Files\Beatblock Online\Runtime.exe".into()));
         assert!(private
             .iter()
             .find(|arg| arg.starts_with("program="))
@@ -2682,8 +2672,8 @@ mod tests {
         validate_obs_payload(OBS_PLUGIN_PAYLOAD).unwrap();
         assert!(OBS_PLUGIN_PAYLOAD.len() > 8_000);
         let source = include_str!("../../obs-plugin/src/plugin.c");
-        assert!(source.contains(r"BeatblockTogether\\BeatblockTogether\\data\\render-streams"));
-        assert!(source.contains("beatblock_together_player_stream"));
+        assert!(source.contains(r"BeatblockOnline\\BeatblockOnline\\data\\render-streams"));
+        assert!(source.contains("beatblock_online_player_stream"));
         let stale_cleanup = source
             .split("static void clear_stale_resources")
             .nth(1)
@@ -2718,13 +2708,13 @@ mod tests {
         assert_eq!(
             plugin,
             PathBuf::from(
-                r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\bin\64bit\beatblock-together-obs.dll"
+                r"C:\ProgramData\obs-studio\plugins\beatblock-online-obs\bin\64bit\beatblock-online-obs.dll"
             )
         );
         assert_eq!(
             locale,
             PathBuf::from(
-                r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\data\locale\en-US.ini"
+                r"C:\ProgramData\obs-studio\plugins\beatblock-online-obs\data\locale\en-US.ini"
             )
         );
     }
@@ -2753,7 +2743,7 @@ mod tests {
     fn verified_obs_component_does_not_report_a_stale_failure() {
         let root = std::env::temp_dir().join(format!("bbt-obs-state-{}", rand::random::<u64>()));
         let data = root.join("data");
-        let plugin = root.join("beatblock-together-obs.dll");
+        let plugin = root.join("beatblock-online-obs.dll");
         let locale = root.join("en-US.ini");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(&plugin, OBS_PLUGIN_PAYLOAD).unwrap();

@@ -129,7 +129,7 @@ await writeFileWithTransientRetry(
   resolve(reportDirectory, 'full-capability-latest.json'),
   `${JSON.stringify(report, null, 2)}\n`,
 );
-const markdown = `# Beatblock Together installer/runtime capability trial\n\nGenerated: ${report.generatedAt}\n\nAutomated gate: **${report.passed ? 'PASS' : 'FAIL'}**\n\n${runs.map((run) => `- ${run.passed ? 'PASS' : 'FAIL'} - ${run.name}: ${(run.durationMs / 1000).toFixed(2)} s`).join('\n')}\n\nMachine-readable metrics are in \`full-capability-latest.json\`, \`host-room-simulation-latest.json\`, \`runtime-lifecycle-latest.json\`, and \`runtime-benchmark-latest.json\`. Physical WAN, OBS, GPU, and clean-machine release gates use the manual trial sheets under \`docs/trials\`; simulations are not reported as physical results.\n`;
+const markdown = `# Beatblock Online installer/runtime capability trial\n\nGenerated: ${report.generatedAt}\n\nAutomated gate: **${report.passed ? 'PASS' : 'FAIL'}**\n\n${runs.map((run) => `- ${run.passed ? 'PASS' : 'FAIL'} - ${run.name}: ${(run.durationMs / 1000).toFixed(2)} s`).join('\n')}\n\nMachine-readable metrics are in \`full-capability-latest.json\`, \`host-room-simulation-latest.json\`, \`runtime-lifecycle-latest.json\`, and \`runtime-benchmark-latest.json\`. Physical WAN, OBS, GPU, and clean-machine release gates use the manual trial sheets under \`docs/trials\`; simulations are not reported as physical results.\n`;
 await writeFileWithTransientRetry(resolve(reportDirectory, 'full-capability-latest.md'), markdown);
 console.log(`\nFull trial: ${report.passed ? 'PASS' : 'FAIL'}`);
 console.log(`Report: ${resolve(reportDirectory, 'full-capability-latest.md')}`);

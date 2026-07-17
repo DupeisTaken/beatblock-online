@@ -2,13 +2,13 @@
 
 **Date:** 2026-07-16
 **Branch:** `codex/installer`
-**Installer:** `release/BeatblockTogetherInstaller.exe`
+**Installer:** `release/BeatblockOnlineInstaller.exe`
 **SHA-256:** `7213112e60f9f171c7d986c1c3e808096feac31b398d2448413ea30014c32903`
 **Result:** Automated and non-elevated physical gates pass. Current-build elevated success, protected-folder repair, and destructive physical uninstall remain blocked on an unanswered Windows UAC prompt.
 
 ## Bugs found by the expanded trial
 
-1. Moving BBT to another game folder left the BBT-owned `version.dll` in the old folder. The active `.BeatblockTogether.rollback-*` transaction directory was mistaken for another Lovely mod. Transaction directories are now excluded from external-mod ownership checks, with a full move regression test.
+1. Moving BBT to another game folder left the BBT-owned `version.dll` in the old folder. The active `.BeatblockOnline.rollback-*` transaction directory was mistaken for another Lovely mod. Transaction directories are now excluded from external-mod ownership checks, with a full move regression test.
 2. A firewall/elevation failure rolled back the mod, runtime, and injector but left the maintenance installer copy behind. The maintenance executable now uses the same rollback guard as the other managed files.
 3. A failed atomic replacement could strand a UUID-suffixed temporary file when a directory occupied a managed file path. Failed writes now remove their temporary payload.
 4. Manually selecting Standalone while BeatblockPlus is installed could load both BBT adapters. The installer now rejects that combination, while Automatic and Repair re-detect BeatblockPlus and select exactly one adapter.

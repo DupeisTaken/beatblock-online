@@ -3,7 +3,7 @@
   "date": "2026-07-16",
   "branch": "codex/installer",
   "installer": {
-    "path": "release/BeatblockTogetherInstaller.exe",
+    "path": "release/BeatblockOnlineInstaller.exe",
     "sha256": "7213112e60f9f171c7d986c1c3e808096feac31b398d2448413ea30014c32903",
     "bytes": 34378752
   },

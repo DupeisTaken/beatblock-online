@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { cargoCommand } from './run-cargo.mjs';
@@ -10,10 +10,10 @@ const manifest = resolve(root, 'companion/Cargo.toml');
 // without terminating that game or embedding an older locked executable.
 const cargoTarget = resolve(root, process.env.CARGO_TARGET_DIR ?? 'companion/target');
 const runtime = resolve(cargoTarget, 'release/BeatblockOnlineRuntime.exe');
-const installer = resolve(cargoTarget, 'release/BeatblockTogetherInstaller.exe');
+const installer = resolve(cargoTarget, 'release/BeatblockOnlineInstaller.exe');
 const lovely = resolve(process.env.BBT_LOVELY_DLL ?? resolve(root, 'artifacts/lovely/version.dll'));
 const obsPlugin = resolve(
-  process.env.BBT_OBS_PLUGIN_DLL ?? resolve(root, 'artifacts/obs/beatblock-together-obs.dll'),
+  process.env.BBT_OBS_PLUGIN_DLL ?? resolve(root, 'artifacts/obs/beatblock-online-obs.dll'),
 );
 const release = resolve(root, 'release');
 
@@ -45,7 +45,7 @@ cargo(
     manifest,
     '--release',
     '--bin',
-    'BeatblockTogetherInstaller',
+    'BeatblockOnlineInstaller',
     '--features',
     'installer-ui',
   ],
@@ -58,9 +58,11 @@ cargo(
   },
 );
 
-await rm(release, { recursive: true, force: true });
+// Keep the staging directory itself stable: Explorer, antivirus scanners, and
+// terminals can hold a Windows directory handle even when the output file is
+// replaceable. Each release artifact is explicitly overwritten below.
 await mkdir(release, { recursive: true });
-await copyFile(installer, resolve(release, 'BeatblockTogetherInstaller.exe'));
+await copyFile(installer, resolve(release, 'BeatblockOnlineInstaller.exe'));
 console.log(
-  'Built release/BeatblockTogetherInstaller.exe (self-contained installer + runtime payload).',
+  'Built release/BeatblockOnlineInstaller.exe (self-contained installer + runtime payload).',
 );
