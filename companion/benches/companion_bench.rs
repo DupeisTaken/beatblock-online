@@ -1,4 +1,4 @@
-use beatblock_together_companion::{
+use beatblock_online_companion::{
     app_state::AppState,
     chart_hash::canonical_chart_hash_cached,
     model::{CompanionConfig, Envelope},

@@ -58,13 +58,13 @@ jobs:
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1
       - uses: actions/upload-artifact@v7
         with:
-          name: beatblock-together-${{ github.ref_name }}
+          name: beatblock-online-${{ github.ref_name }}
           if-no-files-found: error
           retention-days: 14
           path: |
-            release/BeatblockTogetherInstaller.exe
+            release/BeatblockOnlineInstaller.exe
             release/SHA256SUMS.txt
-            artifacts/obs/beatblock-together-obs.dll
+            artifacts/obs/beatblock-online-obs.dll
             mod/releases/*.zip
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/')
@@ -73,9 +73,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $assets = @(
-            'release/BeatblockTogetherInstaller.exe#Windows self-contained installer'
-            'release/SHA256SUMS.txt#SHA-256 checksums'
-            'artifacts/obs/beatblock-together-obs.dll#OBS 32 x64 source plugin'
+            'release/BeatblockOnlineInstaller.exe'
+            'release/SHA256SUMS.txt'
+            'artifacts/obs/beatblock-online-obs.dll'
           )
           $assets += Get-ChildItem 'mod/releases/*.zip' | ForEach-Object { $_.FullName }
           $arguments = @(

@@ -123,8 +123,8 @@ export async function verifyRelease({ pePaths, zipPaths, checksumPaths, checksum
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const pePaths = [
-    resolve(root, 'release/BeatblockTogetherInstaller.exe'),
-    resolve(root, 'artifacts/obs/beatblock-together-obs.dll'),
+    resolve(root, 'release/BeatblockOnlineInstaller.exe'),
+    resolve(root, 'artifacts/obs/beatblock-online-obs.dll'),
     resolve(root, 'artifacts/lovely/version.dll'),
   ];
   const modDirectory = resolve(root, 'mod/releases');

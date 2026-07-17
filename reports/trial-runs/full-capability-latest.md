@@ -1,4 +1,4 @@
-# Beatblock Together installer/runtime capability trial
+# Beatblock Online installer/runtime capability trial
 
 Generated: 2026-07-17T14:41:43.822Z
 

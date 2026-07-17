@@ -32,7 +32,7 @@ The workflow grants `contents: write` only to the build job because GitHub requi
 Create and push a release tag only after the normal CI checks pass:
 
 ```powershell
-git tag -a v0.3.0-alpha.2 -m "Beatblock Together v0.3.0-alpha.2"
+git tag -a v0.3.0-alpha.2 -m "Beatblock Online v0.3.0-alpha.2"
 git push origin v0.3.0-alpha.2
 ```
 

@@ -33,7 +33,7 @@ for (const contract of [
   [core, "BBT.command('runtime.session_end'"],
   [ipc, 'runtime-path.txt'],
   [ipc, 'CreateProcessA'],
-  [ipc, 'beatblock-together-v2'],
+  [ipc, 'beatblock-online-v2'],
   [ipc, 'runtime.disconnected'],
   [ipc, 'PeekNamedPipe'],
   [ipc, 'ERROR_PIPE_BUSY'],
@@ -287,16 +287,13 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
     if (hash(shared) !== hash(packaged))
       throw new Error(`${distribution}/${file} was not generated from the shared core`);
   }
-  const archive = resolve(
-    root,
-    `mod/releases/beatblock-together-${distribution}-0.3.0-alpha.1.zip`,
-  );
+  const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.3.0-alpha.2.zip`);
   const entries = new Set(
     listZipEntries(await readFile(archive), `${distribution} release ZIP`).map((entry) =>
       entry.replaceAll('\\', '/'),
     ),
   );
-  const prefix = 'BeatblockTogether/';
+  const prefix = 'BeatblockOnline/';
   const distributionFiles =
     distribution === 'standalone'
       ? ['lovely/bootstrap.toml', 'README.txt']

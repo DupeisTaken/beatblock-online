@@ -1,4 +1,4 @@
-use beatblock_together_companion::{
+use beatblock_online_companion::{
     app_state::AppState,
     game_commands,
     model::{
@@ -58,7 +58,7 @@ async fn game_chart_command_returns_a_positive_verification_to_lua() {
     let chart = root.join("chart");
     std::fs::create_dir_all(&chart).unwrap();
     std::fs::write(chart.join("manifest.json"), b"competition chart").unwrap();
-    let canonical = beatblock_together_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
+    let canonical = beatblock_online_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
     let app = state(root.clone(), &canonical.hash).await;
     let mut events = app.events.subscribe();
     assert!(
@@ -110,7 +110,7 @@ async fn game_chart_command_rejects_variant_and_note_count_mismatches() {
     let chart = root.join("chart");
     std::fs::create_dir_all(&chart).unwrap();
     std::fs::write(chart.join("manifest.json"), b"competition chart").unwrap();
-    let canonical = beatblock_together_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
+    let canonical = beatblock_online_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
     let app = state(root.clone(), &canonical.hash).await;
 
     for (variant, max_hits, expected_fragment) in
@@ -184,8 +184,7 @@ async fn appending_a_setlist_chart_preserves_the_active_chart_and_host_verificat
     std::fs::create_dir_all(&second).unwrap();
     std::fs::write(first.join("manifest.json"), b"first competition chart").unwrap();
     std::fs::write(second.join("manifest.json"), b"second competition chart").unwrap();
-    let first_hash =
-        beatblock_together_companion::chart_hash::canonical_chart_hash(&first).unwrap();
+    let first_hash = beatblock_online_companion::chart_hash::canonical_chart_hash(&first).unwrap();
 
     let app = AppState::new(
         root.clone(),

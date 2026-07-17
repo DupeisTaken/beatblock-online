@@ -1,10 +1,10 @@
-# Beatblock Together
+# Beatblock Online
 
-Beatblock Together is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 telemetry spectators. The host manages charts, readiness, starts, rankings, spectator streams, OBS exports, and match history from inside Beatblock.
+Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 telemetry spectators. The host manages charts, readiness, starts, rankings, spectator streams, OBS exports, and match history from inside Beatblock.
 
 ## Player quick start
 
-1. Open the [GitHub Releases page](https://github.com/DupeisTaken/beatblock-online/releases), download `BeatblockTogetherInstaller.exe` from the newest release, and run it.
+1. Open the [GitHub Releases page](https://github.com/DupeisTaken/beatblock-online/releases), download `BeatblockOnlineInstaller.exe` from the newest release, and run it.
 2. Confirm the **Selected game** card points to the folder you intend to modify. The Install page shows the adapter, OBS source, Windows Firewall profile, and uncertified-build choices together before anything changes. A green **SUPPORTED** badge identifies the certified build.
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
@@ -16,7 +16,7 @@ Beatblock Together is a Windows direct-IP competition mod. One player hosts a pa
 
 ## Recommended specifications
 
-These are engineering recommendations for Beatblock Together in addition to the requirements of Beatblock and OBS:
+These are engineering recommendations for Beatblock Online in addition to the requirements of Beatblock and OBS:
 
 | Use                                   | CPU                         | Memory            | GPU                                        | Disk                | Network                                                                                              |
 | ------------------------------------- | --------------------------- | ----------------- | ------------------------------------------ | ------------------- | ---------------------------------------------------------------------------------------------------- |

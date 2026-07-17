@@ -1,5 +1,5 @@
 local BBT = {
-  version = '0.3.0-alpha.1',
+  version = '0.3.0-alpha.2',
   protocolVersion = 2,
   sequence = 0,
   runSequence = 0,
@@ -55,7 +55,7 @@ local function encode(value)
   -- CR/LF here safely restores the protocol's one-envelope-per-line framing.
   if json and json.encode then return (json.encode(value):gsub('[\r\n]', '')) end
   if dpf and dpf.json and dpf.json.encode then return (dpf.json.encode(value):gsub('[\r\n]', '')) end
-  error('Beatblock Together could not find the game JSON encoder')
+  error('Beatblock Online could not find the game JSON encoder')
 end
 
 local function decode(value)
@@ -155,7 +155,7 @@ function BBT.startOnlineRuntime()
     BBT.send('client.hello', { instanceId=CLIENT_INSTANCE_ID, clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = BBT.distribution, mods = {} })
   else
     BBT.sessionActive = false
-    BBT.lastError = 'Could not start the Beatblock Together runtime IPC: ' .. tostring(thread)
+    BBT.lastError = 'Could not start the Beatblock Online runtime IPC: ' .. tostring(thread)
   end
 end
 
@@ -180,7 +180,7 @@ function BBT.openInstaller()
   local file = io.open(BBT.modPath .. '/installer-path.txt', 'rb')
   local path = file and file:read('*a') or nil
   if file then file:close() end
-  if not path or path == '' then BBT.lastError = 'Installer maintenance copy is missing. Download BeatblockTogetherInstaller.exe again.'; return end
+  if not path or path == '' then BBT.lastError = 'Installer maintenance copy is missing. Download BeatblockOnlineInstaller.exe again.'; return end
   path = path:gsub('[\r\n]+$', '')
   local ok, ffi = pcall(require, 'ffi')
   if not ok then BBT.lastError = 'Windows launcher is unavailable.'; return end
@@ -406,7 +406,7 @@ end
 function BBT.init(distribution, modPath)
   if _G.BBT_ACTIVE_DISTRIBUTION and _G.BBT_ACTIVE_DISTRIBUTION ~= distribution then
     BBT.disabled = true
-    if log then log('Both Beatblock Together packages are installed. Remove one package before playing.', 'warning') end
+    if log then log('Both Beatblock Online packages are installed. Remove one package before playing.', 'warning') end
     return BBT
   end
   _G.BBT_ACTIVE_DISTRIBUTION = distribution
@@ -504,7 +504,7 @@ local function handleCommand(raw)
   local message = decode(raw)
   if not message then return end
   if message.version ~= BBT.protocolVersion then
-    BBT.lastError = 'Incompatible runtime protocol. Re-run the Beatblock Together installer.'
+    BBT.lastError = 'Incompatible runtime protocol. Re-run the Beatblock Online installer.'
     return
   end
   BBT.runtimeLastSeenMs = monotonicMs()

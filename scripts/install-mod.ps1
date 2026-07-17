@@ -52,23 +52,23 @@ if ([string]::IsNullOrWhiteSpace($ModsDir)) {
     $ModsDir = Join-Path $env:APPDATA 'Beatblock\Mods'
 }
 $modsRoot = Get-FullPath $ModsDir
-$target = Join-Path $modsRoot 'BeatblockTogether'
+$target = Join-Path $modsRoot 'BeatblockOnline'
 Assert-ChildPath $modsRoot $target
 
 if ($Uninstall) {
     if (-not (Test-Path -LiteralPath $target -PathType Container)) {
-        Write-Host "Beatblock Together is not installed at $target"
+        Write-Host "Beatblock Online is not installed at $target"
         exit 0
     }
     $standaloneMarker = Test-Path -LiteralPath (Join-Path $target 'lovely\bootstrap.toml') -PathType Leaf
     $plusMarker = Test-Path -LiteralPath (Join-Path $target 'mod.json') -PathType Leaf
     $hooksMarker = Test-Path -LiteralPath (Join-Path $target 'lovely\hooks.toml') -PathType Leaf
     if (-not $hooksMarker -or (-not $standaloneMarker -and -not $plusMarker)) {
-        throw "Refusing to remove '$target': it does not look like a Beatblock Together installation."
+        throw "Refusing to remove '$target': it does not look like a Beatblock Online installation."
     }
-    if ($PSCmdlet.ShouldProcess($target, 'Remove Beatblock Together mod folder')) {
+    if ($PSCmdlet.ShouldProcess($target, 'Remove Beatblock Online mod folder')) {
         Remove-Item -LiteralPath $target -Recurse -Force
-        Write-Host 'Beatblock Together was removed. Lovely version.dll was kept because other mods may use it.'
+        Write-Host 'Beatblock Online was removed. Lovely version.dll was kept because other mods may use it.'
     }
     exit 0
 }
@@ -144,7 +144,7 @@ if (Test-Path -LiteralPath $target) {
     if (-not $Force) {
         throw "'$target' already exists. Uninstall it first or pass -Force to replace it with a backed-up copy."
     }
-    $backupRoot = Join-Path (Split-Path -Parent $modsRoot) 'BeatblockTogether-backups'
+    $backupRoot = Join-Path (Split-Path -Parent $modsRoot) 'BeatblockOnline-backups'
     $backup = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
     if ($PSCmdlet.ShouldProcess($target, "Move existing installation to $backup")) {
         New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
@@ -153,9 +153,9 @@ if (Test-Path -LiteralPath $target) {
     }
 }
 
-if ($PSCmdlet.ShouldProcess($target, "Install Beatblock Together $Distribution distribution")) {
+if ($PSCmdlet.ShouldProcess($target, "Install Beatblock Online $Distribution distribution")) {
     Copy-Item -LiteralPath $source -Destination $target -Recurse
-    Write-Host "Installed Beatblock Together ($Distribution) to $target"
+    Write-Host "Installed Beatblock Online ($Distribution) to $target"
     Write-Host "Lovely runtime: $versionDll"
     Write-Host 'Launch Beatblock through Steam and select Online; the hidden runtime starts on demand.'
 }

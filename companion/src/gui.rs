@@ -36,7 +36,7 @@ slint::slint! {
     }
 
     export component InstallerWindow inherits Window {
-        title: "Beatblock Together Installer";
+        title: "Beatblock Online Installer";
         width: 820px;
         height: 690px;
         background: #edf1f4;
@@ -57,7 +57,7 @@ slint::slint! {
         in-out property<string> primary-label: "Install / Update";
         in-out property<bool> repairable-components: false;
         in-out property<[ComponentRow]> components;
-        in-out property<string> log-text: "Beatblock Together installer started.\n";
+        in-out property<string> log-text: "Beatblock Online installer started.\n";
         in-out property<bool> install-obs: false;
         in-out property<bool> obs-available: false;
         in-out property<bool> firewall-public: false;
@@ -67,7 +67,7 @@ slint::slint! {
         in-out property<bool> busy: false;
         in-out property<bool> scanning: false;
         in-out property<float> operation-progress: 0;
-        in-out property<string> operation-step: "Ready to install or maintain Beatblock Together.";
+        in-out property<string> operation-step: "Ready to install or maintain Beatblock Online.";
         in-out property<string> operation-percent: "";
         in-out property<bool> result-visible: false;
         in-out property<string> result-text: "";
@@ -101,7 +101,7 @@ slint::slint! {
                 HorizontalLayout {
                     padding-left: 22px; padding-right: 22px;
                     VerticalLayout { alignment: center; spacing: 1px;
-                        Text { text: "Beatblock Together"; font-size: 22px; font-weight: 700; color: #18222c; }
+                        Text { text: "Beatblock Online"; font-size: 22px; font-weight: 700; color: #18222c; }
                         Text { text: "Installer & maintenance"; font-size: 11px; color: #66727d; }
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
@@ -178,7 +178,7 @@ slint::slint! {
                         Button { text: root.primary-label; height: 46px; enabled: !root.busy && root.install-state != "INVALID TARGET"; clicked => { root.install(); } }
                         HorizontalLayout { spacing: 8px;
                             Button { text: root.install-state == "READY" ? "Launch Beatblock" : "Repair"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { if root.install-state == "READY" { root.launch(); } else { root.repair(); } } }
-                            Button { text: "Uninstall"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "uninstall"; root.dialog-confirmation = true; root.dialog-title = "Uninstall Beatblock Together?"; root.dialog-body = "The managed mod, runtime, firewall rule, and optional OBS source will be removed. Settings and history follow your Settings choice."; root.dialog-visible = true; } }
+                            Button { text: "Uninstall"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "uninstall"; root.dialog-confirmation = true; root.dialog-title = "Uninstall Beatblock Online?"; root.dialog-body = "The managed mod, runtime, firewall rule, and optional OBS source will be removed. Settings and history follow your Settings choice."; root.dialog-visible = true; } }
                             Button { text: "Restore game files"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "restore"; root.dialog-confirmation = true; root.dialog-title = "Restore game files?"; root.dialog-body = "The BBT mod is removed and the preserved injector state is restored. You can reinstall later."; root.dialog-visible = true; } }
                         }
                     }
@@ -498,7 +498,7 @@ fn begin_install(
                 );
             }
             Ok(format!(
-                "Beatblock Together is ready in {}.{}",
+                "Beatblock Online is ready in {}.{}",
                 path.display(),
                 if install_obs {
                     " The OBS source was installed and will load after OBS restarts."
@@ -632,11 +632,11 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
                         let first =
                             i.uninstall_with_progress(remove, |e| post_progress(w.clone(), e));
                         let r = match first {
-                            Ok(()) => Ok("Beatblock Together was removed.".into()),
+                            Ok(()) => Ok("Beatblock Online was removed.".into()),
                             Err(error) if needs_elevation(&error) => {
                                 elevate_simple(&data, "--uninstall-now", remove, w.clone()).map(
                                     |_| {
-                                        "Beatblock Together was removed with administrator access."
+                                        "Beatblock Online was removed with administrator access."
                                             .into()
                                     },
                                 )
@@ -722,7 +722,7 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
         window.on_save_log(move || {
             if let Some(window) = weak.upgrade() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .set_file_name("BeatblockTogether-install.log")
+                    .set_file_name("BeatblockOnline-install.log")
                     .save_file()
                 {
                     let _ = std::fs::write(path, window.get_log_text().as_bytes());

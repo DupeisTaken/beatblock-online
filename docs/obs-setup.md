@@ -4,7 +4,7 @@ The Online dashboard and hidden runtime own four stable slots: Stream A, B, C, a
 
 ## Install the native OBS source
 
-Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choose Install/Update or Repair. Close OBS before installation, then restart it. In OBS, press **+** in Sources, add **Beatblock Together Player Stream**, and choose Stream A-D. The installed DLL and locale live under `%ProgramData%\obs-studio\plugins\beatblock-together-obs`; the installer records and verifies their hashes. The reviewed alpha artifact has been physically loaded by OBS Studio 32.0.4 x64.
+Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choose Install/Update or Repair. Close OBS before installation, then restart it. In OBS, press **+** in Sources, add **Beatblock Online Player Stream**, and choose Stream A-D. The installed DLL and locale live under `%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records and verifies their hashes. The reviewed alpha artifact has been physically loaded by OBS Studio 32.0.4 x64.
 
 The player source keeps a read-only mapping of the corresponding triple-buffered RGBA frame ring. A versioned aligned sequence commits each completed frame, and OBS verifies that sequence after copying so a concurrent publish cannot produce a torn frame. The consumer must use aligned read-only snapshots for this check: Windows interlocked compare/exchange operations are writes and will crash against a `FILE_MAP_READ` view. Assigning a participant to that stable slot happens inside Beatblock under **Spectate + OBS**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, or its renderer has not published a frame. Check the in-game slot status before repairing the plugin.
 
@@ -13,7 +13,7 @@ CPU buffer and GPU texture. It also closes and retries the file mapping at a
 bounded cadence, allowing a stopped or atomically replaced renderer ring to
 recover without recreating the OBS source.
 
-The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Together does not register a silent placeholder audio source.
+The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Online does not register a silent placeholder audio source.
 
 Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode renders the chart process; clean mode draws deterministic essential notes, paddle, taps, holds, mines, and outcomes without custom backgrounds/VFX. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
 
@@ -63,12 +63,12 @@ Before assigning slots, keep the host game and OBS below 80% CPU and GPU utiliza
 
 1. Open the installer Components tab. **OBS plugin — Installed** must say **Installed and hash verified**.
 2. Restart OBS completely after installation.
-3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Together] OBS sources registered` and `beatblock-together-obs.dll`.
+3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS sources registered` and `beatblock-online-obs.dll`.
 4. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
 
 ## Text capture
 
-The runtime atomically updates these video-aligned files under `%LOCALAPPDATA%\BeatblockTogether\BeatblockTogether\exports` while Online is active:
+The runtime atomically updates these video-aligned files under `%LOCALAPPDATA%\BeatblockOnline\BeatblockOnline\exports` while Online is active:
 
 ```text
 featured_accuracy.txt

@@ -1,7 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
-use beatblock_together_companion::{
+use beatblock_online_companion::{
     app_state::AppState, http, ipc, model::CompanionConfig, room::unix_ms,
 };
 use clap::Parser;
@@ -15,7 +15,7 @@ use std::{
 };
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Hidden Beatblock Together online runtime")]
+#[command(version, about = "Hidden Beatblock Online online runtime")]
 struct Args {
     #[arg(long, default_value_t = 8974)]
     port: u16,
@@ -29,7 +29,7 @@ struct Args {
 
 fn data_directory(explicit: Option<PathBuf>) -> PathBuf {
     explicit.unwrap_or_else(|| {
-        ProjectDirs::from("org", "BeatblockTogether", "BeatblockTogether")
+        ProjectDirs::from("org", "BeatblockOnline", "BeatblockOnline")
             .map(|dirs| dirs.data_local_dir().to_owned())
             .unwrap_or_else(|| PathBuf::from("runtime-data"))
     })
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("beatblock_together_companion=info".parse()?),
+                .add_directive("beatblock_online_companion=info".parse()?),
         )
         .init();
     tracing::info!(parent_pid = args.parent_pid, session = ?args.session_id, "runtime started");

@@ -1,7 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use anyhow::Result;
-use beatblock_together_companion::{
+use beatblock_online_companion::{
     gui,
     installer::{
         write_operation_status, Distribution, Installer, OperationKind, OperationProgress, Severity,
@@ -12,7 +12,7 @@ use directories::ProjectDirs;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Install and maintain Beatblock Together")]
+#[command(version, about = "Install and maintain Beatblock Online")]
 struct Args {
     #[arg(long)]
     data_dir: Option<PathBuf>,
@@ -79,7 +79,7 @@ fn requested_operation(args: &Args) -> OperationKind {
 
 fn run(args: Args) -> Result<()> {
     let data_dir = args.data_dir.unwrap_or_else(|| {
-        ProjectDirs::from("org", "BeatblockTogether", "BeatblockTogether")
+        ProjectDirs::from("org", "BeatblockOnline", "BeatblockOnline")
             .map(|dirs| dirs.data_local_dir().to_owned())
             .unwrap_or_else(|| PathBuf::from("installer-data"))
     });

@@ -4,7 +4,7 @@
   "recordedAt": "2026-07-15T20:16:00+08:00",
   "passed": true,
   "build": {
-    "installer": "release/BeatblockTogetherInstaller.exe",
+    "installer": "release/BeatblockOnlineInstaller.exe",
     "installerBytes": 33165824,
     "installerSha256": "aa971c1dec7ecea3ec3ad65c62a0039ecf81630f751baa096436732c23a5efcb",
     "game": ".test/Beatblock/Beatblock.exe",

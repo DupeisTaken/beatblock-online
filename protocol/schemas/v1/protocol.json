@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://beatblock-together.local/protocol/v1/protocol.json",
-  "title": "Beatblock Together direct-host protocol v1",
+  "$id": "https://beatblock-online.local/protocol/v1/protocol.json",
+  "title": "Beatblock Online direct-host protocol v1",
   "$defs": {
     "Envelope": {
       "type": "object",

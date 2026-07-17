@@ -29,7 +29,7 @@ pub async fn map_host_port(port: u16) -> Result<PortMapping> {
             port,
             local_address,
             lease_seconds,
-            "Beatblock Together direct host",
+            "Beatblock Online direct host",
         )
         .await
         .context("router rejected the UPnP UDP mapping")?;

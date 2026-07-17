@@ -16,11 +16,11 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) {
         throw 'Lovely archive installation did not copy version.dll beside Beatblock.exe.'
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $mods 'BeatblockTogether\lovely\bootstrap.toml'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $mods 'BeatblockOnline\lovely\bootstrap.toml'))) {
         throw 'Standalone installation did not create the expected bootstrap path.'
     }
     & $installer -GameDir $game -ModsDir $mods -Uninstall
-    if (Test-Path -LiteralPath (Join-Path $mods 'BeatblockTogether')) {
+    if (Test-Path -LiteralPath (Join-Path $mods 'BeatblockOnline')) {
         throw 'Standalone uninstall left the target directory behind.'
     }
 
@@ -28,7 +28,7 @@ try {
     New-Item -ItemType Directory -Path $bbp -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $bbp 'mod.json') -Value '{"id":"beatblock-plus","version":"2.1.0"}'
     & $installer -GameDir $game -ModsDir $mods -Distribution beatblock-plus -AllowUnknownBuild
-    if (-not (Test-Path -LiteralPath (Join-Path $mods 'BeatblockTogether\mod.json'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $mods 'BeatblockOnline\mod.json'))) {
         throw 'BeatblockPlus installation did not create the expected manifest path.'
     }
 

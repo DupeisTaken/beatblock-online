@@ -13,7 +13,7 @@ Reliable messages use:
 }
 ```
 
-Every in-game control request receives `control.ack` or `control.error` with its request ID and has a bounded client-side response deadline. Runtime lifecycle events are `runtime.ready`, `runtime.disconnected`, and `runtime.error`. A disconnect rejects the active request before the worker begins its bounded-backoff relaunch loop. Version 1 is rejected; the named pipe is `\\.\pipe\beatblock-together-v2`.
+Every in-game control request receives `control.ack` or `control.error` with its request ID and has a bounded client-side response deadline. Runtime lifecycle events are `runtime.ready`, `runtime.disconnected`, and `runtime.error`. A disconnect rejects the active request before the worker begins its bounded-backoff relaunch loop. Version 1 is rejected; the named pipe is `\\.\pipe\beatblock-online-v2`.
 
 The first IPC message is `client.hello` with a per-game `instanceId`. The runtime accepts reconnects from that instance and rejects other game processes, preventing control replies and room snapshots from crossing between simultaneous Beatblock copies. A two-second `client.ping` / `runtime.heartbeat` exchange drives the in-game liveness indicator.
 

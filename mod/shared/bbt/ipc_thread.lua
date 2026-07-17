@@ -55,7 +55,7 @@ local function launchRuntimeHidden()
   local runtimePath = file and file:read('*a') or nil
   if file then file:close() end
   if not runtimePath or runtimePath == '' then
-    runtimeError('Runtime is missing. Open Beatblock Together Installer and choose Repair.')
+    runtimeError('Runtime is missing. Open Beatblock Online Installer and choose Repair.')
     return
   end
   runtimePath = runtimePath:gsub('[\r\n]+$', '')
@@ -80,7 +80,7 @@ local handshakeMessage = nil
 local lastTransportError = nil
 local function namedPipe()
   if not ffiOk then return nil end
-  local C, name = ffi.C, [[\\.\pipe\beatblock-together-v2]]
+  local C, name = ffi.C, [[\\.\pipe\beatblock-online-v2]]
   -- Open first: Beatblock's LuaJIT process can receive a false preflight result
   -- from WaitNamedPipeA even while the runtime has an available instance.
   -- Windows only requires waiting after CreateFile reports ERROR_PIPE_BUSY.

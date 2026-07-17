@@ -380,7 +380,7 @@ end
 local function drawHeader(self)
   setc(C.black); love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
   local current=room()
-  local heading=current and ('BBT  /  '..short(current.name or 'ROOM',24)) or 'BEATBLOCK TOGETHER'
+  local heading=current and ('BBT  /  '..short(current.name or 'ROOM',24)) or 'BEATBLOCK ONLINE'
   love.graphics.setFont(fonts.main); setc(C.white); love.graphics.print(heading,12,8)
   love.graphics.setFont(fonts.digitalDisco)
   local lifecycle=current and string.upper(current.lifecycle or 'forming') or 'DIRECT-IP'
