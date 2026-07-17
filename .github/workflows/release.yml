@@ -39,17 +39,19 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm --filter @bbt/protocol test
       - run: pnpm test:release-workflow
+      - run: pnpm test:patch-validation
+      # GitHub-hosted release builds validate the distributable source tree.
+      # Full signature acceptance remains a local, fixture-backed gate.
+      - run: pnpm test:mod:source
+      # Build the pinned Lovely and OBS payloads before Rust tests so the full
+      # installer suite validates the exact binaries that will be published.
+      - run: pnpm build
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
       - run: cargo test --manifest-path companion/Cargo.toml --lib --bins -- --skip detector_accepts_isolated_test_game_shape
       - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
       - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1
-      - run: pnpm test:patch-validation
-      # GitHub-hosted release builds validate the distributable source tree.
-      # Full signature acceptance remains a local, fixture-backed gate.
-      - run: pnpm test:mod:source
-      - run: pnpm build
       - uses: actions/upload-artifact@v7
         with:
           name: beatblock-together-${{ github.ref_name }}

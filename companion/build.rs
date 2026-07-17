@@ -19,12 +19,15 @@ fn main() {
     // artifact. The release orchestrator creates it from the exact upstream
     // commit plus our reviewed patch; no binary input lives in Git.
     let repository_fixture = PathBuf::from("../artifacts/lovely/version.dll");
+    // Track the expected path even when it does not exist yet. Release jobs run
+    // source checks before building payloads, and Cargo must re-run this script
+    // once the verified DLL appears.
+    println!("cargo:rerun-if-changed={}", repository_fixture.display());
     let source = explicit
         .filter(|path| path.is_file())
         .or_else(|| repository_fixture.is_file().then_some(repository_fixture));
     if let Some(source) = source {
         fs::copy(&source, &output).expect("copy Lovely payload");
-        println!("cargo:rerun-if-changed={}", source.display());
     } else {
         fs::write(&output, []).expect("write empty Lovely payload");
         println!("cargo:warning=Lovely DLL payload is unavailable; set BBT_LOVELY_DLL for release builds");
@@ -39,6 +42,7 @@ fn main() {
             // Release builds use the generated OBS 32 artifact. Developer
             // builds can still override it with BBT_OBS_PLUGIN_DLL.
             let path = PathBuf::from("../artifacts/obs/beatblock-together-obs.dll");
+            println!("cargo:rerun-if-changed={}", path.display());
             path.is_file().then_some(path)
         });
     if let Some(source) = obs.as_ref() {

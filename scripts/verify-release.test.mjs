@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { checksumLine, inspectPe, inspectZip, listZipEntries } from './verify-release.mjs';
+
+const root = resolve(import.meta.dirname, '..');
 
 function x64PeFixture() {
   const buffer = Buffer.alloc(128);
@@ -64,6 +68,37 @@ test('listZipEntries rejects malformed central-directory metadata', () => {
   archive.writeUInt32LE(123, archive.length - 6);
 
   assert.throws(() => listZipEntries(archive), /malformed ZIP central directory/);
+});
+
+test('hosted workflows preserve source-only and artifact-backed test boundaries', async () => {
+  const [ci, release] = await Promise.all([
+    readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8'),
+    readFile(resolve(root, '.github/workflows/release.yml'), 'utf8'),
+  ]);
+  for (const testName of [
+    'detector_accepts_isolated_test_game_shape',
+    'embedded_obs_source_is_a_real_module_with_required_exports',
+    'full_standalone_install_repair_restore_and_uninstall_round_trip',
+    'move_installation_and_adapter_detection_are_exclusive',
+    'verified_obs_component_does_not_report_a_stale_failure',
+  ]) {
+    assert.match(ci, new RegExp(`--skip ${testName}`));
+  }
+
+  const buildStep = release.indexOf('- run: pnpm build\n');
+  const fullRustSuite = release.indexOf(
+    '- run: cargo test --manifest-path companion/Cargo.toml --lib --bins',
+  );
+  assert.ok(buildStep >= 0, 'release workflow must build publishable artifacts');
+  assert.ok(
+    buildStep < fullRustSuite,
+    'release workflow must build payloads before the full Rust suite',
+  );
+  assert.equal(
+    release.indexOf('- run: pnpm build\n', buildStep + 1),
+    -1,
+    'release workflow should build artifacts exactly once',
+  );
 });
 
 test('checksumLine is stable and uses only the asset filename', () => {
