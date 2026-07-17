@@ -43,6 +43,7 @@ jobs:
       # GitHub-hosted release builds validate the distributable source tree.
       # Full signature acceptance remains a local, fixture-backed gate.
       - run: pnpm test:mod:source
+      - run: powershell -NoProfile -File scripts/test-release-utils.ps1
       # Build the pinned Lovely and OBS payloads before Rust tests so the full
       # installer suite validates the exact binaries that will be published.
       - run: pnpm build

@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'release-utils.ps1')
 $cache = Join-Path $root ".tools\obs-sdk-$ObsVersion"
 $sourceArchive = Join-Path $cache "OBS-Studio-$ObsVersion-Sources.tar.gz"
 $runtimeArchive = Join-Path $cache "OBS-Studio-$ObsVersion-Windows-x64.zip"
@@ -33,7 +34,7 @@ function Get-PinnedFile {
         & curl.exe -L --fail --output $Path $Url
         if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
     }
-    $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $actualHash = Get-Sha256Hex -LiteralPath $Path
     if ($actualHash -ne $ExpectedHash) {
         throw "Checksum mismatch for $Path. Expected $ExpectedHash, got $actualHash."
     }
@@ -117,4 +118,4 @@ $built = Join-Path $build 'beatblock-together-obs.dll'
 New-Item -ItemType Directory -Force (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $built -Destination $OutputPath -Force
 Write-Host "Built $OutputPath"
-Write-Host "SHA-256 $((Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash)"
+Write-Host "SHA-256 $(Get-Sha256Hex -LiteralPath $OutputPath)"

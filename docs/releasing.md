@@ -1,6 +1,8 @@
 # Reproducible release workflow
 
-Compiled binaries are generated outputs and are not stored in Git. Local and hosted release builds use the same entry point:
+Compiled binaries are generated outputs and are not stored in Git. Release builds require
+PowerShell, Node.js with pnpm, the pinned Rust toolchains, and Visual Studio Build Tools. Local
+and hosted release builds use the same entry point:
 
 ```powershell
 pnpm install --frozen-lockfile
