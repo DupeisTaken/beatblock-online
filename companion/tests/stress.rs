@@ -2,8 +2,8 @@ use beatblock_online_companion::{
     app_state::AppState,
     chart_hash::canonical_chart_hash_cached,
     model::{
-        AdmissionMode, ChartLock, ChartTransferMode, CompanionConfig, Envelope, GameplayState,
-        ParticipantRole, ScoreTotals,
+        AdmissionMode, BroadcastPlan, ChartLock, ChartTransferMode, CompanionConfig, Envelope,
+        GameplayState, ParticipantRole, RendererMode, RendererSlot, ScoreTotals,
     },
     room::RoomEngine,
 };
@@ -225,4 +225,58 @@ fn direct_room_handles_16_players_32_spectators_and_ordered_rankings() {
     assert!(ranked
         .iter()
         .all(|participant| participant.set_total >= 0.0));
+}
+
+#[test]
+fn four_stream_plan_targets_multiple_commentators_without_processes() {
+    let mut room = RoomEngine::host(
+        "Broadcast stress".into(),
+        "Host".into(),
+        AdmissionMode::PasswordOnly,
+    );
+    let mut players = Vec::new();
+    for index in 0..4 {
+        players.push(
+            room.request_join(&format!("Player {}", index + 1), ParticipantRole::Player)
+                .unwrap(),
+        );
+    }
+    let mut commentators = Vec::new();
+    for index in 0..8 {
+        let id = room
+            .request_join(
+                &format!("Commentator {}", index + 1),
+                ParticipantRole::Spectator,
+            )
+            .unwrap();
+        room.set_commentator_access(&id, true).unwrap();
+        commentators.push(id);
+    }
+    let slots = players
+        .iter()
+        .enumerate()
+        .map(|(index, participant)| {
+            let mut slot =
+                RendererSlot::defaults(&((b'A' + index as u8) as char).to_string(), index == 0);
+            slot.participant_id = Some(participant.clone());
+            slot.participant_name = Some(format!("Player {}", index + 1));
+            slot.mode = RendererMode::Clean;
+            slot.active = true;
+            slot
+        })
+        .collect::<Vec<_>>();
+    let plan = BroadcastPlan::from_slots(7, 10, &slots);
+    assert_eq!(plan.slots.len(), 4);
+    assert!(plan
+        .slots
+        .iter()
+        .all(|slot| slot.render_source_id.is_some()));
+    assert_eq!(
+        room.snapshot
+            .participants
+            .iter()
+            .filter(|participant| participant.commentator_access)
+            .count(),
+        commentators.len()
+    );
 }

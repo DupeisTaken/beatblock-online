@@ -80,7 +80,7 @@ local handshakeMessage = nil
 local lastTransportError = nil
 local function namedPipe()
   if not ffiOk then return nil end
-  local C, name = ffi.C, [[\\.\pipe\beatblock-online-v2]]
+  local C, name = ffi.C, [[\\.\pipe\beatblock-online-v3]]
   -- Open first: Beatblock's LuaJIT process can receive a false preflight result
   -- from WaitNamedPipeA even while the runtime has an available instance.
   -- Windows only requires waiting after CreateFile reports ERROR_PIPE_BUSY.

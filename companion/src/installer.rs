@@ -1724,16 +1724,13 @@ fn validate_online_recovery_contract(directory: &Path) -> Result<()> {
         ("bbt/ipc_thread.lua", "launchAttempts"),
         ("bbt/ipc_thread.lua", "CreateProcessA"),
         ("lovely/hooks.toml", "loc.json.bbtOnline"),
-        (
-            "bbt/online_state.lua",
-            "Room password must contain 4-128 characters.",
-        ),
-        (
-            "bbt/online_state.lua",
-            "love.graphics.printf(BBT.lastError,74,239,452,'center')",
-        ),
-        ("bbt/online_state.lua", "ROOM ADDRESS"),
-        ("bbt/online_state.lua", "actualFps"),
+        ("bbt/core.lua", "protocolVersion = 3"),
+        ("bbt/online_state.lua", "local function bounded"),
+        ("bbt/online_state.lua", "HOST ADDRESS"),
+        ("bbt/online_state.lua", "room.commentator_set"),
+        ("bbt/online_state.lua", "broadcast.mirror_set"),
+        ("bbt/dashboard_components.lua", "font:getHeight()"),
+        ("bbt/dashboard_components.lua", "height < 22"),
         ("bbt/renderer.lua", "readbackPending = {false,false}"),
         ("bbt/renderer.lua", "Renderer.frames.pointer + 32"),
     ];
@@ -2123,7 +2120,11 @@ mod tests {
 
     #[test]
     fn detector_accepts_isolated_test_game_shape() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock");
+        let root = std::env::var_os("BBT_GAME_FIXTURE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock")
+            });
         assert!(validate_game_directory(&root).is_ok());
         assert_eq!(
             sha256_file(&root.join("Beatblock.exe")).unwrap(),

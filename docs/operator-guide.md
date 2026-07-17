@@ -18,7 +18,7 @@ The persistent header shows room name, runtime link, and lifecycle. The chart st
 Open **Setlist** from the bottom utility bar.
 
 - **Select Freeplay Chart** uses Beatblock's Freeplay list for official charts and never redistributes official content.
-- **Select Custom** locks a custom chart for local hash, variant, and note-count verification. Host file transfer is intentionally unavailable in this release; every competitor installs the chart locally.
+- **Select Custom** locks a custom chart for local hash, variant, and note-count verification. When chart transfers are enabled, Players still search locally first and can then request the authenticated host fallback. Official charts remain local-only.
 - **Add Official/Custom** creates an ordered set. Move or remove the selected entry before it is played.
 - After Results, **Advance Setlist** locks the next entry and returns everyone to verification.
 

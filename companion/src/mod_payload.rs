@@ -11,6 +11,10 @@ pub const SHARED_MOD_PAYLOAD: &[(&str, &[u8])] = &[
         include_bytes!("../../mod/shared/bbt/dashboard_model.lua"),
     ),
     (
+        "bbt/dashboard_components.lua",
+        include_bytes!("../../mod/shared/bbt/dashboard_components.lua"),
+    ),
+    (
         "bbt/ipc_thread.lua",
         include_bytes!("../../mod/shared/bbt/ipc_thread.lua"),
     ),

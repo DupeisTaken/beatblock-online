@@ -86,7 +86,7 @@ pub async fn run_named_pipe(state: AppState) -> Result<()> {
     loop {
         let server = match ServerOptions::new()
             .first_pipe_instance(false)
-            .create(r"\\.\pipe\beatblock-online-v2")
+            .create(r"\\.\pipe\beatblock-online-v3")
         {
             Ok(server) => server,
             Err(error) => {

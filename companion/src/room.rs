@@ -25,6 +25,7 @@ impl RoomEngine {
                 host_session_id: "local".into(),
                 lifecycle: RoomLifecycle::Forming,
                 admission_mode: AdmissionMode::HostApproval,
+                allow_chart_transfers: true,
                 participants: Vec::new(),
                 chart: None,
                 setlist: Vec::new(),
@@ -50,6 +51,7 @@ impl RoomEngine {
             host_session_id: host_id.clone(),
             lifecycle: RoomLifecycle::Forming,
             admission_mode,
+            allow_chart_transfers: true,
             participants: vec![Participant {
                 session_id: host_id,
                 display_name: host_name,
@@ -66,6 +68,7 @@ impl RoomEngine {
                 validity: RunValidity::Pending,
                 invalid_reason: None,
                 last_sequence: None,
+                commentator_access: false,
             }],
             chart: None,
             setlist: Vec::new(),
@@ -164,6 +167,7 @@ impl RoomEngine {
             validity: RunValidity::Pending,
             invalid_reason: None,
             last_sequence: None,
+            commentator_access: false,
         });
         self.touch();
         Ok(session_id)
@@ -186,6 +190,9 @@ impl RoomEngine {
         participant.admitted = admit;
         participant.connected = admit;
         participant.role = role;
+        if !admit || role != ParticipantRole::Spectator {
+            participant.commentator_access = false;
+        }
         if !admit {
             participant.invalid_reason = Some("Join request rejected by host".into());
         }
@@ -207,7 +214,26 @@ impl RoomEngine {
         let participant = self.participant_mut(session_id)?;
         participant.role = role;
         participant.ready = false;
+        if role != ParticipantRole::Spectator {
+            participant.commentator_access = false;
+        }
         self.refresh_ready_lifecycle();
+        self.touch();
+        Ok(())
+    }
+
+    /// Commentator is a permission layered on the non-competing Spectator
+    /// role. Keeping it out of ParticipantRole preserves player/spectator room
+    /// capacity and makes revocation on a role change unambiguous.
+    pub fn set_commentator_access(&mut self, session_id: &str, enabled: bool) -> Result<()> {
+        if session_id == self.snapshot.host_session_id {
+            bail!("the host already owns broadcast controls");
+        }
+        let participant = self.participant_mut(session_id)?;
+        if !participant.admitted || participant.role != ParticipantRole::Spectator {
+            bail!("commentator access can only be granted to an admitted spectator");
+        }
+        participant.commentator_access = enabled;
         self.touch();
         Ok(())
     }
@@ -1041,6 +1067,23 @@ mod tests {
         assert!(reconnected.connected);
         assert_eq!(reconnected.display_name, "Player");
         assert_eq!(reconnected.role, ParticipantRole::Player);
+    }
+
+    #[test]
+    fn commentator_grant_survives_reconnect_but_not_role_change() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let spectator = room
+            .request_join("Caster", ParticipantRole::Spectator)
+            .unwrap();
+        room.set_commentator_access(&spectator, true).unwrap();
+        room.disconnect(&spectator);
+        room.request_join_with_id(spectator.clone(), "Caster", ParticipantRole::Spectator)
+            .unwrap();
+        assert!(room.player(&spectator).unwrap().commentator_access);
+
+        room.set_role(&spectator, ParticipantRole::Player).unwrap();
+        assert!(!room.player(&spectator).unwrap().commentator_access);
+        assert!(room.set_commentator_access(&spectator, true).is_err());
     }
 
     #[test]

@@ -172,6 +172,40 @@ async fn changing_the_host_custom_chart_verifies_against_the_new_lock() {
     assert_eq!(response.payload["verified"], true);
     let locked = app.room.read().await.snapshot.chart.clone().unwrap();
     assert_ne!(locked.hash, "f".repeat(64));
+    assert_eq!(locked.transfer_mode, ChartTransferMode::HostTransfer);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn host_can_disable_custom_chart_transfer_for_the_room() {
+    let root = temporary("game-command-transfer-disabled");
+    let chart = root.join("chart");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("manifest.json"), b"local-only chart").unwrap();
+    let app = state(root.clone(), &"f".repeat(64)).await;
+    app.room.write().await.snapshot.allow_chart_transfers = false;
+    game_commands::handle(
+        &app,
+        &chart_command(
+            "room.chart_select_request",
+            chart.to_str().unwrap(),
+            "Hard",
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        app.room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .as_ref()
+            .unwrap()
+            .transfer_mode,
+        ChartTransferMode::VerifyOnly
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -299,8 +333,8 @@ async fn removing_the_active_setlist_chart_updates_the_active_game_path() {
 }
 
 #[tokio::test]
-async fn protocol_v1_is_rejected_instead_of_silently_downgraded() {
-    let root = temporary("protocol-v1-rejected");
+async fn protocol_v2_is_rejected_instead_of_silently_downgraded() {
+    let root = temporary("protocol-v2-rejected");
     let app = AppState::new(
         root.clone(),
         "test-token".into(),
@@ -309,9 +343,9 @@ async fn protocol_v1_is_rejected_instead_of_silently_downgraded() {
     .unwrap()
     .0;
     let mut legacy = Envelope::new("diagnostics.get", 1, json!({"requestId":"legacy"}));
-    legacy.version = 1;
+    legacy.version = 2;
     let error = app.ingest(legacy).await.unwrap_err().to_string();
-    assert!(error.contains("unsupported protocol version 1"));
+    assert!(error.contains("unsupported protocol version 2"));
     let _ = std::fs::remove_dir_all(root);
 }
 

@@ -73,6 +73,29 @@ assert(Dashboard.nextFocus('primary','down',false,0)=='utility')
 assert(Dashboard.nextFocus('utility','up',true,1)=='roster')
 local title,copy=Dashboard.help({runtimeReady=true},nil)
 assert(title=='PLAY ONLINE' and string.find(copy,'direct%-IP'))
+
+-- Participant selection is keyed by stable session id and survives a reorder
+-- until the active filter intentionally excludes it.
+local filteredContext={room=lobby('ready',chart,{spectator,pending,host,ready}),me=host,isHost=true}
+local selected,visible=Dashboard.selectedParticipant(filteredContext,'all','Ready')
+assert(selected.sessionId=='Ready' and #visible==4)
+selected,visible=Dashboard.selectedParticipant(filteredContext,'players','Ready')
+assert(selected.sessionId=='Ready' and #visible==2)
+selected,visible=Dashboard.selectedParticipant(filteredContext,'pending','Ready')
+assert(selected.sessionId=='Pending' and #visible==1)
+
+assert(Dashboard.score(host,'ready').rank==nil)
+local liveScore=Dashboard.score(host,'playing')
+assert(liveScore.rank=='—' and liveScore.accuracy=='99.25%')
+host.rank=1
+assert(Dashboard.score(host,'results').rank=='#1')
+host.validity='dnf'
+assert(Dashboard.score(host,'results').rank=='DNF')
+spectator.commentatorAccess=true
+local allowed,authority=Dashboard.canBroadcast({me=spectator,isHost=false})
+assert(allowed and authority=='commentator')
+spectator.commentatorAccess=false
+assert(Dashboard.canBroadcast({me=spectator,isHost=false})==false)
 "#;
     execute(&format!(
         "local Dashboard=(function()\n{model}\nend)()\n{scenarios}"
@@ -80,8 +103,10 @@ assert(title=='PLAY ONLINE' and string.find(copy,'direct%-IP'))
 }
 
 fn execute(source: &str) {
-    let library_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock/lua51.dll");
+    let library_path = std::env::var_os("BBT_UI_FIXTURE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"E:\beatblock-online\.test\ui-harness"))
+        .join("lua51.dll");
     let wide = library_path
         .as_os_str()
         .encode_wide()

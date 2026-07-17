@@ -1,75 +1,53 @@
--- Beatblock-native adaptive Online dashboard. Runtime and room behavior stay
--- in the native engine; this state only normalizes snapshots and presents the
--- next useful action without making players hunt through parallel pages.
+-- Protocol-v3 Online shell. The state is deliberately organized around one
+-- workspace plus one optional modal; Back therefore has one predictable job
+-- and selected participants survive filters, reordering, and reconnects.
 local Dashboard = require('bbt.dashboard_model')
-local utf8Ok,utf8Module=pcall(require,'utf8')
-local utf8=utf8Ok and utf8Module or _G.utf8
+local Components = require('bbt.dashboard_components')
 
--- These are palette-index source colors consumed by Beatblock's fixed shader.
 local C = {
   black={0,0,0,1}, panel={0,0,0,1}, raised={1,0,0,1},
   white={1,1,1,1}, muted={1,1,1,.68}, disabled={1,1,1,.48}, dimBlack={0,0,0,.55},
   red={0,0,1,1}, yellow={0,1,0,1}, green={1,1,0,1}, cyan={1,0,1,1}, blue={0,1,1,1},
 }
-local UTILITIES = {
-  {id='setlist',label='SETLIST'}, {id='obs',label='SPECTATE + OBS'},
-  {id='history',label='HISTORY'}, {id='settings',label='SETTINGS'},
+local ui = Components.new(C)
+local WORKSPACES = {
+  {id='room',label='ROOM'}, {id='setlist',label='SETLIST'},
+  {id='broadcast',label='BROADCAST'}, {id='history',label='HISTORY'},
+  {id='settings',label='SETTINGS'}, {id='help',label='HELP'},
 }
-local STREAM_IDS = {'A','B','C','D'}
+local FILTERS = {
+  {id='all',label='ALL'}, {id='players',label='PLAYERS'},
+  {id='spectators',label='SPECTATORS'}, {id='pending',label='PENDING'},
+}
+local STREAMS = {'A','B','C','D'}
 
-local function setc(value,alpha) love.graphics.setColor(value[1],value[2],value[3],alpha or value[4] or 1) end
-local function tone(name) return C[name] or C.white end
-local function hit(x,y,w,h)
-  local mx,my=mouse and mouse.rx or -1,mouse and mouse.ry or -1
-  return mx>=x and mx<=x+w and my>=y and my<=y+h
-end
-local function clicked(x,y,w,h) return mouse and mouse.pressed==1 and hit(x,y,w,h) end
 local function pressed(name)
   if not maininput or not maininput.pressed then return false end
   local ok,value=pcall(maininput.pressed,maininput,name)
-  return ok and value==true
+  return ok and value == true
 end
-local function accept() return pressed('select') or pressed('accept') end
-local function sound(name) if te and sounds and sounds[name] then pcall(te.play,sounds[name],'static','sfx',.35) end end
-local function room() return BBT.lastLobby and BBT.lastLobby.id~='offline' and BBT.lastLobby.lifecycle~='closed' and BBT.lastLobby or nil end
-local function host() return BBT.isOrganizer() end
-local function locked(current) return current and (current.lifecycle=='countdown' or current.lifecycle=='playing') end
-local function clamp(value,low,high) return math.max(low,math.min(high,value)) end
-local function short(value,length)
-  value=tostring(value or '')
-  if #value<=length then return value end
-  return value:sub(1,math.max(1,length-1))..'~'
+local function accept() return pressed('accept') or pressed('select') end
+local function currentRoom()
+  local value=BBT.lastLobby
+  return value and value.id~='offline' and value.lifecycle~='closed' and value or nil
 end
-
+local function isHost() return BBT.isOrganizer() end
+local function hit(control)
+  local mx,my=mouse and mouse.rx or -1,mouse and mouse.ry or -1
+  return mx>=control.x and mx<=control.x+control.w and my>=control.y and my<=control.y+control.h
+end
+local function clicked(control) return mouse and mouse.pressed==1 and hit(control) end
 local function context()
-  local me=BBT.currentPlayer()
-  local chartVerified=BBT.chartVerified
-  -- An explicit participant verification result wins over the older local
-  -- convenience flag, including when that result is false.
-  if me and me.verified~=nil then chartVerified=me.verified end
   return {
-    room=room(), me=me, isHost=host(), chartVerified=chartVerified,
-    runtimeReady=BBT.companionConnected, runtimeStarting=BBT.runtimeStarting,
+    room=currentRoom(), me=BBT.currentPlayer(), isHost=isHost(),
+    chartVerified=BBT.chartVerified, runtimeReady=BBT.companionConnected,
+    runtimeStarting=BBT.runtimeStarting,
   }
 end
-
-local function panel(x,y,w,h)
-  setc(C.panel); love.graphics.rectangle('fill',x,y,w,h,3,3)
-  setc(C.raised); love.graphics.rectangle('line',x+.5,y+.5,w-1,h-1,3,3)
-end
-
-local function button(x,y,w,h,label,active,buttonTone,enabled)
-  local available=enabled~=false
-  local fill=available and (active and tone(buttonTone or 'cyan') or C.raised) or C.disabled
-  setc(fill); love.graphics.rectangle('fill',x,y,w,h,2,2)
-  if active then setc(C.white); love.graphics.rectangle('line',x+.5,y+.5,w-1,h-1,2,2) end
-  setc(available and C.black or C.dimBlack)
-  love.graphics.printf(label,x+4,y+math.floor((h-9)/2)+1,w-8,'center')
-end
-
-local function chip(x,y,w,label,chipTone)
-  setc(tone(chipTone)); love.graphics.rectangle('line',x+.5,y+.5,w-1,16,2,2)
-  love.graphics.printf(label,x+3,y+5,w-6,'center')
+local function bounded(value,limit)
+  value=tostring(value or '')
+  if #value<=limit then return value end
+  return value:sub(1,limit-3)..'...'
 end
 
 local function leaveToMenu(self)
@@ -77,751 +55,571 @@ local function leaveToMenu(self)
   if music then music:clearOnBeatHooks() end
   local previous=cs; cs=bs.load('Menu')
   if previous and previous.leave then previous:leave() end
-  cs.menuMusicManager=music
-  -- Reusing the active manager prevents the intro cue from replaying.
-  cs:init()
+  cs.menuMusicManager=music; cs:init()
 end
 
-local function exitOnline(self)
-  BBT.exitOnline()
-  leaveToMenu(self)
+local function register(self,id,x,y,w,h,run)
+  local entry={id=id,x=x,y=y,w=w,h=h,run=run}
+  self.controls[#self.controls+1]=entry
+  return self.focusId==id
 end
 
-local function addAction(list,id,label,description,actionTone,run,enabled)
-  list[#list+1]={id=id,label=label,description=description,tone=actionTone or 'white',run=run,enabled=enabled~=false}
+local function button(self,id,x,y,w,h,label,run,color,enabled)
+  local focused=register(self,id,x,y,w,h,run)
+  ui:button(id,x,y,w,h,label,focused,color,enabled)
 end
 
-local function copyJoinLink()
-  if not love.system then return end
-  local address=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress
-  if not address or address=='' then BBT.lastError='A shareable join address is not available yet.'; return end
-  love.system.setClipboardText('bbt://'..tostring(address)..'?v=2')
+local function chip(self,id,x,y,w,label,selected,run,color)
+  register(self,id,x,y,w,22,run)
+  ui:chip(id,x,y,w,label,selected,color)
 end
 
-local function ensureRoster(self)
-  local participants=room() and room().participants or {}
-  if #participants==0 then self.rosterSelection=1; self.rosterOffset=0; return participants end
-  self.rosterSelection,self.rosterOffset=Dashboard.scroll(self.rosterSelection,self.rosterOffset,#participants,0,8)
-  return participants
+local function setWorkspace(self,name)
+  self.workspace=name
+  self.focusId='nav_'..name
+  self.modal=nil
 end
 
-local function selectedParticipant(self)
-  local participants=ensureRoster(self)
-  return participants[self.rosterSelection]
+local function selected(self)
+  local participant,list=Dashboard.selectedParticipant(context(),self.rosterFilter,self.selectedSessionId)
+  if participant then self.selectedSessionId=participant.sessionId end
+  return participant,list
 end
 
-local function rendererEligible(participant)
-  return participant and participant.admitted==true and participant.connected==true
-    and participant.role~='spectator'
-end
-
-local function requestConfirm(self,title,message,label,run)
-  self.confirm={title=title,message=message,label=label or 'CONFIRM',run=run}
-  self.confirmChoice=2
-end
-
-local function primaryAction(self)
-  return Dashboard.primary(context())
-end
-
-local function runPrimary(self,item)
-  local current=room()
-  if item.id=='host_room' then self:openForm('host')
-  elseif item.id=='open_installer' then BBT.openInstaller()
-  elseif item.id=='select_chart' then self.overlay='setlist'; self.overlayFocus='actions'; self.overlayActionSelection=1
-  elseif item.id=='locate_chart' and current and current.chart then
-    if current.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
-  elseif item.id=='ready' then BBT.command('room.ready_request',{ready=true})
-  elseif item.id=='start_race' then BBT.command('room.start_request',{force=false})
-  elseif item.id=='advance_set' then BBT.command('setlist.advance',{})
-  elseif item.id=='view_results' then self.overlay='history'; self.overlayFocus='list'; self.overlayActionSelection=1 end
-end
-
-local function secondaryActions(self)
-  local list,current,me={},room(),BBT.currentPlayer()
-  if not current then
-    addAction(list,'join','JOIN ROOM','Connect as a verified player.','cyan',function() self:openForm('join',false) end,BBT.companionConnected)
-    addAction(list,'spectate','JOIN AS SPECTATOR','Follow room telemetry and rankings.','white',function() self:openForm('join',true) end,BBT.companionConnected)
-    addAction(list,'exit','EXIT ONLINE','Stop local Online session services.','red',function()
-      requestConfirm(self,'EXIT ONLINE','Leave Online and stop the runtime, API, exports, and renderers?','EXIT',function() exitOnline(self) end)
-    end)
-  else
-    addAction(list,'room_options','ROOM OPTIONS','Open room sharing and session controls.','white',function() self.sideMenu='room'; self.sideSelection=1 end)
-  end
-  return list
-end
-
-local function participantActions(self,target)
-  local list,current={},room()
-  if not target or not current then return list end
-  if host() and target.sessionId~=current.hostSessionId then
-    if not target.admitted then
-      addAction(list,'approve','APPROVE','Admit this participant to the room.','green',function()
-        BBT.command('room.admission_set',{sessionId=target.sessionId,admit=true,role=target.role}); self.sideMenu=nil
-      end,not locked(current))
-      addAction(list,'reject','REJECT','Reject this admission request.','red',function()
-        requestConfirm(self,'REJECT REQUEST','Reject '..short(target.displayName,24)..' from this room?','REJECT',function()
-          BBT.command('room.admission_set',{sessionId=target.sessionId,admit=false,role=target.role}); self.sideMenu=nil
-        end)
-      end)
-    else
-      addAction(list,'role','CHANGE ROLE','Switch between player and spectator.','yellow',function()
-        BBT.command('room.role_set',{sessionId=target.sessionId,role=target.role=='spectator' and 'player' or 'spectator'}); self.sideMenu=nil
-      end,not locked(current))
-      addAction(list,'kick','REMOVE','Remove this participant from the room.','red',function()
-        requestConfirm(self,'REMOVE PLAYER','Remove '..short(target.displayName,24)..' from the room?','REMOVE',function()
-          BBT.command('room.kick',{sessionId=target.sessionId}); self.sideMenu=nil
-        end)
-      end,not locked(current))
-    end
-  end
-  addAction(list,'close','CLOSE','Return to the room dashboard.','white',function() self.sideMenu=nil end)
-  return list
-end
-
-local function roomOptionActions(self)
-  local list,current,me={},room(),BBT.currentPlayer()
-  if not current then return list end
-  if host() then
-    addAction(list,'copy','COPY JOIN LINK','Copy a bbt:// link without the password.','cyan',copyJoinLink)
-    addAction(list,'force','FORCE START','Launch assigned clients and record incomplete runs as DNF.','yellow',function()
-      requestConfirm(self,'FORCE START','Start before every player is verified and ready?','FORCE START',function()
-        BBT.command('room.start_request',{force=true}); self.sideMenu=nil
-      end)
-    end,current.chart~=nil and (current.lifecycle=='chart_locked' or current.lifecycle=='ready'))
-    addAction(list,'close_room','CLOSE ROOM','Close the room for every participant.','red',function()
-      requestConfirm(self,'CLOSE ROOM','Close this room and disconnect every participant?','CLOSE ROOM',function()
-        BBT.command('room.close_request',{}); self.sideMenu=nil
-      end)
-    end,not locked(current))
-  else
-    if me and me.ready and not locked(current) then addAction(list,'unready','UNREADY','Return to waiting.','yellow',function() BBT.command('room.ready_request',{ready=false}); self.sideMenu=nil end) end
-    addAction(list,'leave','LEAVE ROOM','Disconnect while keeping Online available.','red',function()
-      requestConfirm(self,'LEAVE ROOM','Disconnect from '..short(current.name,28)..'?','LEAVE',function()
-        BBT.command('room.leave_request',{}); self.sideMenu=nil
-      end)
-    end,not locked(current))
-  end
-  addAction(list,'exit','EXIT ONLINE','Leave the room and stop local Online services.','red',function()
-    requestConfirm(self,'EXIT ONLINE','Leave Online and stop the runtime, API, exports, and renderers?','EXIT',function() exitOnline(self) end)
-  end)
-  addAction(list,'cancel','BACK','Close room options.','white',function() self.sideMenu=nil end)
-  return list
-end
-
-local function overlayActions(self)
-  local list,current={},room()
-  if self.overlay=='setlist' then
-    local selectionAllowed=current and not locked(current) and BBT.pendingRequestId==nil
-    local verificationAllowed=current and (current.lifecycle=='forming' or current.lifecycle=='chart_locked' or current.lifecycle=='ready') and BBT.pendingRequestId==nil
-    if current and host() then
-      addAction(list,'official','SELECT FREEPLAY CHART','Lock an official chart through Beatblock Freeplay.','cyan',function() BBT.openOfficialSelect('host') end,selectionAllowed)
-      addAction(list,'custom','SELECT CUSTOM','Lock a custom chart package.','cyan',function() BBT.openChartSelect('host') end,selectionAllowed)
-      addAction(list,'add_official','ADD FREEPLAY','Append an official chart from Beatblock Freeplay.','green',function() BBT.openOfficialSelect('setlist') end,selectionAllowed)
-      addAction(list,'add_custom','ADD CUSTOM','Append a custom chart to the set.','green',function() BBT.openChartSelect('setlist') end,selectionAllowed)
-      local count=#(current.setlist or {}); local index=self.setlistSelection or 1
-      addAction(list,'up','MOVE UP','Move the selected chart earlier.','white',function() BBT.command('setlist.move',{from=index-1,to=math.max(0,index-2)}) end,selectionAllowed and count>1 and index>1)
-      addAction(list,'down','MOVE DOWN','Move the selected chart later.','white',function() BBT.command('setlist.move',{from=index-1,to=math.min(count-1,index)}) end,selectionAllowed and count>1 and index<count)
-      addAction(list,'remove','REMOVE','Remove the selected setlist chart.','red',function()
-        requestConfirm(self,'REMOVE CHART','Remove this chart from the setlist?','REMOVE',function() BBT.command('setlist.remove',{index=index-1}) end)
-      end,selectionAllowed and count>0)
-    elseif current and current.chart then
-      addAction(list,'locate','LOCATE CHART','Select the exact chart locked by the host.','cyan',function()
-        if current.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
-      end,verificationAllowed)
-    end
-  elseif self.overlay=='obs' then
-    local target=selectedParticipant(self)
-    local id=STREAM_IDS[self.streamSelection or 1]
-    local stream=(BBT.renderers or {})[self.streamSelection or 1] or {}
-    addAction(list,'assign','ASSIGN '..id,'Assign the selected admitted player to stable Stream '..id..'.','cyan',function()
-      BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode=stream.mode or 'clean',width=stream.width or 1280,height=stream.height or 720,fps=stream.fps or 60,delayMs=stream.delayMs or (BBT.settings and BBT.settings.spectatorDelayMs) or 500,featured=stream.featured==true})
-    end,host() and rendererEligible(target))
-    addAction(list,'feature','FEATURE '..id,'Drive featured video and atomic text exports.','green',function() BBT.command('renderer.configure',{slot=id,featured=true}) end,host() and stream.active==true)
-    addAction(list,'mode','MODE: '..string.upper(stream.mode or 'clean'),'Toggle clean competition graphics or the full game view.','white',function() BBT.command('renderer.configure',{slot=id,mode=stream.mode=='full' and 'clean' or 'full'}) end,host() and stream.active==true)
-    addAction(list,'quality',(stream.height or 720)>=1080 and 'QUALITY: 1080P' or 'QUALITY: 720P','Toggle the renderer output resolution.','white',function() local high=(stream.height or 720)<1080; BBT.command('renderer.configure',{slot=id,width=high and 1920 or 1280,height=high and 1080 or 720}) end,host() and stream.active==true)
-    addAction(list,'fps','RATE: '..tostring(stream.fps or 60)..' FPS','Toggle 30 or 60 frames per second.','white',function() BBT.command('renderer.configure',{slot=id,fps=(stream.fps or 60)==60 and 30 or 60}) end,host() and stream.active==true)
-    addAction(list,'delay','DELAY: '..tostring(stream.delayMs or 500)..' MS','Cycle 250, 500, and 1500 ms spectator delay.','white',function() local delay=stream.delayMs or 500; BBT.command('renderer.configure',{slot=id,delayMs=delay<500 and 500 or (delay<1500 and 1500 or 250)}) end,host() and stream.active==true)
-    addAction(list,'stop','STOP '..id,'Stop the selected stable stream slot.','red',function() BBT.command('renderer.stop',{slot=id}) end,host())
-    addAction(list,'exports','OPEN EXPORTS','Open atomic OBS text exports.','white',function() BBT.command('paths.open_exports',{}) end)
-  elseif self.overlay=='history' then
-    local history=BBT.history or {}; local item=history[self.historySelection or 1]
-    addAction(list,'refresh','REFRESH','Reload saved match summaries.','cyan',function() BBT.command('history.list',{}) end)
-    addAction(list,'delete','DELETE RESULT','Delete the selected summary and journal.','red',function()
-      requestConfirm(self,'DELETE RESULT','Permanently delete this saved result and its raw events?','DELETE',function() if item then BBT.command('history.delete',{roomId=item.id}) end end)
-    end,item~=nil)
-    addAction(list,'prune','PRUNE EVENTS','Delete raw event journals older than 30 days.','yellow',function()
-      requestConfirm(self,'PRUNE EVENTS','Delete raw journals older than 30 days while keeping summaries?','PRUNE',function() BBT.command('history.prune',{days=30}) end)
-    end)
-  elseif self.overlay=='settings' then
-    addAction(list,'hud',BBT.hudEnabled and 'DISABLE HUD' or 'ENABLE HUD','Toggle the minimal online gameplay HUD.','cyan',function()
-      BBT.hudEnabled=not BBT.hudEnabled; BBT.command('settings.update',{hudEnabled=BBT.hudEnabled})
-    end)
-    addAction(list,'refresh','REFRESH STATUS','Request current runtime and network diagnostics.','white',function() BBT.command('diagnostics.get',{}) end)
-    addAction(list,'logs','OPEN LOGS','Open runtime diagnostic logs.','white',function() BBT.command('paths.open_logs',{}) end)
-    addAction(list,'exports','OPEN EXPORTS','Open atomic OBS exports.','white',function() BBT.command('paths.open_exports',{}) end)
-    addAction(list,'token','ROTATE API TOKEN','Invalidate the localhost API token.','yellow',function()
-      requestConfirm(self,'ROTATE TOKEN','Existing local API clients will disconnect. Rotate the token?','ROTATE',function() BBT.command('api.token_rotate',{}) end)
-    end)
-    addAction(list,'restart','RESTART RUNTIME','Restart local services; an active run becomes invalid.','yellow',function()
-      requestConfirm(self,'RESTART RUNTIME','Restart Online services now?','RESTART',function() BBT.command('runtime.restart_request',{}) end)
-    end)
-    addAction(list,'installer','OPEN INSTALLER','Open installation and repair tools.','white',function() BBT.openInstaller() end)
-  end
-  return list
-end
-
-local function formFields(mode)
-  if mode=='host' then return {
-    {id='name',label='ROOM NAME',max=40}, {id='port',label='UDP PORT',max=5},
-    {id='password',label='PASSWORD',max=128,secret=true}, {id='displayName',label='DISPLAY NAME',max=48},
-    {id='approval',label='HOST APPROVAL',toggle=true},
-  } end
-  return {{id='address',label='ROOM ADDRESS',max=80},{id='password',label='PASSWORD',max=128,secret=true},{id='displayName',label='DISPLAY NAME',max=48}}
+local function openConfirm(self,title,message,label,run)
+  self.modal={kind='confirm',title=title,message=message,label=label or 'CONFIRM',run=run,returnFocus=self.focusId}
+  self.focusId='modal_cancel'
 end
 
 local function openForm(self,mode,spectator)
-  self.formMode=mode; self.formSpectator=spectator==true; self.formField=1; self.keyLatch={}; self.formSubmitting=nil
-  BBT.lastError=nil
   local settings=BBT.settings or {}
-  local port=tostring(settings.hostPort or 32145)
-  local address=tostring(settings.hostAddress or '127.0.0.1')..':'..port
-  self.formValues=mode=='host' and {name='Beatblock Room',port=port,password='',displayName=BBT.context.playerName or 'Host',approval=true}
-    or {address=address,password='',displayName=BBT.context.playerName or 'Player'}
+  self.modal={
+    kind='form', mode=mode, spectator=spectator==true,
+    title=mode=='host' and 'HOST ROOM' or (spectator and 'JOIN AS SPECTATOR' or 'JOIN AS PLAYER'),
+    values={
+      displayName=tostring(BBT.context and BBT.context.playerName or 'Player'),
+      name='Beatblock Room', address=tostring(settings.hostAddress or '127.0.0.1'),
+      port=tostring(settings.hostPort or 32145), password='',
+    },
+    fields=mode=='host' and {'displayName','name','port','password'} or {'displayName','address','port','password'},
+    index=1,
+    returnFocus=self.focusId,
+  }
+  self.focusId='form_'..self.modal.fields[1]
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(true) end
 end
 
-local function closeForm(self)
-  self.formMode=nil; self.formSubmitting=nil
+local function closeModal(self)
+  local returnFocus=self.modal and self.modal.returnFocus
+  self.modal=nil
+  self.focusId=returnFocus or 'session_primary'
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
 end
 
-local function editForm(self,text)
-  local field=formFields(self.formMode)[self.formField]
-  if not field or field.toggle then return end
-  local value=self.formValues[field.id] or ''
-  if text=='\b' then
-    local offset=utf8 and utf8.offset and utf8.offset(value,-1)
-    self.formValues[field.id]=offset and value:sub(1,offset-1) or value:sub(1,-2)
-    return
-  end
-  local length=utf8 and utf8.len and utf8.len(value) or #value
-  if length and length<field.max then self.formValues[field.id]=value..text end
-end
-
-local function pasteForm(self)
-  if not love.system or not love.system.getClipboardText then return end
-  local text=love.system.getClipboardText() or ''
-  text=text:gsub('[\r\n\t]',' ')
-  for character in text:gmatch(utf8 and utf8.charpattern or '.') do editForm(self,character) end
-end
-
 local function submitForm(self)
-  local value=self.formValues
-  local passwordLength=utf8 and utf8.len and utf8.len(value.password) or #value.password
-  if not passwordLength or passwordLength<4 or passwordLength>128 then BBT.lastError='Room password must contain 4-128 characters.'; return end
-  if value.displayName=='' then BBT.lastError='A display name is required.'; return end
-  BBT.context.playerName=value.displayName
-  if self.formMode=='host' then
-    local port=tonumber(value.port)
-    if not port or port<1 or port>65535 then BBT.lastError='UDP port must be 1-65535.'; return end
-    if value.name=='' then BBT.lastError='A room name is required.'; return end
-    self.formSubmitting=BBT.command('room.host_request',{name=value.name,port=port,password=value.password,displayName=value.displayName,hostApproval=value.approval})
+  local modal=self.modal
+  if not modal or modal.kind~='form' then return end
+  local values=modal.values
+  if modal.mode=='host' then
+    BBT.command('room.host_request',{
+      displayName=values.displayName,name=values.name,password=values.password,
+      port=tonumber(values.port) or 32145,hostApproval=true,allowChartTransfers=true,
+    })
   else
-    self.formSubmitting=BBT.command('room.join_request',{address=value.address,password=value.password,displayName=value.displayName,spectator=self.formSpectator})
+    BBT.command('room.join_request',{
+      displayName=values.displayName,address=values.address..':'..values.port,
+      password=values.password,spectator=modal.spectator,
+    })
+  end
+  closeModal(self)
+end
+
+local function header(self)
+  ui:text('BBT  /  ONLINE',12,7,170,'left','white')
+  local status=BBT.companionConnected and 'ONLINE  /  PROTOCOL V3' or (BBT.runtimeStarting and 'STARTING ONLINE' or 'RUNTIME OFFLINE')
+  ui:text(status,300,7,288,'right',BBT.companionConnected and 'green' or 'yellow')
+  local room=currentRoom()
+  ui:panel(12,27,576,44)
+  if room then
+    local chart=room.chart
+    ui:text(room.name or 'ONLINE SESSION',22,34,220,'left','muted')
+    ui:text(chart and (chart.songName or chart.packageName) or 'NO CHART SELECTED',22,49,300,'left',chart and 'white' or 'yellow')
+    if chart then ui:text((chart.variant or '')..(chart.official and '  /  OFFICIAL' or '  /  CUSTOM'),325,34,125,'right','muted') end
+  else
+    ui:text('ONLINE SESSION',22,34,220,'left','muted')
+    ui:text(BBT.companionConnected and 'READY TO CONNECT' or 'LOCAL RUNTIME REQUIRED',22,49,300,'left',BBT.companionConnected and 'green' or 'yellow')
+  end
+  local primary=Dashboard.primary(context())
+  button(self,'session_primary',454,36,124,26,primary.label,function() runPrimary(self,primary) end,primary.tone,primary.enabled)
+end
+
+function runPrimary(self,item)
+  if item.id=='host_room' then openForm(self,'host')
+  elseif item.id=='open_installer' then BBT.openInstaller()
+  elseif item.id=='select_chart' then setWorkspace(self,'setlist')
+  elseif item.id=='locate_chart' then
+    local room=currentRoom()
+    if room and room.chart then
+      if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
+    end
+  elseif item.id=='ready' then BBT.command('room.ready_request',{ready=true})
+  elseif item.id=='start_race' then BBT.command('room.start_request',{force=false})
+  elseif item.id=='advance_set' then BBT.command('setlist.advance',{})
+  elseif item.id=='view_results' then setWorkspace(self,'room') end
+end
+
+local function participantActionButtons(self,target,x,y,w)
+  local room=currentRoom()
+  if not target or not room then return y end
+  if isHost() and target.sessionId~=room.hostSessionId then
+    if target.admitted~=true then
+      button(self,'participant_approve',x,y,w,24,'APPROVE',function()
+        BBT.command('room.admission_set',{sessionId=target.sessionId,admit=true,role=target.role})
+      end,'green',room.lifecycle~='playing' and room.lifecycle~='countdown')
+      y=y+29
+      button(self,'participant_reject',x,y,w,24,'REJECT',function()
+        openConfirm(self,'REJECT REQUEST','Reject '..bounded(target.displayName,32)..' from this room?','REJECT',function()
+          BBT.command('room.admission_set',{sessionId=target.sessionId,admit=false,role=target.role})
+        end)
+      end,'red')
+      return y+29
+    end
+    button(self,'participant_role',x,y,w,24,target.role=='spectator' and 'MAKE PLAYER' or 'MAKE SPECTATOR',function()
+      BBT.command('room.role_set',{sessionId=target.sessionId,role=target.role=='spectator' and 'player' or 'spectator'})
+    end,'yellow',room.lifecycle~='playing' and room.lifecycle~='countdown')
+    y=y+29
+    if target.role=='spectator' then
+      button(self,'participant_commentator',x,y,w,24,target.commentatorAccess and 'REVOKE COMMENTATOR' or 'GRANT COMMENTATOR',function()
+        BBT.command('room.commentator_set',{sessionId=target.sessionId,enabled=not target.commentatorAccess})
+      end,target.commentatorAccess and 'yellow' or 'cyan')
+      y=y+29
+    end
+    button(self,'participant_remove',x,y,w,24,'REMOVE',function()
+      openConfirm(self,'REMOVE PARTICIPANT','Remove '..bounded(target.displayName,32)..' from the room?','REMOVE',function()
+        BBT.command('room.kick',{sessionId=target.sessionId})
+      end)
+    end,'red',room.lifecycle~='playing' and room.lifecycle~='countdown')
+  elseif target.sessionId==(BBT.context and BBT.context.sessionId) then
+    local transfer=BBT.chartTransfer
+    if transfer and (transfer.state=='offer' or transfer.state=='consent') then
+      button(self,'participant_transfer_accept',x,y,w,24,'ACCEPT TRANSFER',function()
+        local run=function()
+          BBT.command('chart.transfer_decision',{
+            requestId=transfer.requestId,accept=true,trustRoom=false,
+            executableContentConfirmed=transfer.containsExecutableContent==true,
+          })
+        end
+        if transfer.containsExecutableContent then
+          openConfirm(self,'SCRIPT CONTENT','This package contains script or executable content. Only accept it if you trust this room host.','ACCEPT',run)
+        else run() end
+      end,'green')
+      y=y+29
+      button(self,'participant_transfer_trust',x,y,w,24,'TRUST THIS ROOM',function()
+        BBT.command('chart.transfer_decision',{
+          requestId=transfer.requestId,accept=true,trustRoom=true,
+          executableContentConfirmed=false,
+        })
+      end,'cyan',not transfer.containsExecutableContent)
+      y=y+29
+    elseif target.role~='spectator' and not target.verified and room.chart then
+      button(self,'participant_locate',x,y,w,24,'SELECT LOCAL CHART',function()
+        if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
+      end,'cyan')
+      y=y+29
+      button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()
+        BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
+      end,'yellow',not room.chart.official and room.chart.transferMode=='host_transfer')
+      y=y+29
+    elseif target.ready and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready') then
+      button(self,'participant_unready',x,y,w,24,'UNREADY',function() BBT.command('room.ready_request',{ready=false}) end,'yellow')
+      y=y+29
+    end
+    local action=isHost() and 'CLOSE ROOM' or 'LEAVE ROOM'
+    button(self,'participant_leave_room',x,y,w,24,action,function()
+      openConfirm(self,action,(isHost() and 'Close this room for every participant?' or 'Leave this room and keep Online available?'),action,function()
+        BBT.command(isHost() and 'room.close_request' or 'room.leave_request',{})
+      end)
+    end,'red',room.lifecycle~='playing' and room.lifecycle~='countdown')
   end
 end
 
-local function updateForm(self)
-  local fields=formFields(self.formMode); local submitIndex=#fields+1
-  -- Room snapshots are authoritative. If the acknowledgement was delayed or
-  -- lost after a successful operation, leave the form instead of presenting a
-  -- retry button over an already active room.
-  if self.formSubmitting and room() then closeForm(self); return end
-  if self.formSubmitting then
-    if BBT.pendingRequestId==nil then
-      if BBT.lastError then self.formSubmitting=nil else closeForm(self); return end
+local function drawRoster(self,results)
+  local room=currentRoom()
+  ui:panel(12,78,360,225,results and 'CURRENT RESULTS' or 'PARTICIPANTS')
+  local x=20
+  for _,filter in ipairs(FILTERS) do
+    local width=filter.id=='spectators' and 87 or 65
+    chip(self,'filter_'..filter.id,x,104,width,filter.label,self.rosterFilter==filter.id,function()
+      self.rosterFilter=filter.id
+      local selectedPlayer=Dashboard.selectedParticipant(context(),filter.id,self.selectedSessionId)
+      self.selectedSessionId=selectedPlayer and selectedPlayer.sessionId or nil
+    end,filter.id=='pending' and 'yellow' or 'cyan')
+    x=x+width+5
+  end
+  local target,list=selected(self)
+  local lifecycle=room.lifecycle
+  local showScore=lifecycle=='playing' or lifecycle=='results' or lifecycle=='set_complete'
+  ui:text('NAME',20,132,142,'left','muted')
+  if showScore then
+    ui:text('RANK',205,132,48,'right','muted'); ui:text('ACCURACY',267,132,92,'right','muted')
+  else ui:text('STATE',238,132,121,'right','muted') end
+  for index,participant in ipairs(list) do
+    if index>7 then break end
+    local rowY=146+(index-1)*21
+    local focused=self.selectedSessionId==participant.sessionId
+    register(self,'participant_'..participant.sessionId,18,rowY,346,20,function()
+      self.selectedSessionId=participant.sessionId
+    end)
+    if focused then ui:color('raised'); love.graphics.rectangle('fill',18,rowY,346,20,2,2) end
+    local role=participant.role=='spectator' and (participant.commentatorAccess and '[C]' or '[S]') or '[P]'
+    ui:text(role..' '..participant.displayName,23,rowY+4,174,'left',focused and 'black' or 'white')
+    if showScore then
+      local score=Dashboard.score(participant,lifecycle)
+      ui:text(score.rank or '—',185,rowY+4,72,'right',focused and 'black' or score.tone or 'white')
+      ui:text(score.accuracy or '—',265,rowY+4,94,'right',focused and 'black' or score.tone or 'white')
+    else
+      local label,color=Dashboard.participantStatus(participant)
+      ui:text(label,226,rowY+4,133,'right',focused and 'black' or color)
     end
-    if pressed('back') then self.formSubmitting=nil; closeForm(self) end
+  end
+  if #list==0 then ui:text('NO PARTICIPANTS IN THIS FILTER',30,178,324,'center','muted') end
+  return target
+end
+
+local function drawInspector(self,target)
+  local room=currentRoom()
+  ui:panel(379,78,209,225,'PARTICIPANT')
+  if not target then
+    ui:wrapped('Select a participant to inspect their role, connection, chart verification, and host actions.',391,110,185,6,'muted')
     return
   end
-  local backspace=love.keyboard.isDown('backspace'); if backspace and not self.keyLatch.backspace then editForm(self,'\b') end; self.keyLatch.backspace=backspace
-  local paste=love.keyboard.isDown('v') and (love.keyboard.isDown('lctrl') or love.keyboard.isDown('rctrl'))
-  if paste and not self.keyLatch.paste then pasteForm(self) end; self.keyLatch.paste=paste
-  if pressed('menu_up') then self.formField=clamp(self.formField-1,1,submitIndex); sound('click') end
-  if pressed('menu_down') then self.formField=clamp(self.formField+1,1,submitIndex); sound('click') end
-  local field=fields[self.formField]
-  if field and field.toggle and (pressed('menu_left') or pressed('menu_right')) then self.formValues[field.id]=not self.formValues[field.id]; sound('click') end
-  if field and not field.toggle and (pressed('menu_left') or pressed('menu_right')) then pasteForm(self); sound('click') end
-  for index=1,#fields do
-    local y=78+(index-1)*34
-    if clicked(74,y,452,29) then self.formField=index; if fields[index].toggle then self.formValues[fields[index].id]=not self.formValues[fields[index].id] end end
+  ui:text(target.displayName,391,106,185,'left','cyan')
+  local role=target.role=='spectator' and (target.commentatorAccess and 'COMMENTATOR' or 'SPECTATOR') or 'PLAYER'
+  local labels={
+    {'ROLE',role}, {'CONNECTION',target.connected==false and 'OFFLINE' or 'CONNECTED'},
+    {'CHART',target.role=='spectator' and 'NOT REQUIRED' or (target.verified and 'VERIFIED' or 'MISMATCH')},
+    {'RUN',target.validity=='dnf' and 'DNF' or target.validity=='invalid' and 'INVALID' or target.ready and 'READY' or 'WAITING'},
+  }
+  if room and (room.lifecycle=='results' or room.lifecycle=='set_complete') and target.role~='spectator' then
+    labels[#labels+1]={'SET TOTAL',target.setTotal and string.format('%.2f',target.setTotal) or '—'}
   end
-  if clicked(178,270,244,28) then self.formField=submitIndex; submitForm(self); return end
-  if accept() then
-    if self.formField==submitIndex then submitForm(self)
-    elseif field and field.toggle then self.formValues[field.id]=not self.formValues[field.id]
-    else self.formField=math.min(submitIndex,self.formField+1) end
-    sound('hold')
-  elseif pressed('back') then closeForm(self) end
-end
-
-local function connectionLabel()
-  if not BBT.companionConnected then return string.upper(BBT.runtimeLaunchStatus or 'STARTING') end
-  local status=BBT.connectionStatus or (BBT.connected and 'connected' or 'offline')
-  if status=='hosting' then return 'HOSTING'
-  elseif status=='connected' then return 'CONNECTED'
-  elseif status=='connecting' then return 'CONNECTING'
-  elseif status=='reconnecting' then return 'RECONNECTING'
-  elseif status=='starting' then return 'STARTING HOST'
-  else return 'RUNTIME READY' end
-end
-
-local function drawHeader(self)
-  setc(C.black); love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
-  local current=room()
-  local heading=current and ('BBT  /  '..short(current.name or 'ROOM',24)) or 'BEATBLOCK ONLINE'
-  love.graphics.setFont(fonts.main); setc(C.white); love.graphics.print(heading,12,8)
-  love.graphics.setFont(fonts.digitalDisco)
-  local lifecycle=current and string.upper(current.lifecycle or 'forming') or 'DIRECT-IP'
-  setc(BBT.companionConnected and C.green or C.yellow)
-  love.graphics.printf(connectionLabel()..'  /  '..lifecycle,292,10,250,'right')
-  button(550,5,38,22,'? HELP',self.focusZone=='help','cyan',true)
-end
-
-local function drawChartStrip()
-  local current=room(); local chart=current and current.chart
-  panel(12,34,576,38); love.graphics.setFont(fonts.digitalDisco)
-  setc(C.muted); love.graphics.print(chart and 'CURRENT CHART' or 'ONLINE SESSION',20,41)
-  setc(C.white); love.graphics.print(short(chart and chart.songName or 'Direct-IP room setup',38),20,55)
-  if chart then
-    local me=BBT.currentPlayer(); local verified=me and me.verified or BBT.chartVerified
-    if me and me.verified~=nil then verified=me.verified end
-    setc(verified and C.green or C.yellow); love.graphics.printf(verified and 'VERIFIED' or 'VERIFY CHART',400,42,178,'right')
-    setc(C.muted); love.graphics.printf(short(chart.variant or 'Default',20),400,57,178,'right')
-  else
-    setc(BBT.companionConnected and C.green or C.yellow); love.graphics.printf(BBT.companionConnected and 'READY TO CONNECT' or 'RUNTIME STARTING',372,51,206,'right')
+  for index,item in ipairs(labels) do
+    local y=126+(index-1)*17
+    ui:text(item[1],391,y,78,'left','muted')
+    ui:text(item[2],469,y,107,'right',(item[2]=='MISMATCH' or item[2]=='INVALID' or item[2]=='DNF') and 'red' or 'white')
   end
+  local transfer=BBT.chartTransfer
+  if transfer and target.sessionId==(BBT.context and BBT.context.sessionId) then
+    local copy=transfer.state=='progress' and ('TRANSFER '..tostring(transfer.percent or 0)..'%')
+      or transfer.state=='offer' and 'TRANSFER OFFER AVAILABLE'
+      or transfer.state=='consent' and 'CONSENT REQUIRED'
+      or nil
+    if copy then ui:text(copy,391,193,185,'left',transfer.state=='progress' and 'cyan' or 'yellow') end
+  end
+  participantActionButtons(self,target,391,199,185)
 end
 
 local function drawConnect(self)
-  panel(12,78,356,208); panel(376,78,212,208); love.graphics.setFont(fonts.digitalDisco)
-  setc(C.white); love.graphics.print('PLAY ONLINE',24,90)
-  setc(C.muted); love.graphics.printf('Create a room on this computer or connect directly to a host. Room passwords stay out of snapshots and logs.',24,112,330,'left')
-  local status=connectionLabel()
-  setc(BBT.companionConnected and C.green or C.yellow); love.graphics.print(status,24,174)
-  setc(C.muted); love.graphics.print(BBT.connected and 'JOIN ADDRESS' or 'UDP / QUIC',24,204)
-  local joinAddress=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress
-  love.graphics.printf(short(joinAddress or tostring(BBT.settings and BBT.settings.hostPort or 32145),24),156,204,196,'right')
-  love.graphics.print('LOCAL API',24,226); love.graphics.printf(BBT.companionConnected and '127.0.0.1:8974' or 'WAITING',202,226,150,'right')
-  local firewall=BBT.diagnostics and BBT.diagnostics.firewallInstalled
-  local firewallLabel=firewall and ((BBT.diagnostics.firewallPublic and 'PRIVATE + PUBLIC') or 'PRIVATE') or 'RULE MISSING'
-  love.graphics.print('FIREWALL',24,248); setc(firewall and C.green or C.yellow); love.graphics.printf(firewallLabel,202,248,150,'right')
-  setc(C.muted); love.graphics.print('OBS EXPORTS',24,266); love.graphics.printf(BBT.companionConnected and 'ACTIVE' or 'WAITING',202,266,150,'right')
-
-  local primary=primaryAction(self); setc(C.muted); love.graphics.print('NEXT ACTION',388,90)
-  button(388,110,188,36,primary.label,self.focusZone=='primary',primary.tone,primary.enabled)
-  setc(C.muted); love.graphics.printf(primary.description,388,153,188,'left')
-  local secondary=secondaryActions(self); self.secondary=secondary
-  for index,item in ipairs(secondary) do
-    button(388,205+(index-1)*23,188,19,item.label,self.focusZone=='secondary' and self.secondarySelection==index,item.tone,item.enabled)
+  ui:panel(12,78,576,225,'CONNECT')
+  ui:text('PLAY TOGETHER, WITHOUT LOSING THE BEAT.',30,106,540,'center','cyan')
+  ui:wrapped('Create a direct-IP room, or join an existing room as a competing Player or a non-competing Spectator.',104,130,392,3,'muted')
+  button(self,'connect_host',104,177,188,32,'HOST A ROOM',function() openForm(self,'host') end,'green',BBT.companionConnected)
+  button(self,'connect_join',308,177,188,32,'JOIN AS PLAYER',function() openForm(self,'join',false) end,'cyan',BBT.companionConnected)
+  button(self,'connect_spectate',104,219,188,28,'JOIN AS SPECTATOR',function() openForm(self,'join',true) end,'white',BBT.companionConnected)
+  button(self,'connect_exit',308,219,188,28,'EXIT ONLINE',function()
+    openConfirm(self,'EXIT ONLINE','Stop the Online runtime and return to the main menu?','EXIT',function() BBT.exitOnline(); leaveToMenu(self) end)
+  end,'red')
+  if not BBT.companionConnected then
+    ui:wrapped(bounded(BBT.lastError or BBT.runtimeLaunchStatus or 'The local runtime is unavailable.',180),104,258,392,2,'red')
   end
 end
 
-local function drawRoster(self)
-  local participants=ensureRoster(self); local summary=Dashboard.summary(context())
-  panel(12,78,356,208); love.graphics.setFont(fonts.digitalDisco)
-  setc(C.white); love.graphics.print('ROOM ROSTER',22,88)
-  setc(C.muted); love.graphics.printf(summary.ready..'/'..summary.players..' READY  /  '..summary.spectators..' WATCHING',162,89,194,'right')
-  love.graphics.print('PLAYER',22,108); love.graphics.print('STATE',182,108); love.graphics.printf('SCORE',288,108,68,'right')
-  setc(C.raised); love.graphics.line(22,120,356,120)
-  for row=1,8 do
-    local index=self.rosterOffset+row; local participant=participants[index]; local y=125+(row-1)*19
-    if participant then
-      local active=index==self.rosterSelection
-      if active then setc(C.raised); love.graphics.rectangle('fill',19,y-3,340,17,2,2) end
-      local status,statusTone=Dashboard.participantStatus(participant)
-      setc(active and C.black or C.white)
-      local role=participant.role=='spectator' and '[S] ' or (participant.sessionId==(room() and room().hostSessionId) and '[H] ' or '[P] ')
-      love.graphics.print(role..short(participant.displayName or 'Player',18),22,y)
-      setc(active and C.black or tone(statusTone)); love.graphics.print(status,182,y)
-      setc(active and C.black or C.white)
-      local score=participant.validity=='dnf' and 'DNF' or string.format('%.2f',participant.accuracy or 100)
-      if participant.rank then score='#'..participant.rank..'  '..score end
-      love.graphics.printf(score,276,y,80,'right')
+local function drawRoom(self)
+  local room=currentRoom()
+  if not room then drawConnect(self); return end
+  local results=room.lifecycle=='results' or room.lifecycle=='set_complete'
+  local target=drawRoster(self,results)
+  drawInspector(self,target)
+end
+
+local function drawSetlist(self)
+  local room=currentRoom()
+  ui:panel(12,78,364,225,'SETLIST')
+  ui:panel(383,78,205,225,'ACTIONS')
+  if not room then ui:wrapped('Join or host a room before building a setlist.',24,111,340,3,'muted'); return end
+  local entries=room.setlist or {}
+  for index,entry in ipairs(entries) do
+    if index>8 then break end
+    local y=105+(index-1)*22
+    local active=room.currentSetlistIndex==index-1
+    if active then ui:color('raised'); love.graphics.rectangle('fill',20,y,348,20,2,2) end
+    ui:text(tostring(index)..'.  '..(entry.chart.songName or entry.chart.packageName or 'Chart'),25,y+4,249,'left',active and 'black' or 'white')
+    ui:text(entry.chart.variant or '',281,y+4,78,'right',active and 'black' or 'muted')
+  end
+  if #entries==0 then ui:text('NO CHARTS IN THE SET',28,130,332,'center','muted') end
+  local canEdit=isHost() and room.lifecycle~='playing' and room.lifecycle~='countdown'
+  button(self,'setlist_official',395,105,181,25,'SELECT OFFICIAL',function() BBT.openOfficialSelect('host') end,'cyan',canEdit)
+  button(self,'setlist_custom',395,136,181,25,'SELECT CUSTOM',function() BBT.openChartSelect('host') end,'cyan',canEdit)
+  button(self,'setlist_add_official',395,177,181,25,'ADD OFFICIAL',function() BBT.openOfficialSelect('setlist') end,'green',canEdit)
+  button(self,'setlist_add_custom',395,208,181,25,'ADD CUSTOM',function() BBT.openChartSelect('setlist') end,'green',canEdit)
+  ui:wrapped(isHost() and 'The host controls chart order. Custom locked packages can use host transfer.' or 'This setlist is controlled by the host.',395,246,181,4,'muted')
+end
+
+local function rendererSlot(id)
+  for _,slot in ipairs(BBT.renderers or {}) do if slot.id==id then return slot end end
+  return {id=id,active=false,featured=id=='A',mode='clean',width=1280,height=720,fps=60,delayMs=500}
+end
+
+local function planSlot(id)
+  local plan=BBT.broadcastPlan or (BBT.runtimeSnapshot and BBT.runtimeSnapshot.broadcastPlan)
+  for _,slot in ipairs(plan and plan.slots or {}) do if slot.id==id then return slot end end
+  return rendererSlot(id)
+end
+
+local function drawBroadcast(self)
+  local allowed,authority=Dashboard.canBroadcast(context())
+  ui:panel(12,78,576,225,'BROADCAST')
+  if not allowed then
+    ui:text('BROADCAST IS NOT AVAILABLE',48,121,504,'center','yellow')
+    ui:wrapped('Ordinary Spectators can follow the room and rankings. A host may grant Commentator access from the participant inspector.',95,151,410,5,'muted')
+    return
+  end
+  local target=selected(self)
+  ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
+  ui:text(target and ('CANDIDATE: '..target.displayName) or 'CANDIDATE: SELECT A PLAYER',306,105,270,'right','muted')
+  for index,id in ipairs(STREAMS) do
+    local slot=authority=='host' and rendererSlot(id) or planSlot(id)
+    local x=20+(index-1)*140
+    ui:color(slot.active and (slot.featured and 'cyan' or 'raised') or 'panel')
+    love.graphics.rectangle('fill',x,126,132,104,3,3)
+    ui:color('raised'); love.graphics.rectangle('line',x+.5,126.5,131,103,3,3)
+    ui:text('STREAM '..id,x+7,134,118,'left',slot.active and 'black' or 'white')
+    ui:text(slot.participantName or slot.participant_name or 'UNASSIGNED',x+7,153,118,'left',slot.active and 'black' or 'muted')
+    local health=slot.lastError and 'ERROR' or slot.healthy and 'HEALTHY' or slot.active and 'STARTING' or 'STOPPED'
+    ui:text(health,x+7,173,118,'left',slot.lastError and 'red' or slot.healthy and 'green' or 'muted')
+    if authority=='host' then
+      button(self,'broadcast_assign_'..id,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
+        if slot.active then BBT.command('renderer.stop',{slot=id})
+        elseif target and target.role~='spectator' then
+          BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode='clean',width=1280,height=720,fps=60,delayMs=500,featured=slot.featured})
+        end
+      end,slot.active and 'yellow' or 'cyan',slot.active or (target and target.role~='spectator'))
+      button(self,'broadcast_feature_'..id,x+68,196,57,25,'FEATURE',function()
+        BBT.command('renderer.configure',{slot=id,participantId=slot.participantId,participantName=slot.participantName,mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,delayMs=slot.delayMs,featured=true})
+      end,'green',slot.active and not slot.featured)
     end
   end
-  setc(C.muted)
-  local first=#participants==0 and 0 or self.rosterOffset+1; local last=math.min(#participants,self.rosterOffset+8)
-  love.graphics.printf(first..'-'..last..' / '..#participants,270,270,86,'right')
-end
-
-local function drawControl(self)
-  panel(376,78,212,208); love.graphics.setFont(fonts.digitalDisco)
-  local me=BBT.currentPlayer(); local current=room(); local summary=Dashboard.summary(context())
-  setc(C.muted); love.graphics.print(host() and 'HOST CONTROL' or 'YOUR STATUS',388,90)
-  setc(C.white); love.graphics.print(short(me and me.displayName or 'WAITING FOR IDENTITY',22),388,108)
-  if me then
-    local status,statusTone=Dashboard.participantStatus(me); chip(388,125,88,status,statusTone)
-    chip(482,125,94,string.upper(me.role or 'player'),me.role=='spectator' and 'cyan' or 'white')
-  end
-  local primary=primaryAction(self)
-  button(388,151,188,36,primary.label,self.focusZone=='primary',primary.tone,primary.enabled)
-  setc(C.muted); love.graphics.printf(primary.description,388,194,188,'left')
-  if current and current.lifecycle=='results' then
-    setc(C.green); love.graphics.printf('RESULTS RECEIVED',388,235,188,'center')
-  elseif host() and summary.pending>0 then
-    setc(C.yellow); love.graphics.printf(summary.pending..' ADMISSION REQUEST'..(summary.pending==1 and '' or 'S'),388,232,188,'center')
-  end
-  local secondary=secondaryActions(self); self.secondary=secondary
-  for index,item in ipairs(secondary) do
-    button(388,253+(index-1)*23,188,19,item.label,self.focusZone=='secondary' and self.secondarySelection==index,item.tone,item.enabled)
-  end
-end
-
-local function drawUtilityBar(self)
-  love.graphics.setFont(fonts.digitalDisco)
-  for index,item in ipairs(UTILITIES) do
-    local x=12+(index-1)*144
-    button(x,292,140,28,item.label,self.focusZone=='utility' and self.utilitySelection==index,'cyan',true)
-  end
-end
-
-local function footerDescription(self)
-  if BBT.lastError then return tostring(BBT.lastError),'red' end
-  if self.focusZone=='roster' then
-    local participant=selectedParticipant(self)
-    return participant and ('Open '..short(participant.displayName,28)..' for role, verification, and run details.') or 'Participants appear here after joining.','white'
-  end
-  if self.focusZone=='primary' then return primaryAction(self).description,'white' end
-  if self.focusZone=='secondary' then local item=self.secondary and self.secondary[self.secondarySelection]; return item and item.description or 'Room controls.','white' end
-  if self.focusZone=='utility' then return 'Open '..UTILITIES[self.utilitySelection].label..' without leaving the room dashboard.','white' end
-  return 'Open help for the current room state and controls.','white'
-end
-
-local function drawFooter(self)
-  love.graphics.setFont(fonts.digitalDisco); local description,descriptionTone=footerDescription(self)
-  setc(tone(descriptionTone)); love.graphics.printf(short(description,92),12,326,576,'center')
-  setc(C.muted); love.graphics.printf('ARROWS NAVIGATE   ENTER SELECT   ESC BACK',12,346,576,'center')
-end
-
-local function drawOverlayList(self)
-  local current=room(); love.graphics.setFont(fonts.digitalDisco)
-  if self.overlay=='setlist' then
-    setc(C.muted); love.graphics.print('ORDER',42,78); love.graphics.print('CHART',82,78)
-    local set=current and current.setlist or {}
-    self.setlistSelection,self.setlistOffset=Dashboard.scroll(self.setlistSelection,self.setlistOffset,#set,0,10)
-    for row=1,math.min(10,#set) do
-      local index=(self.setlistOffset or 0)+row
-      local item=set[index]; local y=96+(row-1)*18; local active=self.overlayFocus=='list' and self.setlistSelection==index
-      if active then setc(C.raised); love.graphics.rectangle('fill',38,y-3,330,17,2,2) end
-      setc(active and C.black or (item.completed and C.green or C.white)); love.graphics.print(tostring(index),46,y)
-      love.graphics.print(short(item.chart and item.chart.songName or 'Chart',31),82,y)
-    end
-    if #set==0 then setc(C.muted); love.graphics.printf('Use the chart actions to lock one chart or build an ordered set.',42,116,320,'left') end
-  elseif self.overlay=='obs' then
-    for index,id in ipairs(STREAM_IDS) do
-      local stream=(BBT.renderers or {})[index] or {}; local y=84+(index-1)*47; local active=self.overlayFocus=='list' and self.streamSelection==index
-      if active then setc(C.raised); love.graphics.rectangle('fill',38,y-3,330,40,2,2) end
-      setc(active and C.black or (stream.healthy and C.green or (stream.active and C.yellow or C.white))); love.graphics.print('STREAM '..id,46,y)
-      love.graphics.printf(short(stream.participantName or 'UNASSIGNED',24),148,y,210,'right')
-      local health=stream.healthy and 'LIVE' or (stream.active and 'STARTING' or 'STOPPED')
-      local actual=stream.actualFps and string.format('%.1f',stream.actualFps) or '--'
-      local detail=stream.lastError and short(stream.lastError,42) or (health..'  '..actual..'/'..tostring(stream.fps or 60)..'fps  DROP '..tostring(stream.droppedFrames or 0))
-      setc(active and C.dimBlack or (stream.lastError and C.red or C.muted)); love.graphics.printf(detail,46,y+18,312,'right')
-    end
-  elseif self.overlay=='history' then
-    local history=BBT.history or {}
-    self.historySelection,self.historyOffset=Dashboard.scroll(self.historySelection,self.historyOffset,#history,0,10)
-    for row=1,math.min(10,#history) do
-      local index=(self.historyOffset or 0)+row
-      local item=history[index]; local y=86+(row-1)*19; local active=self.overlayFocus=='list' and self.historySelection==index
-      if active then setc(C.raised); love.graphics.rectangle('fill',38,y-3,330,17,2,2) end
-      setc(active and C.black or C.white); love.graphics.print(short(item.name or 'Match',28),46,y)
-      setc(active and C.dimBlack or C.muted); love.graphics.printf(string.upper(item.lifecycle or 'results'),274,y,84,'right')
-    end
-    if #history==0 then setc(C.muted); love.graphics.print('Completed match summaries appear here.',46,104) end
+  if authority=='commentator' then
+    local enabled=BBT.mirrorEnabled or (BBT.runtimeSnapshot and BBT.runtimeSnapshot.mirrorEnabled)
+    ui:text('THIS PC',24,244,100,'left','white')
+    ui:text(enabled and 'LOCAL MIRROR ENABLED' or 'LOCAL MIRROR DISABLED',112,244,250,'left',enabled and 'green' or 'yellow')
+    button(self,'broadcast_mirror',398,238,178,27,enabled and 'DISABLE MIRROR' or 'ENABLE MIRROR',function()
+      if enabled then BBT.command('broadcast.mirror_set',{enabled=false})
+      else
+        openConfirm(self,'ENABLE LOCAL MIRROR','This may start up to four hidden renderer processes and increase CPU/GPU use. Continue?','ENABLE',function()
+          BBT.command('broadcast.mirror_set',{enabled=true})
+        end)
+      end
+    end,enabled and 'yellow' or 'cyan')
   else
-    local diagnostics=BBT.diagnostics or {}
-    local lines={
-      {'LIVE HUD',BBT.hudEnabled and 'ENABLED' or 'DISABLED'}, {'PROTOCOL','V'..tostring(diagnostics.protocolVersion or 2)},
-      {'RUNTIME',diagnostics.runtimeVersion or BBT.version}, {'CONNECTION',BBT.connected and 'CONNECTED' or 'IDLE'},
-      {'PEERS',tostring(diagnostics.peerCount or 0)}, {'RENDER BUDGET',diagnostics.rendererBudgetWarning or 'OK'},
-      {'LOCAL API',BBT.companionConnected and '127.0.0.1:8974' or 'OFFLINE'},
-    }
-    for index,item in ipairs(lines) do
-      local y=84+(index-1)*27; setc(C.muted); love.graphics.print(item[1],46,y)
-      local good=item[2]=='OK' or item[2]=='ENABLED' or item[2]=='CONNECTED'
-      setc(good and C.green or C.white); love.graphics.printf(short(item[2],24),166,y,192,'right')
-    end
+    button(self,'broadcast_advanced',398,238,178,27,self.broadcastAdvanced and 'HIDE ADVANCED' or 'ADVANCED',function() self.broadcastAdvanced=not self.broadcastAdvanced end,'white')
+  end
+  local detail
+  for _,slot in ipairs(BBT.renderers or {}) do if slot.lastError then detail=slot.lastError break end end
+  if detail then
+    ui:text('RENDERER: '..bounded(detail,48),24,274,465,'left','red')
+    button(self,'broadcast_details',496,270,80,24,'DETAILS',function()
+      self.modal={kind='details',title='RENDERER DETAILS',message=detail,returnFocus=self.focusId}
+    end,'white')
+  elseif self.broadcastAdvanced and authority=='host' then
+    ui:text('MODE CLEAN  /  1280x720  /  60 FPS  /  500 MS  /  FEATURED AUDIO ONLY',24,276,552,'left','muted')
+  else
+    ui:text('Featured video, text exports, and audio follow the same delayed clock.',24,276,552,'left','muted')
   end
 end
 
-local function drawOverlay(self)
-  setc(C.black,.94); love.graphics.rectangle('fill',0,28,600,332)
-  panel(24,38,552,286); love.graphics.setFont(fonts.main); setc(C.white)
-  local titles={setlist='SETLIST',obs='SPECTATE + OBS',history='MATCH HISTORY',settings='SETTINGS + DIAGNOSTICS'}
-  love.graphics.print(titles[self.overlay],38,50)
-  love.graphics.setFont(fonts.digitalDisco); button(536,46,28,20,'X',false,'red',true)
-  drawOverlayList(self)
-  local actions=overlayActions(self); self.overlayActions=actions
-  setc(C.muted); love.graphics.print('ACTIONS',392,78)
-  for index,item in ipairs(actions) do
-    button(390,94+(index-1)*24,172,20,item.label,self.overlayFocus=='actions' and self.overlayActionSelection==index,item.tone,item.enabled)
+local function drawHistory(self)
+  ui:panel(12,78,382,225,'MATCH HISTORY')
+  ui:panel(401,78,187,225,'ACTIONS')
+  local history=BBT.history or {}
+  for index,item in ipairs(history) do
+    if index>8 then break end
+    local y=106+(index-1)*22
+    ui:text(item.name or item.roomName or 'Beatblock Room',24,y,235,'left','white')
+    ui:text(item.lifecycle or item.status or 'CLOSED',270,y,108,'right','muted')
   end
-  local selected=actions[self.overlayActionSelection]
-  setc(C.white); love.graphics.printf(selected and selected.description or 'ESC returns to the room dashboard.',38,298,524,'center')
+  if #history==0 then ui:text('NO SAVED MATCHES',30,139,346,'center','muted') end
+  button(self,'history_refresh',413,106,163,26,'REFRESH',function() BBT.command('history.list',{}) end,'cyan')
+  button(self,'history_prune',413,140,163,26,'PRUNE EVENTS',function()
+    openConfirm(self,'PRUNE RAW EVENTS','Remove raw event journals older than 30 days? Match summaries remain available.','PRUNE',function()
+      BBT.command('history.prune',{days=30})
+    end)
+  end,'yellow')
+  ui:wrapped('History is the archive. Current Results remain in the Room workspace.',413,185,163,5,'muted')
 end
 
-local function sideActions(self)
-  if self.sideMenu=='participant' then return participantActions(self,selectedParticipant(self)) end
-  return roomOptionActions(self)
-end
-
-local function drawSideMenu(self)
-  setc(C.black,.92); love.graphics.rectangle('fill',342,72,258,218)
-  panel(348,78,240,208); love.graphics.setFont(fonts.main); setc(C.white)
-  local target=selectedParticipant(self)
-  love.graphics.print(self.sideMenu=='participant' and short(target and target.displayName or 'PLAYER',22) or 'ROOM OPTIONS',360,89)
-  love.graphics.setFont(fonts.digitalDisco)
-  if self.sideMenu=='participant' and target then
-    local status,statusTone=Dashboard.participantStatus(target)
-    chip(360,113,96,status,statusTone); chip(462,113,114,string.upper(target.role or 'player'),'white')
-    setc(C.muted); love.graphics.print('ACCURACY',360,140); setc(C.white); love.graphics.printf(string.format('%.2f',target.accuracy or 100),476,140,100,'right')
-    setc(C.muted); love.graphics.print('VERIFIED',360,157); setc(target.verified and C.green or C.yellow); love.graphics.printf(target.verified and 'YES' or 'NO',476,157,100,'right')
-  elseif self.sideMenu=='room' then
-    local endpoint=BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress or 'NOT ADVERTISED'
-    local nat=BBT.runtimeSnapshot and BBT.runtimeSnapshot.natMethod or 'CHECKING REACHABILITY'
-    setc(C.muted); love.graphics.print('JOIN',360,113); setc(C.white); love.graphics.printf(short(tostring(endpoint),24),422,113,154,'right')
-    setc(C.muted); love.graphics.print('NETWORK',360,132); setc(C.white); love.graphics.printf(short(string.upper(tostring(nat)),24),422,132,154,'right')
-  end
-  local actions=sideActions(self); self.sideActions=actions
-  local start=self.sideMenu=='participant' and 181 or 158
-  for index,item in ipairs(actions) do button(360,start+(index-1)*24,216,20,item.label,self.sideSelection==index,item.tone,item.enabled) end
-end
-
-local function helpActions(self)
-  return {
-    {label='OPEN LOGS',tone='white',run=function() BBT.command('paths.open_logs',{}) end},
-    {label='OPEN INSTALLER',tone='yellow',run=function() BBT.openInstaller() end},
-    {label='CLOSE HELP',tone='cyan',run=function() self.helpOpen=false; self.focusZone='primary' end},
+local function drawSettings(self)
+  ui:panel(12,78,360,225,'SETTINGS')
+  ui:panel(379,78,209,225,'RUNTIME')
+  local settings=BBT.settings or {}
+  local rows={
+    {'GAMEPLAY HUD',settings.hudEnabled==false and 'OFF' or 'ON'},
+    {'CHART TRANSFERS','HOST DEFAULT: ON'},
+    {'TRANSFER CACHE',tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB')},
+    {'PROTOCOL','V3 ONLY'},
   }
+  for index,row in ipairs(rows) do
+    local y=108+(index-1)*26
+    ui:text(row[1],24,y,145,'left','muted'); ui:text(row[2],169,y,189,'right','white')
+  end
+  button(self,'settings_hud',24,218,160,25,'TOGGLE HUD',function()
+    BBT.command('settings.update',{hudEnabled=not (settings.hudEnabled~=false)})
+  end,'cyan')
+  button(self,'settings_clear_cache',194,218,164,25,'CLEAR CACHE',function()
+    openConfirm(self,'CLEAR TRANSFER CACHE','Remove inactive BBT-managed chart packages? The active chart is protected.','CLEAR',function()
+      BBT.command('chart.cache_clear',{})
+    end)
+  end,'yellow')
+  ui:text('CONNECTION',391,107,185,'left','muted')
+  ui:text((BBT.runtimeSnapshot and BBT.runtimeSnapshot.connection) or 'LOCAL',391,125,185,'left','green')
+  ui:text('JOIN ADDRESS',391,153,185,'left','muted')
+  ui:text((BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress) or '—',391,171,185,'left','white')
+  button(self,'settings_logs',391,211,185,25,'OPEN LOGS',function() BBT.command('paths.open_logs',{}) end,'white')
+  button(self,'settings_exports',391,242,185,25,'OPEN EXPORTS',function() BBT.command('paths.open_exports',{}) end,'white')
+  button(self,'settings_diagnostics',391,273,185,25,'REFRESH DIAGNOSTICS',function() BBT.command('diagnostics.get',{}) end,'cyan')
 end
 
 local function drawHelp(self)
-  setc(C.black,.9); love.graphics.rectangle('fill',0,28,600,332)
-  panel(302,34,286,314); love.graphics.setFont(fonts.main); setc(C.white); love.graphics.print('ONLINE HELP',316,48)
-  love.graphics.setFont(fonts.digitalDisco); local title,copy=Dashboard.help(context(),self.overlay)
-  setc(C.cyan); love.graphics.print(title,316,78)
-  setc(C.white); love.graphics.printf(copy,316,100,256,'left')
-  setc(C.muted); love.graphics.print('CONTROLS',316,166)
-  love.graphics.printf('ARROWS  MOVE FOCUS\nENTER   SELECT / OPEN\nESC     CLOSE ONE LAYER\nMOUSE   POINT AND CLICK',316,186,256,'left')
-  local actions=helpActions(self); self.helpActions=actions
-  for index,item in ipairs(actions) do button(316,257+(index-1)*25,256,21,item.label,self.helpSelection==index,item.tone,true) end
+  ui:panel(12,78,576,225,'HELP')
+  ui:text('ROOM ROLES',24,106,160,'left','cyan')
+  ui:wrapped('Player competes. Spectator watches. Commentator is a host-granted Spectator permission that can mirror the Host Plan to this PC.',24,124,262,6,'muted')
+  ui:text('CHARTS & TRANSFER',310,106,250,'left','cyan')
+  ui:wrapped('Online searches local charts first. Custom packages may be transferred with consent; scripts always need separate confirmation. Cache entries are managed by BBT.',310,124,254,7,'muted')
+  ui:text('CONTROLS',24,216,160,'left','cyan')
+  ui:wrapped('Arrows navigate  •  Enter selects  •  Esc returns one layer  •  Mouse uses the same focus.',24,234,262,4,'muted')
+  ui:text('TROUBLESHOOTING',310,216,250,'left','cyan')
+  ui:wrapped('Open Logs for full runtime errors. Broadcast error summaries stay bounded so controls never disappear.',310,234,254,4,'muted')
 end
 
-local function drawConfirm(self)
-  setc(C.black,.94); love.graphics.rectangle('fill',0,0,600,360)
-  panel(112,96,376,168); love.graphics.setFont(fonts.main); setc(C.white); love.graphics.printf(self.confirm.title,126,112,348,'center')
-  love.graphics.setFont(fonts.digitalDisco); setc(C.white); love.graphics.printf(self.confirm.message,132,148,336,'center')
-  button(132,218,156,26,self.confirm.label,self.confirmChoice==1,'red',true)
-  button(312,218,156,26,'CANCEL',self.confirmChoice==2,'cyan',true)
+local function drawNavigation(self)
+  local allowed=Dashboard.canBroadcast(context())
+  local visible={}
+  for _,workspace in ipairs(WORKSPACES) do
+    if workspace.id~='broadcast' or allowed then visible[#visible+1]=workspace end
+  end
+  local gap=4
+  local width=math.floor((576-gap*(#visible-1))/#visible)
+  local x=12
+  for _,workspace in ipairs(visible) do
+    chip(self,'nav_'..workspace.id,x,310,width,workspace.label,self.workspace==workspace.id,function() setWorkspace(self,workspace.id) end,'cyan')
+    x=x+width+gap
+  end
+  local hint=self.modal and 'ESC: CLOSE  /  ENTER: SELECT' or 'ARROWS: NAVIGATE  /  ENTER: SELECT  /  ESC: BACK'
+  ui:text(hint,12,340,576,'center','muted')
 end
 
-local function drawForm(self)
-  -- Forms fully cover the dashboard so its footer cannot compete with modal guidance.
-  setc(C.black); love.graphics.rectangle('fill',0,28,600,332)
-  panel(58,38,484,290); love.graphics.setFont(fonts.main); setc(C.white)
-  love.graphics.printf(self.formMode=='host' and 'HOST A ROOM' or (self.formSpectator and 'JOIN AS SPECTATOR' or 'JOIN A ROOM'),58,50,484,'center')
-  love.graphics.setFont(fonts.digitalDisco); local fields=formFields(self.formMode)
-  for index,field in ipairs(fields) do
-    local y=78+(index-1)*34; local active=self.formField==index
-    setc(active and C.cyan or C.muted); love.graphics.print(field.label,74,y)
-    if field.toggle then
-      chip(354,y-4,172,self.formValues[field.id] and 'HOST APPROVES' or 'PASSWORD ADMITS',self.formValues[field.id] and 'green' or 'white')
-    else
-      setc(C.raised); love.graphics.rectangle('fill',230,y-5,296,23,2,2)
-      setc(C.black); local value=self.formValues[field.id] or ''; if field.secret then value=string.rep('*',#value) end
-      love.graphics.print(short(value:sub(-42),42),238,y+1)
-      if active then setc(C.white); love.graphics.rectangle('line',230.5,y-4.5,295,22,2,2) end
+local function drawModal(self)
+  if not self.modal then return end
+  ui:color('black',.78); love.graphics.rectangle('fill',0,0,600,360)
+  local modal=self.modal
+  if modal.kind=='form' then
+    ui:panel(118,60,364,240,modal.title)
+    for index,key in ipairs(modal.fields) do
+      local y=96+(index-1)*38
+      local labels={displayName='DISPLAY NAME',name='ROOM NAME',address='HOST ADDRESS',port='UDP PORT',password='PASSWORD'}
+      ui:text(labels[key],136,y,124,'left','muted')
+      local value=key=='password' and string.rep('*',#modal.values[key]) or modal.values[key]
+      button(self,'form_'..key,261,y-5,203,27,value,function() modal.index=index; self.focusId='form_'..key end,'white')
     end
-  end
-  local submitLabel=self.formSubmitting and string.upper(BBT.pendingRequestProgress or 'WORKING...') or (self.formMode=='host' and 'CREATE ROOM' or 'CONNECT')
-  button(178,270,244,28,submitLabel,self.formField==#fields+1,'green',not self.formSubmitting)
-  -- Paste guidance is useful only while an editable field has focus. Keep it in the
-  -- reserved gap above the action button, away from the persistent form controls.
-  local activeField=fields[self.formField]
-  if BBT.lastError and not self.formSubmitting then
-    setc(C.red); love.graphics.printf(BBT.lastError,74,239,452,'center')
-  elseif activeField and not activeField.toggle and not self.formSubmitting then
-    setc(C.muted); love.graphics.printf('PASTE  CTRL+V / LEFT-RIGHT',74,246,452,'center')
-  end
-  setc(C.muted); love.graphics.printf('UP/DOWN FIELDS   ENTER CONTINUE   ESC CANCEL',74,307,452,'center')
-end
-
-local function drawBase(self)
-  drawHeader(self); drawChartStrip()
-  if Dashboard.phase(context())=='connect' or Dashboard.phase(context())=='runtime_starting' or Dashboard.phase(context())=='runtime_error' then drawConnect(self)
-  else drawRoster(self); drawControl(self) end
-  drawUtilityBar(self); drawFooter(self)
-end
-
-local function activate(item)
-  if not item or not item.enabled then BBT.lastError='That action is unavailable in the current room state.'; return end
-  item.run(); sound('hold')
-end
-
-local function updateConfirm(self)
-  if pressed('menu_left') or pressed('menu_right') then self.confirmChoice=self.confirmChoice==1 and 2 or 1; sound('click') end
-  if clicked(132,218,156,26) then self.confirmChoice=1 elseif clicked(312,218,156,26) then self.confirmChoice=2 end
-  if accept() or clicked(132,218,156,26) or clicked(312,218,156,26) then
-    local confirm=self.confirm; local choice=self.confirmChoice; self.confirm=nil
-    if choice==1 then confirm.run() end
-  elseif pressed('back') then self.confirm=nil end
-end
-
-local function updateHelp(self)
-  local actions=helpActions(self)
-  if pressed('menu_up') then self.helpSelection=(self.helpSelection-2)%#actions+1; sound('click') end
-  if pressed('menu_down') then self.helpSelection=self.helpSelection%#actions+1; sound('click') end
-  for index=1,#actions do if clicked(316,257+(index-1)*25,256,21) then self.helpSelection=index; actions[index].run(); sound('hold'); return end end
-  if accept() then actions[self.helpSelection].run(); sound('hold') elseif pressed('back') then self.helpOpen=false; self.focusZone='primary' end
-end
-
-local function overlayListCount(self)
-  if self.overlay=='setlist' then return #(room() and room().setlist or {}) end
-  if self.overlay=='obs' then return 4 end
-  if self.overlay=='history' then return #(BBT.history or {}) end
-  return 0
-end
-
-local function overlayListSelection(self)
-  if self.overlay=='setlist' then return self.setlistSelection end
-  if self.overlay=='obs' then return self.streamSelection end
-  return self.historySelection
-end
-
-local function setOverlayListSelection(self,value)
-  if self.overlay=='setlist' then self.setlistSelection=value elseif self.overlay=='obs' then self.streamSelection=value else self.historySelection=value end
-end
-
-local function updateOverlay(self)
-  local actions=overlayActions(self); local count=overlayListCount(self)
-  if clicked(536,46,28,20) or pressed('back') then self.overlay=nil; self.focusZone='utility'; return end
-  if pressed('menu_left') and count>0 then self.overlayFocus='list'; sound('click') end
-  if pressed('menu_right') and #actions>0 then self.overlayFocus='actions'; sound('click') end
-  if self.overlayFocus=='list' and count>0 then
-    local selection=overlayListSelection(self)
-    if self.overlay=='setlist' then
-      local delta=pressed('menu_up') and -1 or (pressed('menu_down') and 1 or 0)
-      if delta~=0 then selection,self.setlistOffset=Dashboard.scroll(selection,self.setlistOffset,count,delta,10); sound('click') end
-    elseif self.overlay=='history' then
-      local delta=pressed('menu_up') and -1 or (pressed('menu_down') and 1 or 0)
-      if delta~=0 then selection,self.historyOffset=Dashboard.scroll(selection,self.historyOffset,count,delta,10); sound('click') end
-    else
-      if pressed('menu_up') then selection=(selection-2)%count+1; sound('click') end
-      if pressed('menu_down') then selection=selection%count+1; sound('click') end
-    end
-    setOverlayListSelection(self,selection)
-  elseif #actions>0 then
-    if pressed('menu_up') then self.overlayActionSelection=(self.overlayActionSelection-2)%#actions+1; sound('click') end
-    if pressed('menu_down') then self.overlayActionSelection=self.overlayActionSelection%#actions+1; sound('click') end
-    self.overlayActionSelection=clamp(self.overlayActionSelection,1,#actions)
-  end
-  if self.overlay=='setlist' or self.overlay=='history' then
-    local rows=math.min(10,count); local startY=self.overlay=='setlist' and 96 or 86; local step=self.overlay=='setlist' and 18 or 19
-    local offset=self.overlay=='setlist' and (self.setlistOffset or 0) or (self.historyOffset or 0)
-    for row=1,rows do if clicked(38,startY+(row-1)*step-3,330,17) then setOverlayListSelection(self,offset+row); self.overlayFocus='list' end end
-  elseif self.overlay=='obs' then
-    for index=1,4 do if clicked(38,81+(index-1)*47,330,40) then self.streamSelection=index; self.overlayFocus='list' end end
-  end
-  for index,item in ipairs(actions) do if clicked(390,94+(index-1)*24,172,20) then self.overlayActionSelection=index; self.overlayFocus='actions'; activate(item); return end end
-  if accept() and self.overlayFocus=='actions' and #actions>0 then activate(actions[self.overlayActionSelection]) end
-end
-
-local function updateSideMenu(self)
-  local actions=sideActions(self); if #actions==0 then self.sideMenu=nil; return end
-  if pressed('menu_up') then self.sideSelection=(self.sideSelection-2)%#actions+1; sound('click') end
-  if pressed('menu_down') then self.sideSelection=self.sideSelection%#actions+1; sound('click') end
-  local start=self.sideMenu=='participant' and 181 or 158
-  for index,item in ipairs(actions) do if clicked(360,start+(index-1)*24,216,20) then self.sideSelection=index; activate(item); return end end
-  if accept() then activate(actions[self.sideSelection]) elseif pressed('back') then self.sideMenu=nil end
-end
-
-local function updateBase(self)
-  local inRoom=room()~=nil; local secondary=secondaryActions(self); self.secondary=secondary
-  if clicked(550,5,38,22) then self.helpOpen=true; self.helpSelection=1; return end
-  for index,item in ipairs(UTILITIES) do
-    local x=12+(index-1)*144
-    if clicked(x,292,140,28) then self.utilitySelection=index; self.overlay=item.id; self.overlayActionSelection=1; self.overlayFocus=item.id=='settings' and 'actions' or 'list'; self.focusZone='utility'; return end
-  end
-  if inRoom then
-    local participants=ensureRoster(self)
-    for row=1,8 do
-      local index=self.rosterOffset+row
-      if participants[index] and clicked(19,122+(row-1)*19,340,17) then self.rosterSelection=index; self.focusZone='roster'; self.sideMenu='participant'; self.sideSelection=1; return end
-    end
-  end
-  if clicked(388,inRoom and 151 or 110,188,36) then self.focusZone='primary'; local item=primaryAction(self); if item.enabled then runPrimary(self,item); sound('hold') else BBT.lastError=item.description end; return end
-  local secondaryY=inRoom and 253 or 205
-  for index,item in ipairs(secondary) do if clicked(388,secondaryY+(index-1)*23,188,19) then self.focusZone='secondary'; self.secondarySelection=index; activate(item); return end end
-
-  if self.focusZone=='roster' and inRoom then
-    local participants=ensureRoster(self)
-    if pressed('menu_up') then self.rosterSelection,self.rosterOffset=Dashboard.scroll(self.rosterSelection,self.rosterOffset,#participants,-1,8); sound('click') end
-    if pressed('menu_down') then self.rosterSelection,self.rosterOffset=Dashboard.scroll(self.rosterSelection,self.rosterOffset,#participants,1,8); sound('click') end
-    if pressed('menu_right') then self.focusZone=Dashboard.nextFocus('roster','right',true,#secondary); sound('click') end
-    if accept() and #participants>0 then self.sideMenu='participant'; self.sideSelection=1; sound('hold') end
-  elseif self.focusZone=='primary' then
-    if pressed('menu_left') and inRoom then self.focusZone=Dashboard.nextFocus('primary','left',inRoom,#secondary); sound('click') end
-    if pressed('menu_up') then self.focusZone=Dashboard.nextFocus('primary','up',inRoom,#secondary); sound('click') end
-    if pressed('menu_down') then self.focusZone=Dashboard.nextFocus('primary','down',inRoom,#secondary); sound('click') end
-    if accept() then local item=primaryAction(self); if item.enabled then runPrimary(self,item); sound('hold') else BBT.lastError=item.description end end
-  elseif self.focusZone=='secondary' then
-    if pressed('menu_up') then self.secondarySelection=self.secondarySelection-1; if self.secondarySelection<1 then self.focusZone='primary'; self.secondarySelection=1 end; sound('click') end
-    if pressed('menu_down') then self.secondarySelection=self.secondarySelection+1; if self.secondarySelection>#secondary then self.focusZone='utility'; self.secondarySelection=math.max(1,#secondary) end; sound('click') end
-    if pressed('menu_left') and inRoom then self.focusZone='roster'; sound('click') end
-    if accept() and secondary[self.secondarySelection] then activate(secondary[self.secondarySelection]) end
-  elseif self.focusZone=='utility' then
-    if pressed('menu_left') then self.utilitySelection=(self.utilitySelection-2)%#UTILITIES+1; sound('click') end
-    if pressed('menu_right') then self.utilitySelection=self.utilitySelection%#UTILITIES+1; sound('click') end
-    if pressed('menu_up') then self.focusZone=Dashboard.nextFocus('utility','up',inRoom,#secondary); sound('click') end
-    if accept() then self.overlay=UTILITIES[self.utilitySelection].id; self.overlayActionSelection=1; self.overlayFocus=self.overlay=='settings' and 'actions' or 'list'; sound('hold') end
+    button(self,'form_submit',261,252,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
+    button(self,'form_cancel',366,252,98,27,'CANCEL',function() closeModal(self) end,'white')
   else
-    if accept() or pressed('menu_down') then self.helpOpen=true; self.helpSelection=1; sound('hold') end
-    if pressed('menu_left') then self.focusZone=inRoom and 'roster' or 'primary' end
+    ui:panel(126,99,348,162,modal.title)
+    ui:wrapped(modal.message,146,133,308,5,modal.kind=='details' and 'red' or 'white')
+    if modal.kind=='confirm' then
+      button(self,'modal_confirm',146,218,143,27,modal.label,function() local run=modal.run; closeModal(self); run() end,'red')
+      button(self,'modal_cancel',311,218,143,27,'CANCEL',function() closeModal(self) end,'white')
+    else
+      button(self,'modal_cancel',311,218,143,27,'CLOSE',function() closeModal(self) end,'white')
+    end
   end
-  ensureRoster(self)
-  if pressed('back') then requestConfirm(self,'EXIT ONLINE','Leave Online and stop the runtime, API, exports, and renderers?','EXIT',function() exitOnline(self) end) end
+end
+
+local function draw(self)
+  ui:begin(); self.controls={}
+  header(self)
+  if self.workspace=='setlist' then drawSetlist(self)
+  elseif self.workspace=='broadcast' then drawBroadcast(self)
+  elseif self.workspace=='history' then drawHistory(self)
+  elseif self.workspace=='settings' then drawSettings(self)
+  elseif self.workspace=='help' then drawHelp(self)
+  else drawRoom(self) end
+  drawNavigation(self)
+  if self.modal then self.controls={} end
+  drawModal(self)
+  local focused=false
+  for _,control in ipairs(self.controls) do if control.id==self.focusId then focused=true end end
+  if not focused and self.controls[1] then self.focusId=self.controls[1].id; focused=true end
+  if not focused then ui.audit.issues[#ui.audit.issues+1]='focus_outside_active_workspace' end
+  for left=1,#self.controls do
+    for right=left+1,#self.controls do
+      local a,b=self.controls[left],self.controls[right]
+      if a.x < b.x+b.w and b.x < a.x+a.w and a.y < b.y+b.h and b.y < a.y+a.h then
+        ui.audit.issues[#ui.audit.issues+1]='control_overlap:'..a.id..':'..b.id
+      end
+    end
+  end
+  BBT.layoutAudit=ui.audit
+end
+
+local function focusIndex(self)
+  for index,control in ipairs(self.controls or {}) do if control.id==self.focusId then return index end end
+  return 1
 end
 
 local function update(self)
-  if self.confirm then updateConfirm(self); return end
-  if self.formMode then updateForm(self); return end
-  if self.helpOpen then updateHelp(self); return end
-  if self.sideMenu then updateSideMenu(self); return end
-  if self.overlay then updateOverlay(self); return end
-  updateBase(self)
+  local controls=self.controls or {}
+  if #controls==0 then return end
+  for _,control in ipairs(controls) do
+    if hit(control) then self.focusId=control.id end
+    if clicked(control) and control.run then control.run(); return end
+  end
+  local delta=(pressed('menu_down') or pressed('menu_right')) and 1 or (pressed('menu_up') or pressed('menu_left')) and -1 or 0
+  if delta~=0 then
+    local index=((focusIndex(self)-1+delta)%#controls)+1
+    self.focusId=controls[index].id
+    return
+  end
+  if accept() then
+    local control=controls[focusIndex(self)]
+    if control and control.run then control.run() end
+    return
+  end
+  if pressed('back') then
+    if self.modal then
+      closeModal(self)
+    elseif self.workspace~='room' then setWorkspace(self,'room')
+    else
+      openConfirm(self,'EXIT ONLINE','Stop the Online runtime and return to the main menu?','EXIT',function() BBT.exitOnline(); leaveToMenu(self) end)
+    end
+  end
+end
+
+local function editText(self,text)
+  local modal=self.modal
+  if not modal or modal.kind~='form' then return end
+  local key=modal.fields[modal.index]
+  if #modal.values[key] < 64 and text:match('[%g ]') then modal.values[key]=modal.values[key]..text end
 end
 
 return function()
   local st=Gamestate:new('Online')
+  function st:openForm(mode,spectator) openForm(self,mode,spectator) end
   st:setInit(function(self)
-    em.clear({self.menuMusicManager}); mouse:disableGameplay(); shuv.resetPal()
-    shuv.pal[2]={r=205,g=205,b=205}; shuv.pal[3]={r=255,g=52,b=50}
-    shuv.pal[4]={r=224,g=227,b=0}; shuv.pal[5]={r=44,g=255,b=57}
-    shuv.pal[6]={r=0,g=222,b=229}; shuv.pal[7]={r=63,g=38,b=255}; shuv.showBadColors=true
-    BBT.lastError=nil
-    self.focusZone='primary'; self.utilitySelection=1; self.secondarySelection=1
-    self.rosterSelection=1; self.rosterOffset=0; self.setlistSelection=1; self.setlistOffset=0; self.streamSelection=1; self.historySelection=1; self.historyOffset=0
-    self.overlayActionSelection=1; self.overlayFocus='list'; self.sideSelection=1; self.helpSelection=1; self.openForm=openForm
-    -- LÖVE's textinput event supplies composed Unicode characters and respects
-    -- the user's keyboard layout. Preserve Beatblock's handler outside forms.
+    self.workspace='room'; self.rosterFilter='all'; self.selectedSessionId=nil
+    self.focusId='session_primary'; self.controls={}; self.broadcastAdvanced=false; self.modal=nil
     self.previousTextInput=love.textinput
-    self.onlineTextInput=function(text)
-      if self.formMode then editForm(self,text)
-      elseif self.previousTextInput then self.previousTextInput(text) end
-    end
+    self.onlineTextInput=function(text) editText(self,text) end
     love.textinput=self.onlineTextInput
     BBT.startOnlineRuntime()
     if not BBT.pendingRequestId then BBT.command('runtime.snapshot_request',{}) end
@@ -832,18 +630,10 @@ return function()
   end
   st:setUpdate(function(self,dt)
     if self.menuMusicManager then self.menuMusicManager:update(dt) end
-    -- Online is its own state; the separate Lovely hook advances BBT only while
-    -- states/Game.lua is active during a competitive chart.
-    BBT.update(dt); if BBT.maybeLaunchScheduledChart() then return end; update(self)
+    BBT.update(dt)
+    if BBT.maybeLaunchScheduledChart() then return end
+    update(self)
   end)
-  st:setFgDraw(function(self)
-    drawBase(self)
-    if self.overlay then drawOverlay(self) end
-    if self.sideMenu then drawSideMenu(self) end
-    if self.helpOpen then drawHelp(self) end
-    if self.formMode then drawForm(self) end
-    if self.confirm then drawConfirm(self) end
-    setc(C.white)
-  end)
+  st:setFgDraw(function(self) draw(self); ui:color('white') end)
   return st
 end

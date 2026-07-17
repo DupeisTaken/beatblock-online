@@ -8,6 +8,7 @@ use std::{
 };
 
 pub const MAX_TRANSFER_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_ENTRY_NAME_BYTES: usize = 1_024;
 
@@ -65,6 +66,61 @@ pub fn inspect_offer(path: &Path, source_host: &str) -> Result<TransferOffer> {
     })
 }
 
+/// Materializes a selected chart directory as the archive transported over
+/// QUIC. The archive remains outside Custom Levels and is reused by hash for
+/// later setlist peers in the same room.
+pub fn archive_chart_directory(source: &Path, destination: &Path) -> Result<PathBuf> {
+    if source.is_file() {
+        return Ok(source.to_path_buf());
+    }
+    if !source.is_dir() {
+        bail!("selected custom chart package no longer exists");
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = destination.with_extension("partial");
+    let file = File::create(&temporary)?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut count = 0usize;
+    let mut total = 0u64;
+    for entry in walkdir::WalkDir::new(source).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_symlink() || entry.path() == source {
+            continue;
+        }
+        count += 1;
+        if count > MAX_ARCHIVE_ENTRIES {
+            bail!("chart package contains too many files");
+        }
+        let relative = entry.path().strip_prefix(source)?;
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if entry.file_type().is_dir() {
+            archive.add_directory(format!("{name}/"), options)?;
+            continue;
+        }
+        total = total.saturating_add(entry.metadata()?.len());
+        if total > MAX_TRANSFER_BYTES {
+            bail!("chart package exceeds the 1 GiB transfer limit");
+        }
+        archive.start_file(name, options)?;
+        let mut input = File::open(entry.path())?;
+        std::io::copy(&mut input, &mut archive)?;
+    }
+    archive.finish()?;
+    if std::fs::metadata(&temporary)?.len() > MAX_TRANSFER_BYTES {
+        let _ = std::fs::remove_file(&temporary);
+        bail!("compressed chart package exceeds the 1 GiB transfer limit");
+    }
+    if destination.exists() {
+        std::fs::remove_file(destination)?;
+    }
+    std::fs::rename(&temporary, destination)?;
+    Ok(destination.to_path_buf())
+}
+
 pub fn install_received_package(
     archive_path: &Path,
     expected_hash: &str,
@@ -99,7 +155,82 @@ pub fn install_received_package(
     let mut receipt = File::create(destination.join(".bbt-import.json"))?;
     serde_json::to_writer_pretty(&mut receipt, &offer)?;
     receipt.write_all(b"\n")?;
+    evict_cache(imports_directory, Some(&offer.sha256))?;
     Ok(destination)
+}
+
+/// Returns the on-disk size of BBT's isolated Online cache. Transferred charts
+/// are never registered in the user's normal Custom Levels directory.
+pub fn cache_size(imports_directory: &Path) -> u64 {
+    directory_size(imports_directory).unwrap_or(0)
+}
+
+/// Clears every inactive managed package while protecting the chart currently
+/// mounted by Online. Partial transfers are always safe to remove.
+pub fn clear_cache(imports_directory: &Path, active_hash: Option<&str>) -> Result<u64> {
+    if !imports_directory.exists() {
+        return Ok(0);
+    }
+    let before = cache_size(imports_directory);
+    for entry in std::fs::read_dir(imports_directory)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if active_hash.is_some_and(|active| active.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        if entry.path().is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(before.saturating_sub(cache_size(imports_directory)))
+}
+
+/// Enforces the 2 GiB LRU budget after an accepted transfer. Directory
+/// modification time is the cache access clock; the active chart is pinned.
+pub fn evict_cache(imports_directory: &Path, active_hash: Option<&str>) -> Result<()> {
+    if cache_size(imports_directory) <= MAX_CACHE_BYTES {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(imports_directory)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            !active_hash.is_some_and(|active| active.eq_ignore_ascii_case(&name))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    for entry in entries {
+        if cache_size(imports_directory) <= MAX_CACHE_BYTES {
+            break;
+        }
+        std::fs::remove_dir_all(entry.path())?;
+    }
+    Ok(())
+}
+
+fn directory_size(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        total = total.saturating_add(if metadata.is_dir() {
+            directory_size(&entry.path())?
+        } else {
+            metadata.len()
+        });
+    }
+    Ok(total)
 }
 
 fn extract_checked(archive_path: &Path, destination: &Path) -> Result<()> {
@@ -234,6 +365,50 @@ mod tests {
             install_received_package(&scripted, &offer.sha256, &root.join("imports"), false)
                 .is_err()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_clear_protects_the_active_chart() {
+        let root = std::env::temp_dir().join(format!("bbt-cache-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(root.join("active")).unwrap();
+        std::fs::create_dir_all(root.join("old")).unwrap();
+        std::fs::write(root.join("active/level.json"), b"active").unwrap();
+        std::fs::write(root.join("old/level.json"), b"old").unwrap();
+        assert!(clear_cache(&root, Some("active")).unwrap() > 0);
+        assert!(root.join("active/level.json").is_file());
+        assert!(!root.join("old").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_archive_hash_mismatch_without_leaving_a_partial_install() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-transfer-hash-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let package = root.join("chart.zip");
+        archive(&package, "level.json");
+        let imports = root.join("imports");
+        assert!(install_received_package(&package, &"0".repeat(64), &imports, true).is_err());
+        assert!(!imports.exists() || std::fs::read_dir(&imports).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archives_a_selected_directory_for_host_fallback() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-transfer-archive-{}", rand::random::<u64>()));
+        let chart = root.join("chart");
+        std::fs::create_dir_all(chart.join("audio")).unwrap();
+        std::fs::write(chart.join("level.json"), b"chart").unwrap();
+        std::fs::write(chart.join("audio/song.ogg"), b"audio").unwrap();
+        let package = archive_chart_directory(&chart, &root.join("out/chart.zip")).unwrap();
+        let offer = inspect_offer(&package, "Host").unwrap();
+        assert!(offer.size > 0);
+        let installed =
+            install_received_package(&package, &offer.sha256, &root.join("imports"), true).unwrap();
+        assert!(installed.join("level.json").is_file());
+        assert!(installed.join("audio/song.ogg").is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 }

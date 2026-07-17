@@ -23,19 +23,31 @@ async function writeFileWithTransientRetry(path, contents) {
 
 const commands = [
   {
-    name: 'Protocol v2 typecheck',
+    name: 'Protocol v3 typecheck',
     command: process.execPath,
     args: ['node_modules/typescript/bin/tsc', '-p', 'protocol/tsconfig.json'],
   },
   {
-    name: 'Protocol v2 schema generation',
+    name: 'Protocol v3 schema generation',
     command: process.execPath,
     args: ['scripts/generate-protocol.mjs'],
   },
   {
-    name: 'Protocol v2 tests',
+    name: 'Protocol v3 tests',
     command: process.execPath,
     args: ['node_modules/vitest/vitest.mjs', 'run', 'protocol/test/score.test.ts'],
+  },
+  {
+    name: 'Build lean runtime payload',
+    command: cargoCommand(),
+    args: [
+      'build',
+      '--manifest-path',
+      'companion/Cargo.toml',
+      '--release',
+      '--bin',
+      'BeatblockOnlineRuntime',
+    ],
   },
   {
     name: 'Rust runtime, installer, Lua, and stress tests',
@@ -59,6 +71,11 @@ const commands = [
     name: 'In-game mod conformance',
     command: process.execPath,
     args: ['scripts/test-mod.mjs'],
+  },
+  {
+    name: 'Deterministic 600x360 screenshot gate',
+    command: process.execPath,
+    args: ['scripts/test-ui.mjs'],
   },
   {
     name: 'Hidden runtime lifecycle and resource gate',
@@ -100,6 +117,7 @@ for (const trial of commands) {
       ...process.env,
       BBT_BENCH_REPORT: resolve(reportDirectory, 'runtime-benchmark-latest.json'),
       BBT_HOST_TRIAL_REPORT: resolve(reportDirectory, 'host-room-simulation-latest.json'),
+      BBT_RUNTIME_EXE: resolve(root, 'companion/target/release/BeatblockOnlineRuntime.exe'),
       CI: 'true',
     },
   });
@@ -116,7 +134,7 @@ const readJson = async (name) => {
   }
 };
 const report = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   generatedAt: new Date().toISOString(),
   passed: runs.length === commands.length && runs.every((run) => run.passed),
   environment: { platform: process.platform, architecture: process.arch, node: process.version },

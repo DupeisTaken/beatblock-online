@@ -1,19 +1,21 @@
 # OBS, reconstructed streams, and text exports
 
-The Online dashboard and hidden runtime own four stable slots: Stream A, B, C, and D. Select a roster participant, open **Spectate + OBS**, and assign that participant to a slot. Reassigning a slot does not require changing the OBS scene.
+The Online shell and hidden runtime own four stable slots: Stream A, B, C, and D. Select a Player in the Room inspector, open **Broadcast**, and assign that candidate to a slot. Reassigning a slot does not require changing the OBS scene.
+
+The host's revisioned configuration is labeled **Host Plan**. A host-granted Commentator receives the same plan read-only and may explicitly enable **This PC** mirroring after the resource warning. A Commentator needs the locked chart locally (or must accept the host transfer) before local video can start.
 
 ## Install the native OBS source
 
 Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choose Install/Update or Repair. Close OBS before installation, then restart it. In OBS, press **+** in Sources, add **Beatblock Online Player Stream**, and choose Stream A-D. The installed DLL and locale live under `%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records and verifies their hashes. The reviewed alpha artifact has been physically loaded by OBS Studio 32.0.4 x64.
 
-The player source keeps a read-only mapping of the corresponding triple-buffered RGBA frame ring. A versioned aligned sequence commits each completed frame, and OBS verifies that sequence after copying so a concurrent publish cannot produce a torn frame. The consumer must use aligned read-only snapshots for this check: Windows interlocked compare/exchange operations are writes and will crash against a `FILE_MAP_READ` view. Assigning a participant to that stable slot happens inside Beatblock under **Spectate + OBS**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, or its renderer has not published a frame. Check the in-game slot status before repairing the plugin.
+The player source keeps a read-only mapping of the corresponding triple-buffered RGBA frame ring. A versioned aligned sequence commits each completed frame, and OBS verifies that sequence after copying so a concurrent publish cannot produce a torn frame. The consumer must use aligned read-only snapshots for this check: Windows interlocked compare/exchange operations are writes and will crash against a `FILE_MAP_READ` view. Assigning a participant to that stable slot happens inside Beatblock under **Broadcast**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, the local chart is unavailable, or its renderer has not published a frame. Check **Host Plan** and **This PC** status before repairing the plugin.
 
 After 1.5 seconds without a committed frame, the source releases its retained
 CPU buffer and GPU texture. It also closes and retries the file mapping at a
 bounded cadence, allowing a stopped or atomically replaced renderer ring to
 recover without recreating the OBS source.
 
-The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Online does not register a silent placeholder audio source.
+The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
 
 Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Clean mode captures Beatblock's real raw gameplay canvas before the final shader/HUD composition; full mode captures the composited game view and online race HUD. Both modes preserve the source aspect ratio. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
 

@@ -352,8 +352,8 @@ impl SingleInstance {
             };
             let legacy_runtime_stem = concat!("Beatblock", "TogetherRuntime");
             let names = [
-                "Local\\BeatblockOnlineRuntime-v2".to_string(),
-                format!("Local\\{legacy_runtime_stem}-v2"),
+                "Local\\BeatblockOnlineRuntime-v3".to_string(),
+                format!("Local\\{legacy_runtime_stem}-v3"),
             ];
             let mut handles = Vec::with_capacity(names.len());
             for name in names {

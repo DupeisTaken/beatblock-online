@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculateAccuracy,
+  BroadcastPlanSchema,
   decodeRenderDatagram,
   EMPTY_TOTALS,
   encodeRenderDatagram,
+  isEnvelope,
+  PROTOCOL_VERSION,
   rankPlayers,
 } from '../src/index.js';
+import { Value } from '@sinclair/typebox/value';
 
 describe('Beatblock score derivation', () => {
   it('matches perfect, barely, and miss scoring', () => {
@@ -56,5 +60,34 @@ describe('Beatblock score derivation', () => {
       tapMask: 3,
       flags: 1,
     });
+  });
+
+  it('accepts protocol v3 envelopes and explicitly rejects v2', () => {
+    const message = {
+      version: PROTOCOL_VERSION,
+      type: 'room.snapshot',
+      sequence: 1,
+      runTimeUs: 2,
+      payload: {},
+    };
+    expect(isEnvelope(message)).toBe(true);
+    expect(isEnvelope({ ...message, version: 2 })).toBe(false);
+  });
+
+  it('requires four health-free slots in an authoritative Broadcast plan', () => {
+    const slots = ['A', 'B', 'C', 'D'].map((id, index) => ({
+      id,
+      mode: 'clean',
+      width: 1280,
+      height: 720,
+      fps: 60,
+      delayMs: 500,
+      featured: index === 0,
+      active: false,
+    }));
+    expect(Value.Check(BroadcastPlanSchema, { revision: 1, updatedAtMs: 10, slots })).toBe(true);
+    expect(
+      Value.Check(BroadcastPlanSchema, { revision: 1, updatedAtMs: 10, slots: slots.slice(1) }),
+    ).toBe(false);
   });
 });

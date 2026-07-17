@@ -31,6 +31,7 @@ mod/releases/
 .reference/
 companion-data/
 exports/
+reports/ui/
 .dev-mods/
 
 # Local configuration and operating-system noise

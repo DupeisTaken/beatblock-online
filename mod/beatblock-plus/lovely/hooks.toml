@@ -17,6 +17,12 @@ name = "bbt.dashboard_model"
 
 [[patches]]
 [patches.module]
+source = "bbt/dashboard_components.lua"
+before = "main.lua"
+name = "bbt.dashboard_components"
+
+[[patches]]
+[patches.module]
 source = "bbt/online_state.lua"
 before = "main.lua"
 name = "bbt.online_state"

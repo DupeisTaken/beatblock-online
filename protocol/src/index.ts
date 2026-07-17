@@ -1,7 +1,7 @@
 import { Static, Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 export const MAX_PLAYERS = 16;
 export const MAX_SPECTATORS = 32;
 export const MAX_RENDER_STREAMS = 4;
@@ -91,6 +91,7 @@ export const ParticipantSchema = Type.Object({
   totals: ScoreTotalsSchema,
   validity: RunValiditySchema,
   invalidReason: Type.Optional(Type.String({ maxLength: 512 })),
+  commentatorAccess: Type.Boolean({ default: false }),
 });
 export type Participant = Static<typeof ParticipantSchema>;
 export const PlayerSnapshotSchema = ParticipantSchema;
@@ -113,6 +114,7 @@ export const RoomSnapshotSchema = Type.Object({
   hostSessionId: Type.String({ minLength: 1 }),
   lifecycle: RoomLifecycleSchema,
   admissionMode: Type.Union([Type.Literal('password_only'), Type.Literal('host_approval')]),
+  allowChartTransfers: Type.Boolean({ default: true }),
   chart: Type.Optional(ChartLockSchema),
   participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS + 1 }),
   scheduledStartTimeMs: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -127,6 +129,63 @@ export const RoomSnapshotSchema = Type.Object({
 export type RoomSnapshot = Static<typeof RoomSnapshotSchema>;
 export const LobbySnapshotSchema = RoomSnapshotSchema;
 export type LobbySnapshot = RoomSnapshot;
+
+export const BroadcastSlotPlanSchema = Type.Object(
+  {
+    id: Type.Union([Type.Literal('A'), Type.Literal('B'), Type.Literal('C'), Type.Literal('D')]),
+    participantId: Type.Optional(Type.String({ minLength: 1 })),
+    participantName: Type.Optional(Type.String({ minLength: 1, maxLength: 48 })),
+    renderSourceId: Type.Optional(Type.Integer({ minimum: 1 })),
+    mode: Type.Union([Type.Literal('clean'), Type.Literal('full')]),
+    width: Type.Integer({ minimum: 320, maximum: 1920 }),
+    height: Type.Integer({ minimum: 180, maximum: 1080 }),
+    fps: Type.Union([Type.Literal(30), Type.Literal(60)]),
+    delayMs: Type.Integer({ minimum: 250, maximum: 1500 }),
+    featured: Type.Boolean(),
+    active: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+export type BroadcastSlotPlan = Static<typeof BroadcastSlotPlanSchema>;
+
+export const BroadcastPlanSchema = Type.Object(
+  {
+    revision: Type.Integer({ minimum: 0 }),
+    updatedAtMs: Type.Integer({ minimum: 0 }),
+    slots: Type.Array(BroadcastSlotPlanSchema, {
+      minItems: MAX_RENDER_STREAMS,
+      maxItems: MAX_RENDER_STREAMS,
+    }),
+  },
+  { additionalProperties: false },
+);
+export type BroadcastPlan = Static<typeof BroadcastPlanSchema>;
+
+export const CommentatorMirrorStatusSchema = Type.Object(
+  {
+    enabled: Type.Boolean(),
+    healthySlots: Type.Integer({ minimum: 0, maximum: MAX_RENDER_STREAMS }),
+    error: Type.Optional(Type.String({ maxLength: 160 })),
+    updatedAtMs: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+export type CommentatorMirrorStatus = Static<typeof CommentatorMirrorStatusSchema>;
+
+export const ChartTransferOfferSchema = Type.Object(
+  {
+    requestId: Type.String({ minLength: 1, maxLength: 80 }),
+    roomId: Type.String({ minLength: 1 }),
+    name: Type.String({ minLength: 1, maxLength: 256 }),
+    compressedBytes: Type.Integer({ minimum: 1, maximum: 1024 * 1024 * 1024 }),
+    archiveSha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    chartHash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    variant: Type.String({ maxLength: 128 }),
+    containsExecutableContent: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+export type ChartTransferOffer = Static<typeof ChartTransferOfferSchema>;
 
 export const RunScoreDeltaSchema = Type.Object({
   runSequence: Type.Integer({ minimum: 0 }),

@@ -90,10 +90,10 @@ const readyPromise = new Promise((resolveReady, reject) => {
   });
 });
 socket.write(
-  `${JSON.stringify({ version: 2, type: 'client.hello', sequence: 0, runTimeUs: 0, payload: { instanceId: 'lifecycle-trial', clientVersion: 'test', distribution: 'standalone' } })}\n`,
+  `${JSON.stringify({ version: 3, type: 'client.hello', sequence: 0, runTimeUs: 0, payload: { instanceId: 'lifecycle-trial', clientVersion: 'test', distribution: 'standalone' } })}\n`,
 );
 const ready = await readyPromise;
-if (ready.type !== 'runtime.ready' || ready.version !== 2)
+if (ready.type !== 'runtime.ready' || ready.version !== 3)
   throw new Error('runtime emitted an incompatible readiness message');
 
 await delay(750);
@@ -113,7 +113,7 @@ if (duplicateCode === 0)
   throw new Error('duplicate runtime unexpectedly acquired the per-user mutex');
 
 socket.write(
-  `${JSON.stringify({ version: 2, type: 'runtime.session_end', sequence: 1, runTimeUs: 1, requestId: 'trial-stop', payload: { requestId: 'trial-stop' } })}\n`,
+  `${JSON.stringify({ version: 3, type: 'runtime.session_end', sequence: 1, runTimeUs: 1, requestId: 'trial-stop', payload: { requestId: 'trial-stop' } })}\n`,
 );
 const shutdownCode = await waitExit(runtime, 5000);
 socket.destroy();
