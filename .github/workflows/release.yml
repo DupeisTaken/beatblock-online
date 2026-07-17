@@ -31,6 +31,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-07-15
+      # Lovely uses its explicit pinned `+nightly-2026-07-15` selector. Keep
+      # companion formatting, tests, and Clippy on the supported stable toolchain.
+      - run: rustup default stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: companion
