@@ -13,11 +13,11 @@
     "spectators32": true
   },
   "metrics": {
-    "elapsedMs": 7.4576,
+    "elapsedMs": 7.6663,
     "renderTelemetryKiBPerSecondPerPlayer": 1.875,
-    "scheduledStartUnixMs": 1784131795126,
-    "scoreEventsPerSecond": 520289.95325519954,
-    "scoreIngestMs": 7.3805
+    "scheduledStartUnixMs": 1784299305760,
+    "scoreEventsPerSecond": 506643.09368939087,
+    "scoreIngestMs": 7.5793
   },
   "passed": true,
   "scenario": "direct-host-16-player-32-spectator",

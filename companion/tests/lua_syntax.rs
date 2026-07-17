@@ -22,7 +22,7 @@ fn workspace() -> PathBuf {
 
 #[test]
 fn every_distributed_lua_chunk_compiles_with_beatblocks_lua_runtime() {
-    let library_path = workspace().join(".reference/Beatblock/lua51.dll");
+    let library_path = workspace().join(".test/Beatblock/lua51.dll");
     let wide = library_path
         .as_os_str()
         .encode_wide()

@@ -2,5 +2,10 @@ node_modules/
 .pnpm-store/
 dist/
 target/
+artifacts/
+release/
+obs-plugin/artifacts/
 mod/releases/
+.tools/
+.test/
 .reference/

@@ -22,13 +22,16 @@ function Dashboard.summary(context)
   local summary = {players=0,spectators=0,ready=0,verified=0,pending=0,connected=0,allReady=false}
   local current = activeRoom(context)
   for _, participant in ipairs(current and current.participants or {}) do
-    if participant.connected ~= false then summary.connected = summary.connected + 1 end
-    if not participant.admitted then summary.pending = summary.pending + 1
-    elseif participant.role == 'spectator' then summary.spectators = summary.spectators + 1
-    else
-      summary.players = summary.players + 1
-      if participant.ready then summary.ready = summary.ready + 1 end
-      if participant.verified then summary.verified = summary.verified + 1 end
+    local connected = participant.connected ~= false
+    if connected then
+      summary.connected = summary.connected + 1
+      if not participant.admitted then summary.pending = summary.pending + 1
+      elseif participant.role == 'spectator' then summary.spectators = summary.spectators + 1
+      else
+        summary.players = summary.players + 1
+        if participant.ready then summary.ready = summary.ready + 1 end
+        if participant.verified then summary.verified = summary.verified + 1 end
+      end
     end
   end
   summary.allReady = summary.players > 0 and summary.ready == summary.players and summary.verified == summary.players
@@ -93,6 +96,9 @@ function Dashboard.primary(context)
   end
   if current.lifecycle == 'countdown' or current.lifecycle == 'playing' then
     return action('race_locked','RACE IN PROGRESS','Room administration resumes after the chart.','cyan',false)
+  end
+  if me and me.admitted == false then
+    return action('wait_approval','WAITING FOR APPROVAL','The password was accepted. The host must approve this request.','yellow',false)
   end
   if phase == 'results' then
     local index = current.currentSetlistIndex

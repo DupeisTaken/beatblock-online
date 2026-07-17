@@ -126,8 +126,8 @@ slint::slint! {
                         padding: 20px; spacing: 13px;
                         Text { text: "Selected game"; color: #18222c; font-size: 15px; font-weight: 700; }
                         Rectangle {
-                            height: 202px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 5px;
-                            VerticalLayout { padding: 14px; spacing: 10px;
+                            height: 176px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 5px;
+                            VerticalLayout { padding: 11px; spacing: 6px;
                                 Text { text: root.selected-path-caption; color: #28333d; font-size: 11px; overflow: elide; }
                                 HorizontalLayout { spacing: 8px;
                                     LineEdit { text <=> root.game-path; enabled: !root.busy; horizontal-stretch: 1; edited(value) => { root.path-edited(value); } }
@@ -159,6 +159,13 @@ slint::slint! {
                             VerticalLayout { spacing: 5px;
                                 Text { text: "Optional integration"; color: #46515b; font-size: 12px; }
                                 CheckBox { enabled: !root.busy && root.obs-available; text: root.obs-available ? "Install OBS 32 source (restart OBS)" : "OBS source unavailable in this build"; checked <=> root.install-obs; }
+                            }
+                        }
+                        Rectangle {
+                            height: 62px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
+                            VerticalLayout { padding-left: 10px; padding-right: 10px; spacing: 2px;
+                                CheckBox { enabled: !root.busy; text: "Allow hosting on Public Windows Firewall profiles"; checked <=> root.firewall-public; }
+                                CheckBox { enabled: !root.busy; text: "Allow an uncertified Beatblock build (disables competition trust)"; checked <=> root.allow-unknown-build; }
                             }
                         }
                         Rectangle {
@@ -208,9 +215,7 @@ slint::slint! {
                 }
                 if root.page == 3: ScrollView { VerticalLayout { padding: 20px; spacing: 14px;
                     Text { text: "Installer settings"; color: #18222c; font-size: 18px; font-weight: 700; }
-                    CheckBox { enabled: !root.busy; text: "Allow hosting on Public Windows Firewall profiles"; checked <=> root.firewall-public; }
-                    CheckBox { enabled: !root.busy; text: "Remove settings and match history during Uninstall"; checked <=> root.remove-user-data; }
-                    CheckBox { enabled: !root.busy; text: "Developer: allow an uncertified Beatblock build"; checked <=> root.allow-unknown-build; }
+                    Text { text: "Installation choices are shown on the Install page so the exact firewall, build-trust, and OBS scope is visible before files are changed."; color: #596570; font-size: 11px; wrap: word-wrap; }
                     Rectangle { height: 105px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
                         VerticalLayout { padding: 13px; spacing: 6px; Text { text: "Stable update channel"; color: #35414c; font-size: 13px; font-weight: 700; } Text { text: "Update checks run only while this installer is open and always require confirmation."; color: #596570; font-size: 11px; } Button { text: "Check for updates"; enabled: !root.busy; clicked => { root.check-update(); } } }
                     }
@@ -227,11 +232,12 @@ slint::slint! {
             x: 0px; y: 0px; width: root.width; height: root.height; background: #00000088;
             TouchArea { width: parent.width; height: parent.height; }
             Rectangle {
-                width: 470px; height: 235px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: 470px; height: 265px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                 background: #ffffff; border-radius: 7px; border-width: 1px; border-color: #9da8b2;
                 VerticalLayout { padding: 22px; spacing: 14px;
                     Text { text: root.dialog-title; color: #18222c; font-size: 20px; font-weight: 700; }
                     Text { text: root.dialog-body; color: #4f5c67; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                    if root.dialog-confirmation && root.confirmation-kind == "uninstall": CheckBox { text: "Also remove settings, API credentials, and match history"; checked <=> root.remove-user-data; }
                     HorizontalLayout { spacing: 8px;
                         if root.dialog-can-launch && !root.dialog-confirmation: Button { text: "Launch Beatblock"; clicked => { root.dialog-visible = false; root.launch(); } }
                         if !root.dialog-confirmation: Button { text: "View Components"; clicked => { root.page = 1; root.dialog-visible = false; root.refresh(); } }
@@ -445,17 +451,17 @@ fn begin_install(
     window.set_operation_progress(0.0);
     std::thread::spawn(move || {
         let run = || -> Result<String> {
-            let mut installed_elevated = false;
             let mut progress = |event: OperationProgress| {
                 if !event.terminal {
                     post_progress(weak.clone(), event);
                 }
             };
-            match installer.install_with_progress_options(
+            match installer.install_with_optional_obs(
                 Some(path.clone()),
                 allow_unknown,
                 distribution,
                 firewall_public,
+                install_obs,
                 &mut progress,
             ) {
                 Ok(_) => {}
@@ -482,23 +488,8 @@ fn begin_install(
                             }
                         },
                     )?;
-                    installed_elevated = true;
                 }
                 Err(error) => return Err(error),
-            }
-            if install_obs && !installed_elevated {
-                post_progress(
-                    weak.clone(),
-                    OperationProgress {
-                        operation: OperationKind::Install,
-                        phase: "optional_components".into(),
-                        percent: 96,
-                        message: "Installing and verifying the OBS 32 source".into(),
-                        severity: crate::installer::Severity::Info,
-                        terminal: false,
-                    },
-                );
-                installer.install_obs_plugin()?;
             }
             let inspection = installer.inspect_target(&path);
             if inspection.repair_required {
@@ -523,7 +514,16 @@ fn begin_install(
 pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
     let installer = Arc::new(Installer::new(data_dir.clone()));
+    let status = installer.detect();
     window.set_obs_available(installer.obs_plugin_available());
+    window.set_install_obs(status.obs_plugin_present);
+    if let Some((distribution, firewall_public)) = installer.installed_options() {
+        window.set_install_method(match distribution {
+            Distribution::Standalone => 1,
+            Distribution::BeatblockPlus => 2,
+        });
+        window.set_firewall_public(firewall_public);
+    }
     if let Some(path) = installer.initial_game_directory() {
         window.set_game_path(path.display().to_string().into());
         refresh_selected(&window, &installer);
@@ -559,7 +559,28 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
         let weak = window.as_weak();
         let installer = installer.clone();
         let data = data_dir.clone();
-        window.on_install(move || if let Some(window) = weak.upgrade() { let inspection = installer.inspect_target(Path::new(window.get_game_path().as_str())); if inspection.managed_elsewhere.is_some() { window.set_confirmation_kind("move".into()); window.set_dialog_confirmation(true); window.set_dialog_title("Move the managed installation?".into()); window.set_dialog_body(format!("The injector in {} will be restored before BBT is installed into the selected folder.", inspection.managed_elsewhere.unwrap().display()).into()); window.set_dialog_visible(true); } else { begin_install(&window, weak.clone(), installer.clone(), data.clone()); } });
+        window.on_install(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let inspection =
+                installer.inspect_target(Path::new(window.get_game_path().as_str()));
+            if let Some(previous) = inspection.managed_elsewhere {
+                window.set_confirmation_kind("move".into());
+                window.set_dialog_confirmation(true);
+                window.set_dialog_title("Move the managed installation?".into());
+                window.set_dialog_body(
+                    format!(
+                        "The injector in {} will be restored before BBT is installed into the selected folder.",
+                        previous.display()
+                    )
+                    .into(),
+                );
+                window.set_dialog_visible(true);
+            } else {
+                begin_install(&window, weak.clone(), installer.clone(), data.clone());
+            }
+        });
     }
     {
         let weak = window.as_weak();
@@ -806,10 +827,17 @@ fn needs_elevation(error: &anyhow::Error) -> bool {
 #[cfg(windows)]
 fn copy_to_clipboard(text: &str) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
     };
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            unsafe { CloseClipboard() };
+        }
+    }
     const CF_UNICODETEXT: u32 = 13;
     let wide = std::ffi::OsStr::new(text)
         .encode_wide()
@@ -819,20 +847,25 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             anyhow::bail!("Windows clipboard is busy");
         }
-        EmptyClipboard();
+        let _clipboard = ClipboardGuard;
+        if EmptyClipboard() == 0 {
+            anyhow::bail!("Windows clipboard could not be cleared");
+        }
         let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
         if memory.is_null() {
-            CloseClipboard();
             anyhow::bail!("clipboard allocation failed");
         }
         let target = GlobalLock(memory) as *mut u16;
+        if target.is_null() {
+            GlobalFree(memory);
+            anyhow::bail!("clipboard memory could not be locked");
+        }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
         GlobalUnlock(memory);
         if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
-            CloseClipboard();
+            GlobalFree(memory);
             anyhow::bail!("clipboard transfer failed");
         }
-        CloseClipboard();
     }
     Ok(())
 }

@@ -6,6 +6,20 @@ import { cargoCommand } from './run-cargo.mjs';
 const root = resolve(import.meta.dirname, '..');
 const reportDirectory = resolve(root, 'reports', 'trial-runs');
 await mkdir(reportDirectory, { recursive: true });
+const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+async function writeFileWithTransientRetry(path, contents) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeFile(path, contents);
+      return;
+    } catch (error) {
+      // A just-finished Windows executable can trigger short-lived scanner
+      // locks on adjacent generated reports. Bound retries to these lock codes.
+      if (!['UNKNOWN', 'EBUSY', 'EACCES'].includes(error?.code) || attempt === 4) throw error;
+      await delay(250 * (attempt + 1));
+    }
+  }
+}
 
 const commands = [
   {
@@ -111,12 +125,12 @@ const report = {
   runtime: await readJson('runtime-benchmark-latest.json'),
   lifecycle: await readJson('runtime-lifecycle-latest.json'),
 };
-await writeFile(
+await writeFileWithTransientRetry(
   resolve(reportDirectory, 'full-capability-latest.json'),
   `${JSON.stringify(report, null, 2)}\n`,
 );
 const markdown = `# Beatblock Together installer/runtime capability trial\n\nGenerated: ${report.generatedAt}\n\nAutomated gate: **${report.passed ? 'PASS' : 'FAIL'}**\n\n${runs.map((run) => `- ${run.passed ? 'PASS' : 'FAIL'} - ${run.name}: ${(run.durationMs / 1000).toFixed(2)} s`).join('\n')}\n\nMachine-readable metrics are in \`full-capability-latest.json\`, \`host-room-simulation-latest.json\`, \`runtime-lifecycle-latest.json\`, and \`runtime-benchmark-latest.json\`. Physical WAN, OBS, GPU, and clean-machine release gates use the manual trial sheets under \`docs/trials\`; simulations are not reported as physical results.\n`;
-await writeFile(resolve(reportDirectory, 'full-capability-latest.md'), markdown);
+await writeFileWithTransientRetry(resolve(reportDirectory, 'full-capability-latest.md'), markdown);
 console.log(`\nFull trial: ${report.passed ? 'PASS' : 'FAIL'}`);
 console.log(`Report: ${resolve(reportDirectory, 'full-capability-latest.md')}`);
 if (!report.passed) process.exit(1);

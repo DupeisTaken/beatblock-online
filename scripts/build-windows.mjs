@@ -5,12 +5,15 @@ import { cargoCommand } from './run-cargo.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const manifest = resolve(root, 'companion/Cargo.toml');
-const runtime = resolve(root, 'companion/target/release/BeatblockTogetherRuntime.exe');
-const installer = resolve(root, 'companion/target/release/BeatblockTogetherInstaller.exe');
-const lovely = resolve(root, '.reference/lovely-injector/target/release/version.dll');
+// Respect Cargo's target override for release staging. This lets maintainers
+// rebuild an installer while a repo-local test runtime is still executing,
+// without terminating that game or embedding an older locked executable.
+const cargoTarget = resolve(root, process.env.CARGO_TARGET_DIR ?? 'companion/target');
+const runtime = resolve(cargoTarget, 'release/BeatblockOnlineRuntime.exe');
+const installer = resolve(cargoTarget, 'release/BeatblockTogetherInstaller.exe');
+const lovely = resolve(process.env.BBT_LOVELY_DLL ?? resolve(root, 'artifacts/lovely/version.dll'));
 const obsPlugin = resolve(
-  root,
-  'obs-plugin/artifacts/obs-32.0.4/beatblock-together-obs.dll',
+  process.env.BBT_OBS_PLUGIN_DLL ?? resolve(root, 'artifacts/obs/beatblock-together-obs.dll'),
 );
 const release = resolve(root, 'release');
 
@@ -24,12 +27,17 @@ function cargo(args, env = {}) {
   if (result.status !== 0) throw new Error(`Cargo failed with exit code ${result.status}`);
 }
 
-// Build order is intentional: the one downloadable installer embeds the lean
-// runtime artifact byte-for-byte and installs it only as an Online dependency.
-await access(obsPlugin).catch(() => {
-  throw new Error(`Reviewed OBS source artifact is missing: ${obsPlugin}`);
-});
-cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockTogetherRuntime']);
+// Build order is intentional: the one downloadable installer embeds the
+// generated, verified dependencies and the lean runtime byte-for-byte.
+for (const [name, path] of [
+  ['Lovely injector', lovely],
+  ['OBS source', obsPlugin],
+]) {
+  await access(path).catch(() => {
+    throw new Error(`${name} artifact is missing: ${path}. Run pnpm build.`);
+  });
+}
+cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockOnlineRuntime']);
 cargo(
   [
     'build',

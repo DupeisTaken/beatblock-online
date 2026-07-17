@@ -163,6 +163,7 @@ async fn get_diagnostics(
         "localAddresses": local_addresses,
         "rendererBudgetWarning": state.renderer.budget_warning(),
         "dataDirectory": state.data_dir.to_string_lossy(),
+        "ipcClientId": state.ipc_client_id().await,
         "relayAvailable": false,
     })))
 }

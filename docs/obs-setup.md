@@ -6,13 +6,58 @@ The Online dashboard and hidden runtime own four stable slots: Stream A, B, C, a
 
 Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choose Install/Update or Repair. Close OBS before installation, then restart it. In OBS, press **+** in Sources, add **Beatblock Together Player Stream**, and choose Stream A-D. The installed DLL and locale live under `%ProgramData%\obs-studio\plugins\beatblock-together-obs`; the installer records and verifies their hashes. The reviewed alpha artifact has been physically loaded by OBS Studio 32.0.4 x64.
 
-The player source reads the corresponding triple-buffered RGBA frame ring. Assigning a participant to that stable slot happens inside Beatblock under **Spectate + OBS**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, or its renderer has not published a frame. Check the in-game slot status before repairing the plugin.
+The player source keeps a read-only mapping of the corresponding triple-buffered RGBA frame ring. A versioned aligned sequence commits each completed frame, and OBS verifies that sequence after copying so a concurrent publish cannot produce a torn frame. The consumer must use aligned read-only snapshots for this check: Windows interlocked compare/exchange operations are writes and will crash against a `FILE_MAP_READ` view. Assigning a participant to that stable slot happens inside Beatblock under **Spectate + OBS**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, or its renderer has not published a frame. Check the in-game slot status before repairing the plugin.
 
-**Beatblock Together Shared Audio** currently reserves the featured-audio source contract but intentionally emits no audio until process-specific capture and the song-only fallback pass certification. Use OBS Application Audio Capture for the featured renderer during this alpha.
+After 1.5 seconds without a committed frame, the source releases its retained
+CPU buffer and GPU texture. It also closes and retries the file mapping at a
+bounded cadence, allowing a stopped or atomically replaced renderer ring to
+recover without recreating the OBS source.
+
+The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Together does not register a silent placeholder audio source.
 
 Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode renders the chart process; clean mode draws deterministic essential notes, paddle, taps, holds, mines, and outcomes without custom backgrounds/VFX. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
 
-Renderer processes use a separate APPDATA profile and a dedicated BBT renderer adapter. They read delayed input from `stream-X.bbtstate`, draw in a hidden and muted Beatblock process, pace capture at the configured FPS, use LÖVE 12 texture readback with a guarded synchronous fallback, and publish `stream-X.bbtframe`. The host's normal Beatblock process remains available for play. Changing charts relaunches every assigned slot against the new local chart path; stopping, kicking, disconnecting, or converting a target to spectator clears its slots and causes OBS to clear stale video.
+Renderer processes receive their stream configuration through environment
+variables, not command-line flags, because Lovely parses the game's command line
+before the mod starts. They use a separate APPDATA profile and set Lovely's
+`LOVELY_MOD_DIR` explicitly to that profile's dedicated BBT renderer adapter.
+The explicit override is required on Windows because Lovely resolves its default
+directory through the roaming known-folder API rather than trusting the
+`APPDATA` environment variable. This prevents renderer children from loading the
+player's normal mod set or sharing Lovely logs/dumps with the host game. Because
+LÖVE also resolves Beatblock's save directory through a Windows known folder,
+the renderer adapter disables save writes before entering Game state so a hidden
+renderer cannot overwrite the player's save.
+
+Renderers normalize chart-directory paths, resolve named variants to their
+manifest objects, and satisfy Beatblock's threaded audio-preload gate with an
+empty preload table before entering Game state. The renderer child's numeric
+audio settings are zeroed before Beatblock loads that chart's song. They read delayed input from
+`stream-X.bbtstate`, draw in a hidden and muted Beatblock process, pace capture
+at the configured FPS, and publish `stream-X.bbtframe`. LÖVE 12 asynchronous
+texture reads return `GraphicsReadback` requests; the adapter polls two
+independent requests and commits only completed image data. Per-slot tickets
+discard superseded results. A capture exception is written to
+`stream-X.bbterror` and appears as the slot's dashboard error instead of
+crashing the child process.
+
+The host's normal Beatblock process remains available for play. Changing charts
+relaunches every assigned slot against the new local chart path; stopping,
+kicking, disconnecting, or converting a target to spectator clears its slots
+and delayed telemetry buffers and causes OBS to clear stale video.
+
+## Broadcast-host performance budget
+
+For four default 1280x720 60 fps renderer slots, use a modern 8-core/16-thread CPU, 32 GiB system memory, a dedicated GPU with 8 GiB VRAM, and an SSD with at least 2 GiB free. This is a recommended host configuration, not a claim that BBT alone consumes all of those resources: every slot is a separate Beatblock process, while OBS, the encoder, the host game, chart assets, other sources, and the OS share the same machine.
+
+The code-visible minimums explain the headroom:
+
+- Four fixed triple-buffer frame mappings reserve 94.92 MiB of system memory and backing-file space.
+- Four 720p60 RGBA streams move at least 843.75 MiB/s through renderer readback before OBS performs its own copy, texture upload, composition, and encoding.
+- The visible renderer/OBS pixel buffers account for at least 42.19 MiB of VRAM at 720p, but duplicated game assets, source canvases, driver staging, and encoder surfaces are outside that number.
+- Four 1080p60 streams raise the raw pixel-copy floor to 1,898.44 MiB/s. This configuration is experimental and should be reduced to 30 fps, Clean mode, or fewer slots when drops appear.
+
+Before assigning slots, keep the host game and OBS below 80% CPU and GPU utilization so renderer bursts have headroom. During the [four-renderer trial](trials/four-renderers.md), pass only if frame-ring drops stay below 1%, the host game has no material frame-time regression, and memory does not trend upward. Renderer mappings are file-backed, so Windows may report disk activity even though they are used as shared memory; measure physical writeback on the target system rather than treating raw RGBA copy throughput as a disk requirement.
 
 ## Diagnose a missing source
 
@@ -44,7 +89,9 @@ Add a normal OBS Text source and enable **Read from file**. Featured files use t
 
 ## Rebuild the reviewed plugin artifact
 
-Run `pnpm build:obs` on Windows with Visual Studio C++ Build Tools and OBS 32.0.4 installed. The script downloads the official pinned OBS source archive, verifies its SHA-256 checksum, generates an import library from the installed `obs.dll`, and writes the reviewed artifact under `obs-plugin/artifacts/obs-32.0.4`.
+Run `pnpm build:obs` on Windows with Visual Studio C++ Build Tools. The script downloads the official OBS 32.0.4 source and portable x64 archives, verifies both published SHA-256 checksums, generates an import library from the pinned `obs.dll`, and writes the generated plugin under `artifacts/obs`. Pass `-ObsDirectory` directly to `scripts/build-obs-plugin.ps1` only when intentionally testing against a locally installed OBS build.
+
+`pnpm build` also rebuilds the pinned Lovely injector, embeds both native dependencies into the installer, validates the generated files, and writes SHA-256 checksums. GitHub Actions uses the same command for manual artifacts and tagged releases; see [the release workflow](releasing.md).
 
 ## Third-party local API
 

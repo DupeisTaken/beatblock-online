@@ -36,13 +36,18 @@ async fn state(root: PathBuf, chart_hash: &str) -> AppState {
 }
 
 fn command(path: &str) -> Envelope {
+    chart_command("lobby.chart_verify_request", path, "Hard", 1)
+}
+
+fn chart_command(kind: &str, path: &str, variant: &str, expected_max_hits: u64) -> Envelope {
     Envelope::new(
-        "lobby.chart_verify_request",
+        kind,
         1,
         json!({
             "path": path,
             "levelPath": "Custom Levels/Test/",
-            "variant": "Hard"
+            "variant": variant,
+            "expectedMaxHits": expected_max_hits
         }),
     )
 }
@@ -100,6 +105,201 @@ async fn game_chart_command_explains_a_package_mismatch() {
 }
 
 #[tokio::test]
+async fn game_chart_command_rejects_variant_and_note_count_mismatches() {
+    let root = temporary("game-command-variant");
+    let chart = root.join("chart");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("manifest.json"), b"competition chart").unwrap();
+    let canonical = beatblock_together_companion::chart_hash::canonical_chart_hash(&chart).unwrap();
+    let app = state(root.clone(), &canonical.hash).await;
+
+    for (variant, max_hits, expected_fragment) in
+        [("Expert", 1, "variant"), ("Hard", 2, "note count")]
+    {
+        let mut events = app.events.subscribe();
+        game_commands::handle(
+            &app,
+            &chart_command(
+                "lobby.chart_verify_request",
+                chart.to_str().unwrap(),
+                variant,
+                max_hits,
+            ),
+        )
+        .await
+        .unwrap();
+        let response = loop {
+            let event = events.recv().await.unwrap();
+            if event.kind == "chart.verification" {
+                break event;
+            }
+        };
+        assert_eq!(response.payload["verified"], false);
+        assert!(response.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains(expected_fragment));
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn changing_the_host_custom_chart_verifies_against_the_new_lock() {
+    let root = temporary("game-command-change-lock");
+    let chart = root.join("chart");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("manifest.json"), b"new competition chart").unwrap();
+    let app = state(root.clone(), &"f".repeat(64)).await;
+    let mut events = app.events.subscribe();
+
+    game_commands::handle(
+        &app,
+        &chart_command(
+            "room.chart_select_request",
+            chart.to_str().unwrap(),
+            "Hard",
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    let response = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "chart.verification" {
+            break event;
+        }
+    };
+    assert_eq!(response.payload["verified"], true);
+    let locked = app.room.read().await.snapshot.chart.clone().unwrap();
+    assert_ne!(locked.hash, "f".repeat(64));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn appending_a_setlist_chart_preserves_the_active_chart_and_host_verification() {
+    let root = temporary("game-command-append");
+    let first = root.join("first");
+    let second = root.join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(first.join("manifest.json"), b"first competition chart").unwrap();
+    std::fs::write(second.join("manifest.json"), b"second competition chart").unwrap();
+    let first_hash =
+        beatblock_together_companion::chart_hash::canonical_chart_hash(&first).unwrap();
+
+    let app = AppState::new(
+        root.clone(),
+        "test-token".into(),
+        CompanionConfig::default(),
+    )
+    .unwrap()
+    .0;
+    let room = RoomEngine::host("Test".into(), "Host".into(), AdmissionMode::PasswordOnly);
+    let host = room.snapshot.host_session_id.clone();
+    *app.room.write().await = room;
+    *app.local_session_id.write().await = Some(host.clone());
+    app.is_host.store(true, Ordering::Relaxed);
+    *app.selected_chart_path.write().await = Some("Custom Levels/First/".into());
+    app.lock_chart(
+        ChartLock {
+            hash: first_hash.hash.clone(),
+            package_name: "first".into(),
+            song_name: "First".into(),
+            variant: "Hard".into(),
+            expected_max_hits: 1,
+            official: false,
+            transfer_mode: ChartTransferMode::VerifyOnly,
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    app.set_local_verified(true, None).await.unwrap();
+
+    let mut append = chart_command(
+        "room.chart_select_request",
+        second.to_str().unwrap(),
+        "Hard",
+        1,
+    );
+    append.payload["appendToSetlist"] = json!(true);
+    append.payload["levelPath"] = json!("Custom Levels/Second/");
+    let mut events = app.events.subscribe();
+    game_commands::handle(&app, &append).await.unwrap();
+
+    let mut saw_verification = false;
+    loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "chart.verification" {
+            saw_verification = true;
+        }
+        if event.kind == "control.ack" {
+            break;
+        }
+    }
+    let snapshot = app.room.read().await.snapshot.clone();
+    assert_eq!(snapshot.setlist.len(), 2);
+    assert_eq!(snapshot.chart.as_ref().unwrap().hash, first_hash.hash);
+    assert!(
+        snapshot
+            .participants
+            .iter()
+            .find(|participant| participant.session_id == host)
+            .unwrap()
+            .verified
+    );
+    assert_eq!(
+        app.selected_chart_path.read().await.as_deref(),
+        Some("Custom Levels/First/")
+    );
+    assert!(!saw_verification);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn removing_the_active_setlist_chart_updates_the_active_game_path() {
+    let root = temporary("game-command-remove-active");
+    let app = AppState::new(
+        root.clone(),
+        "test-token".into(),
+        CompanionConfig::default(),
+    )
+    .unwrap()
+    .0;
+    let room = RoomEngine::host("Test".into(), "Host".into(), AdmissionMode::PasswordOnly);
+    let host = room.snapshot.host_session_id.clone();
+    *app.room.write().await = room;
+    *app.local_session_id.write().await = Some(host);
+    app.is_host.store(true, Ordering::Relaxed);
+
+    for (name, digit) in [("First", 'a'), ("Second", 'b')] {
+        *app.selected_chart_path.write().await = Some(format!("Custom Levels/{name}/"));
+        app.lock_chart(
+            ChartLock {
+                hash: digit.to_string().repeat(64),
+                package_name: name.into(),
+                song_name: name.into(),
+                variant: "Hard".into(),
+                expected_max_hits: 1,
+                official: false,
+                transfer_mode: ChartTransferMode::VerifyOnly,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    }
+    app.remove_setlist(0).await.unwrap();
+    let snapshot = app.room.read().await.snapshot.clone();
+    assert_eq!(snapshot.chart.as_ref().unwrap().song_name, "Second");
+    assert_eq!(
+        app.selected_chart_path.read().await.as_deref(),
+        Some("Custom Levels/Second/")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn protocol_v1_is_rejected_instead_of_silently_downgraded() {
     let root = temporary("protocol-v1-rejected");
     let app = AppState::new(
@@ -147,6 +347,54 @@ async fn control_requests_are_correlated_and_snapshots_do_not_leak_tokens() {
     let encoded = serde_json::to_string(&snapshot.unwrap()).unwrap();
     assert!(!encoded.contains("top-secret-token"));
     assert!(!encoded.contains("password"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn runtime_snapshot_carries_the_authoritative_local_session_id() {
+    let root = temporary("runtime-session-id");
+    let app = AppState::new(
+        root.clone(),
+        "test-token".into(),
+        CompanionConfig::default(),
+    )
+    .unwrap()
+    .0;
+    *app.local_session_id.write().await = Some("session-authoritative".into());
+    let mut events = app.events.subscribe();
+    app.publish_runtime_snapshot().await.unwrap();
+    let snapshot = events.recv().await.unwrap();
+    assert_eq!(snapshot.kind, "runtime.snapshot");
+    assert_eq!(snapshot.payload["sessionId"], "session-authoritative");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn invalid_control_request_returns_a_correlated_structured_error() {
+    let root = temporary("control-error");
+    let app = AppState::new(
+        root.clone(),
+        "test-token".into(),
+        CompanionConfig::default(),
+    )
+    .unwrap()
+    .0;
+    let mut events = app.events.subscribe();
+    let command = Envelope::new(
+        "room.host_request",
+        3,
+        json!({"requestId":"req-invalid","name":"Missing Password","port":32145}),
+    );
+    assert!(game_commands::handle(&app, &command).await.unwrap());
+    let error = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "control.error" {
+            break event;
+        }
+    };
+    assert_eq!(error.payload["requestId"], "req-invalid");
+    assert_eq!(error.payload["code"], "auth.rejected");
+    assert_eq!(error.payload["retryable"], true);
     let _ = std::fs::remove_dir_all(root);
 }
 

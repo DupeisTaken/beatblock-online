@@ -4,13 +4,46 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const executable = resolve(root, 'companion/target/release/BeatblockTogetherRuntime.exe');
+const cargoTarget = resolve(root, process.env.CARGO_TARGET_DIR ?? 'companion/target');
+const executable = resolve(cargoTarget, 'release/BeatblockOnlineRuntime.exe');
 const data = resolve(root, '.test/runtime-lifecycle-data');
 const reportPath = resolve(root, 'reports/trial-runs/runtime-lifecycle-latest.json');
 await rm(data, { recursive: true, force: true });
 await mkdir(data, { recursive: true });
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+// Windows security/indexing can briefly retain a freshly linked executable
+// after Cargo exits. Confirm the child reached its spawn event and retry only
+// transient file-lock failures; all other launch errors remain immediate.
+async function spawnWithTransientRetry(args, options) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const child = spawn(executable, args, options);
+      await new Promise((resolveSpawn, rejectSpawn) => {
+        child.once('spawn', resolveSpawn);
+        child.once('error', rejectSpawn);
+      });
+      return child;
+    } catch (error) {
+      lastError = error;
+      if (!['UNKNOWN', 'EBUSY', 'EACCES'].includes(error?.code) || attempt === 4) throw error;
+      await delay(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+async function writeFileWithTransientRetry(path, contents) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeFile(path, contents);
+      return;
+    } catch (error) {
+      if (!['UNKNOWN', 'EBUSY', 'EACCES'].includes(error?.code) || attempt === 4) throw error;
+      await delay(250 * (attempt + 1));
+    }
+  }
+}
 const waitExit = (child, timeout = 5000) =>
   Promise.race([
     new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code))),
@@ -35,8 +68,7 @@ async function connectIpc(timeout = 5000) {
   throw new Error('runtime IPC did not become ready');
 }
 
-const runtime = spawn(
-  executable,
+const runtime = await spawnWithTransientRetry(
   ['--data-dir', data, '--port', '18974', '--session-id', 'lifecycle-trial'],
   {
     windowsHide: true,
@@ -45,7 +77,7 @@ const runtime = spawn(
 );
 const socket = await connectIpc();
 let incoming = '';
-const ready = await new Promise((resolveReady, reject) => {
+const readyPromise = new Promise((resolveReady, reject) => {
   const timer = setTimeout(() => reject(new Error('runtime.ready was not received')), 3000);
   socket.on('data', (chunk) => {
     incoming += chunk.toString('utf8');
@@ -57,6 +89,10 @@ const ready = await new Promise((resolveReady, reject) => {
     }
   });
 });
+socket.write(
+  `${JSON.stringify({ version: 2, type: 'client.hello', sequence: 0, runTimeUs: 0, payload: { instanceId: 'lifecycle-trial', clientVersion: 'test', distribution: 'standalone' } })}\n`,
+);
+const ready = await readyPromise;
 if (ready.type !== 'runtime.ready' || ready.version !== 2)
   throw new Error('runtime emitted an incompatible readiness message');
 
@@ -68,7 +104,7 @@ const processSample = spawnSync(
 );
 const workingSetBytes = Number(processSample.stdout.trim());
 
-const duplicate = spawn(executable, ['--data-dir', data, '--port', '18975'], {
+const duplicate = await spawnWithTransientRetry(['--data-dir', data, '--port', '18975'], {
   windowsHide: true,
   stdio: 'ignore',
 });
@@ -83,8 +119,7 @@ const shutdownCode = await waitExit(runtime, 5000);
 socket.destroy();
 if (shutdownCode !== 0) throw new Error(`runtime shutdown returned ${shutdownCode}`);
 
-const orphan = spawn(
-  executable,
+const orphan = await spawnWithTransientRetry(
   ['--data-dir', data, '--port', '18976', '--parent-pid', '4294967294'],
   { windowsHide: true, stdio: 'ignore' },
 );
@@ -106,5 +141,5 @@ const report = {
   visibleConsoleRequested: false,
 };
 await mkdir(resolve(root, 'reports/trial-runs'), { recursive: true });
-await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+await writeFileWithTransientRetry(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify(report, null, 2));

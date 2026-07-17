@@ -1,20 +1,40 @@
+# JavaScript / TypeScript
 node_modules/
 .pnpm-store/
 dist/
 coverage/
-.env
-*.log
 *.tsbuildinfo
-*.obj
-.DS_Store
-Thumbs.db
+
+# Rust and native toolchains
 target/
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Generated release outputs. GitHub Actions publishes these instead of Git.
+artifacts/
+release/
+obs-plugin/artifacts/
+mod/releases/
+
+# Repository-local tools, fixtures, and runtime data
 .tools/
 .cache/
-obs-plugin/build/
+.test/
+.reference/
 companion-data/
 exports/
 .dev-mods/
-.test/
-.reference/
-mod/releases/
+
+# Local configuration and operating-system noise
+.env
+*.log
+.DS_Store
+Thumbs.db

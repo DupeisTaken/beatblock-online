@@ -18,12 +18,18 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 const AUTH_IDENTITY: &[u8] = b"beatblock-together-room-v2";
 const MAX_CONTROL_FRAME: usize = 1_048_576;
+const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_PASSWORD_FAILURE_IPS: usize = 4_096;
+const MAX_PASSWORD_FAILURES_PER_IP: usize = 5;
+const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PENDING_AUTHENTICATIONS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -46,7 +52,7 @@ pub enum NetworkEvent {
         session_id: String,
         reason: String,
     },
-    Error(String),
+    Diagnostic(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +62,8 @@ struct AuthHello {
     display_name: String,
     role: ParticipantRole,
     spake_message: String,
+    #[serde(default)]
+    resume_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +86,8 @@ struct AuthWelcome {
     accepted: bool,
     session_id: String,
     message: String,
+    #[serde(default)]
+    resume_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -89,6 +99,8 @@ pub struct NetworkHub {
     server_connection: Arc<RwLock<Option<Connection>>>,
     endpoint: Arc<Mutex<Option<Endpoint>>>,
     password_failures: Arc<RwLock<HashMap<IpAddr, VecDeque<Instant>>>>,
+    resume_sessions: Arc<RwLock<HashMap<String, String>>>,
+    client_resume_token: Arc<RwLock<Option<String>>>,
 }
 
 impl NetworkHub {
@@ -101,11 +113,15 @@ impl NetworkHub {
             server_connection: Arc::new(RwLock::new(None)),
             endpoint: Arc::new(Mutex::new(None)),
             password_failures: Arc::new(RwLock::new(HashMap::new())),
+            resume_sessions: Arc::new(RwLock::new(HashMap::new())),
+            client_resume_token: Arc::new(RwLock::new(None)),
         }
     }
 
     pub async fn start_host(&self, port: u16, password: String) -> Result<SocketAddr> {
         self.shutdown().await;
+        self.resume_sessions.write().await.clear();
+        *self.client_resume_token.write().await = None;
         if password.chars().count() < 4 || password.chars().count() > 128 {
             bail!("room password must contain 4-128 characters");
         }
@@ -113,7 +129,8 @@ impl NetworkHub {
         let cert_der = certified.cert.der().clone();
         let key = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
         let mut server_config = quinn::ServerConfig::with_single_cert(vec![cert_der], key.into())?;
-        let transport = Arc::get_mut(&mut server_config.transport).expect("fresh transport config");
+        let transport = Arc::get_mut(&mut server_config.transport)
+            .context("QUIC server transport configuration was unexpectedly shared")?;
         transport.max_concurrent_bidi_streams(64u32.into());
         transport.datagram_receive_buffer_size(Some(4 * 1024 * 1024));
         transport.datagram_send_buffer_size(4 * 1024 * 1024);
@@ -123,30 +140,46 @@ impl NetworkHub {
         )?;
         let mut address = endpoint.local_addr()?;
         if address.ip().is_unspecified() {
-            address.set_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            address.set_ip(local_ip_address::local_ip().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         }
         *self.endpoint.lock().expect("endpoint mutex poisoned") = Some(endpoint.clone());
         let hub = self.clone();
         tokio::spawn(async move {
+            // A remote peer that never opens its authentication stream must not
+            // retain a task and QUIC connection indefinitely.
+            let authentication_slots = Arc::new(Semaphore::new(MAX_PENDING_AUTHENTICATIONS));
             while let Some(incoming) = endpoint.accept().await {
+                let Ok(authentication_slot) = authentication_slots.clone().try_acquire_owned()
+                else {
+                    incoming.refuse();
+                    continue;
+                };
                 let hub = hub.clone();
                 let password = password.clone();
                 tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
-                            if let Err(error) = hub.accept_peer(connection, &password).await {
-                                let _ = hub
-                                    .events
-                                    .send(NetworkEvent::Error(error.to_string()))
-                                    .await;
+                    let _authentication_slot = authentication_slot;
+                    let connected = tokio::time::timeout(AUTH_TIMEOUT, incoming).await;
+                    let error = match connected {
+                        Ok(Ok(connection)) => {
+                            match tokio::time::timeout(
+                                AUTH_TIMEOUT,
+                                hub.accept_peer(connection.clone(), &password),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => None,
+                                Ok(Err(error)) => Some(error.to_string()),
+                                Err(_) => {
+                                    connection.close(1u32.into(), b"authentication timed out");
+                                    Some("room authentication timed out".into())
+                                }
                             }
                         }
-                        Err(error) => {
-                            let _ = hub
-                                .events
-                                .send(NetworkEvent::Error(error.to_string()))
-                                .await;
-                        }
+                        Ok(Err(error)) => Some(error.to_string()),
+                        Err(_) => Some("QUIC connection handshake timed out".into()),
+                    };
+                    if let Some(error) = error {
+                        let _ = hub.events.send(NetworkEvent::Diagnostic(error)).await;
                     }
                 });
             }
@@ -155,6 +188,21 @@ impl NetworkHub {
     }
 
     pub async fn join(
+        &self,
+        address: SocketAddr,
+        password: &str,
+        display_name: &str,
+        role: ParticipantRole,
+    ) -> Result<String> {
+        tokio::time::timeout(
+            JOIN_TIMEOUT,
+            self.join_inner(address, password, display_name, role),
+        )
+        .await
+        .context("timed out while connecting to the room")?
+    }
+
+    async fn join_inner(
         &self,
         address: SocketAddr,
         password: &str,
@@ -180,6 +228,7 @@ impl NetworkHub {
                 display_name: display_name.trim().into(),
                 role,
                 spake_message: BASE64.encode(outbound),
+                resume_token: self.client_resume_token.read().await.clone(),
             },
         )
         .await?;
@@ -196,22 +245,20 @@ impl NetworkHub {
         if !welcome.accepted {
             bail!(welcome.message);
         }
+        *self.client_resume_token.write().await = welcome.resume_token.clone();
         let (outgoing_tx, outgoing_rx) = mpsc::channel(4096);
         *self.server_writer.write().await = Some(outgoing_tx);
         *self.server_connection.write().await = Some(connection.clone());
         *self.endpoint.lock().expect("endpoint mutex poisoned") = Some(endpoint);
         self.spawn_writer(send, outgoing_rx);
         self.spawn_reader(welcome.session_id.clone(), recv, connection.clone());
-        let _ = self
-            .events
-            .send(NetworkEvent::Authenticated {
-                session_id: welcome.session_id.clone(),
-                display_name: display_name.trim().into(),
-                role,
-                remote_address: address,
-                hosting: false,
-            })
-            .await;
+        let _ = self.events.try_send(NetworkEvent::Authenticated {
+            session_id: welcome.session_id.clone(),
+            display_name: display_name.trim().into(),
+            role,
+            remote_address: address,
+            hosting: false,
+        });
         Ok(welcome.session_id)
     }
 
@@ -253,13 +300,20 @@ impl NetworkHub {
     }
 
     pub async fn shutdown(&self) {
+        self.shutdown_with_reason("Runtime stopped").await;
+    }
+
+    /// Close every transport with a user-facing reason that the remote room
+    /// lifecycle can classify without presenting an intentional close as a
+    /// runtime crash.
+    pub async fn shutdown_with_reason(&self, reason: &str) {
         if let Some(endpoint) = self
             .endpoint
             .lock()
             .expect("endpoint mutex poisoned")
             .take()
         {
-            endpoint.close(0u32.into(), b"Runtime stopped");
+            endpoint.close(0u32.into(), reason.as_bytes());
         }
         self.peers.write().await.clear();
         self.peer_connections.write().await.clear();
@@ -271,18 +325,28 @@ impl NetworkHub {
         self.peers.read().await.len()
     }
 
+    pub async fn disconnect_peer(&self, session_id: &str, reason: &str, allow_resume: bool) {
+        if !allow_resume {
+            self.resume_sessions
+                .write()
+                .await
+                .retain(|_, mapped_session| mapped_session != session_id);
+        }
+        self.peers.write().await.remove(session_id);
+        if let Some(connection) = self.peer_connections.write().await.remove(session_id) {
+            connection.close(1u32.into(), reason.as_bytes());
+        }
+    }
+
+    pub async fn clear_client_resume(&self) {
+        *self.client_resume_token.write().await = None;
+    }
+
     async fn accept_peer(&self, connection: Connection, password: &str) -> Result<()> {
         let remote_address = connection.remote_address();
         {
             let mut failures = self.password_failures.write().await;
-            let attempts = failures.entry(remote_address.ip()).or_default();
-            while attempts
-                .front()
-                .is_some_and(|time| time.elapsed() > Duration::from_secs(60))
-            {
-                attempts.pop_front();
-            }
-            if attempts.len() >= 5 {
+            if !password_attempt_allowed(&mut failures, remote_address.ip(), Instant::now()) {
                 bail!("too many password attempts from {remote_address}; retry later");
             }
         }
@@ -295,6 +359,7 @@ impl NetworkHub {
                     accepted: false,
                     session_id: String::new(),
                     message: "Incompatible protocol version".into(),
+                    resume_token: None,
                 },
             )
             .await?;
@@ -322,18 +387,18 @@ impl NetworkHub {
         let proof: AuthProof = read_frame(&mut recv).await?;
         let expected = auth_proof(&key, nonce.as_bytes(), b"client")?;
         if !constant_time_eq(proof.proof.as_bytes(), expected.as_bytes()) {
-            self.password_failures
-                .write()
-                .await
-                .entry(remote_address.ip())
-                .or_default()
-                .push_back(Instant::now());
+            // Hold the write guard in a named binding so deref coercion reaches
+            // the underlying map instead of passing the guard wrapper itself.
+            let mut failures = self.password_failures.write().await;
+            record_password_failure(&mut failures, remote_address.ip(), Instant::now());
+            drop(failures);
             write_frame(
                 &mut send,
                 &AuthWelcome {
                     accepted: false,
                     session_id: String::new(),
                     message: "Incorrect room password".into(),
+                    resume_token: None,
                 },
             )
             .await?;
@@ -343,13 +408,40 @@ impl NetworkHub {
             .write()
             .await
             .remove(&remote_address.ip());
-        let session_id = Uuid::new_v4().to_string();
+        let (session_id, resume_token) = if let Some(token) = hello.resume_token.as_ref() {
+            let session = self.resume_sessions.read().await.get(token).cloned();
+            if let Some(session) = session {
+                if self.peer_connections.read().await.contains_key(&session) {
+                    write_frame(
+                        &mut send,
+                        &AuthWelcome {
+                            accepted: false,
+                            session_id: String::new(),
+                            message: "This room session is already connected".into(),
+                            resume_token: None,
+                        },
+                    )
+                    .await?;
+                    bail!("duplicate resume attempt for {session}");
+                }
+                (session, token.clone())
+            } else {
+                (Uuid::new_v4().to_string(), random_resume_token())
+            }
+        } else {
+            (Uuid::new_v4().to_string(), random_resume_token())
+        };
+        self.resume_sessions
+            .write()
+            .await
+            .insert(resume_token.clone(), session_id.clone());
         write_frame(
             &mut send,
             &AuthWelcome {
                 accepted: true,
                 session_id: session_id.clone(),
                 message: "Authenticated; awaiting room admission policy".into(),
+                resume_token: Some(resume_token),
             },
         )
         .await?;
@@ -382,7 +474,9 @@ impl NetworkHub {
         tokio::spawn(async move {
             while let Some(envelope) = outgoing.recv().await {
                 if let Err(error) = write_frame(&mut send, &envelope).await {
-                    let _ = events.send(NetworkEvent::Error(error.to_string())).await;
+                    let _ = events
+                        .send(NetworkEvent::Diagnostic(error.to_string()))
+                        .await;
                     break;
                 }
             }
@@ -410,7 +504,9 @@ impl NetworkHub {
                         }
                         Ok(_) => {
                             let _ = reliable_events
-                                .send(NetworkEvent::Error("Incompatible control message".into()))
+                                .send(NetworkEvent::Diagnostic(
+                                    "Incompatible control message".into(),
+                                ))
                                 .await;
                             break;
                         }
@@ -429,18 +525,24 @@ impl NetworkHub {
                             .await;
                     }
                     Err(error) => {
-                        let _ = events.send(NetworkEvent::Error(error.to_string())).await;
+                        let _ = events
+                            .send(NetworkEvent::Diagnostic(error.to_string()))
+                            .await;
                     }
                 }
             }
             reliable.abort();
             peers.write().await.remove(&session_id);
             peer_connections.write().await.remove(&session_id);
+            let reason = match connection.close_reason() {
+                Some(quinn::ConnectionError::ApplicationClosed(close)) => {
+                    String::from_utf8_lossy(&close.reason).into_owned()
+                }
+                Some(error) => error.to_string(),
+                None => "QUIC connection closed".into(),
+            };
             let _ = events
-                .send(NetworkEvent::Disconnected {
-                    session_id,
-                    reason: "QUIC connection closed".into(),
-                })
+                .send(NetworkEvent::Disconnected { session_id, reason })
                 .await;
         });
     }
@@ -484,6 +586,54 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0u8, |difference, (left, right)| difference | (left ^ right))
         == 0
+}
+
+fn random_resume_token() -> String {
+    let token: [u8; 32] = rand::random();
+    BASE64.encode(token)
+}
+
+/// Removes expired authentication state and enforces a hard upper bound on
+/// distinct source addresses. An internet-facing host must not let spoofed or
+/// rotating addresses grow this map for the lifetime of the process.
+fn prune_password_failures(failures: &mut HashMap<IpAddr, VecDeque<Instant>>, now: Instant) {
+    failures.retain(|_, attempts| {
+        while attempts
+            .front()
+            .is_some_and(|attempt| now.saturating_duration_since(*attempt) > AUTH_FAILURE_WINDOW)
+        {
+            attempts.pop_front();
+        }
+        !attempts.is_empty()
+    });
+}
+
+fn password_attempt_allowed(
+    failures: &mut HashMap<IpAddr, VecDeque<Instant>>,
+    address: IpAddr,
+    now: Instant,
+) -> bool {
+    prune_password_failures(failures, now);
+    failures
+        .get(&address)
+        .map_or(failures.len() < MAX_PASSWORD_FAILURE_IPS, |attempts| {
+            attempts.len() < MAX_PASSWORD_FAILURES_PER_IP
+        })
+}
+
+fn record_password_failure(
+    failures: &mut HashMap<IpAddr, VecDeque<Instant>>,
+    address: IpAddr,
+    now: Instant,
+) {
+    prune_password_failures(failures, now);
+    if let Some(attempts) = failures.get_mut(&address) {
+        if attempts.len() < MAX_PASSWORD_FAILURES_PER_IP {
+            attempts.push_back(now);
+        }
+    } else if failures.len() < MAX_PASSWORD_FAILURE_IPS {
+        failures.insert(address, VecDeque::from([now]));
+    }
 }
 
 fn insecure_client_config() -> Result<quinn::ClientConfig> {
@@ -563,6 +713,58 @@ pub fn certificate_fingerprint(certificate: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn password_failure_tracking_expires_and_stays_bounded() {
+        let now = Instant::now();
+        let stale = now - AUTH_FAILURE_WINDOW - Duration::from_secs(1);
+        let mut failures = HashMap::new();
+        failures.insert(IpAddr::from([10, 0, 0, 1]), VecDeque::from([stale]));
+        failures.insert(IpAddr::from([10, 0, 0, 2]), VecDeque::from([now]));
+        prune_password_failures(&mut failures, now);
+        assert!(!failures.contains_key(&IpAddr::from([10, 0, 0, 1])));
+        assert!(failures.contains_key(&IpAddr::from([10, 0, 0, 2])));
+
+        failures.clear();
+        for index in 0..MAX_PASSWORD_FAILURE_IPS {
+            let address = IpAddr::V6(std::net::Ipv6Addr::from(index as u128 + 1));
+            record_password_failure(&mut failures, address, now);
+        }
+        assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
+        let overflow = IpAddr::from([192, 0, 2, 1]);
+        record_password_failure(&mut failures, overflow, now);
+        assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
+        assert!(!password_attempt_allowed(&mut failures, overflow, now));
+
+        let tracked = IpAddr::V6(std::net::Ipv6Addr::from(1));
+        for _ in 1..MAX_PASSWORD_FAILURES_PER_IP {
+            record_password_failure(&mut failures, tracked, now);
+        }
+        assert!(!password_attempt_allowed(&mut failures, tracked, now));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_authentication_is_closed_by_the_host() {
+        let (host_events, _events) = mpsc::channel(8);
+        let host = NetworkHub::new(host_events);
+        let address = host.start_host(0, "correct horse".into()).await.unwrap();
+
+        let mut endpoint =
+            Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).unwrap();
+        endpoint.set_default_client_config(insecure_client_config().unwrap());
+        let connection = endpoint
+            .connect(address, "beatblock-together.local")
+            .unwrap()
+            .await
+            .unwrap();
+
+        // Deliberately never open the authentication stream. The host should
+        // reclaim the connection instead of retaining this peer indefinitely.
+        tokio::time::timeout(AUTH_TIMEOUT + Duration::from_secs(3), connection.closed())
+            .await
+            .expect("host did not close a stalled authentication");
+        host.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn authenticates_password_and_exchanges_control_and_datagrams() {
         let (host_events_tx, mut host_events) = mpsc::channel(32);
@@ -597,6 +799,45 @@ mod tests {
             .unwrap();
         assert!(matches!(control, NetworkEvent::Envelope { .. }));
         let _ = client_events.recv().await;
+
+        client.shutdown().await;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(3), host_events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, NetworkEvent::Disconnected { .. }) {
+                break;
+            }
+        }
+        let resumed = client
+            .join(address, "correct horse", "Player", ParticipantRole::Player)
+            .await
+            .unwrap();
+        assert_eq!(resumed, session, "reconnect must preserve room identity");
+        loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(3), client_events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            if matches!(event, NetworkEvent::Authenticated { hosting: false, .. }) {
+                break;
+            }
+        }
+        host.disconnect_peer(&session, "Removed from the room by the host", false)
+            .await;
+        let close_reason = loop {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(3), client_events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            if let NetworkEvent::Disconnected { reason, .. } = event {
+                break reason;
+            }
+        };
+        assert_eq!(close_reason, "Removed from the room by the host");
         host.shutdown().await;
         client.shutdown().await;
     }

@@ -1,20 +1,27 @@
 {
-  "generatedAtMs": 1784131767685,
+  "generatedAtMs": 1784299256033,
   "metrics": {
-    "chartCacheSpeedup": 37.43944832798035,
-    "chartCachedMs": 0.5293,
-    "chartColdMs": 19.8167,
-    "exportMeanMs": 35.18428600000001,
-    "exportP95Ms": 39.274499999999996,
-    "journalEventsPerSecond": 2409.051094046464,
-    "journalRecoveredEvents": 5000
+    "chartCacheSpeedup": 38.66489007328448,
+    "chartCachedMs": 0.30019999999999997,
+    "chartColdMs": 11.6072,
+    "exportBytesWritten": 8116,
+    "exportEnqueueP95Ms": 0.0111,
+    "exportFilesWritten": 56,
+    "exportMeanMs": 0.7875320000000002,
+    "exportP95Ms": 1.1502000000000001,
+    "journalEventsPerSecond": 915281.5406018891,
+    "journalRecoveredEvents": 5000,
+    "sqliteJournalEventsPerSecond": 326236.5998316619,
+    "sqliteJournalRecoveredEvents": 5000
   },
   "passed": true,
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "thresholds": {
     "cacheHitFasterThanCold": true,
+    "exportFilesWritten": 60,
     "exportP95Ms": 100,
-    "journalEventsPerSecond": 100
+    "journalEventsPerSecond": 100,
+    "sqliteJournalEventsPerSecond": 1000
   },
   "workload": {
     "chartBytes": 4194304,

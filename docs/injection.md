@@ -4,10 +4,10 @@
 
 Run `BeatblockTogetherInstaller.exe`. Its four Unity Mod Manager-style tabs are installation-only:
 
-- **Install:** a selected-target card, Automatic/standalone/BeatblockPlus method, optional OBS source, real operation progress, Install/Update, Repair, Uninstall, Restore Game Files, and postflight Launch Beatblock verification.
+- **Install:** a selected-target card, Automatic/standalone/BeatblockPlus method, optional OBS source, private/public firewall scope, explicit uncertified-build override, real operation progress, Install/Update, Repair, Uninstall, Restore Game Files, and postflight Launch Beatblock verification.
 - **Components:** a colored table for the game build, adapter, shared Lua payload, Lovely, runtime, renderer, optional OBS plugin, and firewall. Text labels accompany every color, and one **Repair Required Components** action fixes managed files.
 - **Log:** bounded log with Copy and Save.
-- **Settings:** update channel/check, backup folder, private/public firewall profile, data-retaining uninstall, and developer-only unknown-build override.
+- **Settings:** update channel/check and backup folder. Destructive data removal is shown in the Uninstall confirmation instead of being hidden in persistent settings.
 
 The path in the field is always the path being described and modified. Selection priority is the current field, then the managed manifest target, then Steam discovery. Any folder with `Beatblock.exe`, the required LÖVE/Lua libraries, and the expected `packed` archives is structurally valid—including repository/reference copies and paths containing spaces or Unicode. The installer validates the supported `Beatblock.exe` SHA-256 `c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b`; other fingerprints require **Developer: allow an uncertified Beatblock build** and remain blocked from competitive rooms.
 
@@ -17,7 +17,7 @@ Installation starts with the player's normal Windows permissions. If a protected
 
 The firewall rule is reconciled once per transaction. Its `program=` path is normalized to Windows backslashes, an absent previous rule is harmless, and the selected Private/Public profile is recorded for later Repair operations. If Repair stops at 76%, check for a UAC prompt on the secure desktop; accept it once and let the visible installer finish its postflight verification.
 
-Every mutating action reports monotonic phases and a percentage. Controls are locked once replacement begins. The complete Lua adapter is first written to a sibling staging directory, checked against the Lovely module declarations, then atomically swapped into place. The manifest is written only after required component hashes pass. Existing injector backups are never replaced during update or repair.
+Every mutating action reports monotonic phases and a percentage. Controls are locked once replacement begins. The complete Lua adapter is first written to a sibling staging directory, checked against the Lovely module declarations and the required Online disconnect/timeout recovery contracts, then atomically swapped into place. The manifest is written only after required component hashes pass. Existing injector backups are never replaced during update or repair.
 
 Installed layout:
 
@@ -36,7 +36,7 @@ Installed layout:
   lovely\bootstrap.toml       (standalone only)
   mod.json + main.lua ...     (BeatblockPlus only)
 %LOCALAPPDATA%\BeatblockTogether\...
-  runtime\BeatblockTogetherRuntime.exe
+  runtime\BeatblockOnlineRuntime.exe
   installer\BeatblockTogetherInstaller.exe
 ```
 
@@ -62,6 +62,6 @@ If Online reports damage, choose **Open Installer**, inspect the Components tabl
 
 The latest physical injected-game evidence is recorded in [`injected-installer-lifecycle-latest.md`](../reports/trial-runs/injected-installer-lifecycle-latest.md), including the hidden runtime, live telemetry ingestion, and explicit Online shutdown screenshots.
 
-The current `.reference\Beatblock` installer, elevation diagnosis, normalized firewall command, helper-error trial, and Lovely recovery evidence are recorded in [`installer-reliability-latest.md`](../reports/trial-runs/installer-reliability-latest.md).
+The current isolated `.test\Beatblock` installer, elevation diagnosis, normalized firewall command, helper-error trial, and Lovely recovery evidence are recorded in [`installer-reliability-latest.md`](../reports/trial-runs/installer-reliability-latest.md).
 
 The expanded release-EXE failure matrix and full isolated Rust transaction round trips are recorded in [`installer-acceptance-latest.md`](../reports/trial-runs/installer-acceptance-latest.md). Its machine-readable companion is [`installer-acceptance-latest.json`](../reports/trial-runs/installer-acceptance-latest.json). The report distinguishes automated and non-elevated passes from physical gates that still require an accepted UAC prompt.

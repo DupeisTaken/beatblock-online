@@ -3,38 +3,54 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   typescript:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - run: pnpm --filter @bbt/protocol test
+      - run: pnpm test:release-workflow
+      - run: pnpm build:protocol
       - run: pnpm generate:protocol
-      - run: pnpm validate:patches
       - run: pnpm package:mods
-      - run: pnpm test:mod
+      - run: pnpm test:patch-validation
+      # The full mod gate remains local because it validates signatures against
+      # the user's isolated, legally obtained game fixture.
+      - run: pnpm test:mod:source
 
   companion:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: companion
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
-      - run: cargo test --manifest-path companion/Cargo.toml
+      # These five gates require either the user's isolated game fixture or the
+      # verified binary payloads built by the Release workflow. Every source-only
+      # test remains blocking here.
+      - run: >-
+          cargo test --manifest-path companion/Cargo.toml --lib --bins --
+          --skip detector_accepts_isolated_test_game_shape
+          --skip embedded_obs_source_is_a_real_module_with_required_exports
+          --skip full_standalone_install_repair_restore_and_uninstall_round_trip
+          --skip move_installation_and_adapter_detection_are_exclusive
+          --skip verified_obs_component_does_not_report_a_stale_failure
+      - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
       - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1

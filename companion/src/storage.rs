@@ -1,13 +1,39 @@
 use crate::model::{Envelope, RoomSnapshot};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
-use std::{path::Path, sync::Mutex};
+use std::{
+    path::Path,
+    sync::{Mutex, MutexGuard, TryLockError},
+};
+
+struct PendingEvent {
+    room_id: String,
+    run_id: String,
+    sequence: u64,
+    received_at_ms: u64,
+    envelope_json: String,
+}
+
+// Roughly 34 seconds of 60 Hz telemetry from a full 16-player room. A failed
+// disk must not turn the durable retry path into an unbounded memory leak.
+const MAX_PENDING_EVENTS: usize = 32_768;
 
 pub struct Storage {
     connection: Mutex<Connection>,
+    pending_events: Mutex<Vec<PendingEvent>>,
 }
 
 impl Storage {
+    fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>> {
+        match self.connection.try_lock() {
+            Ok(connection) => Ok(connection),
+            Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                bail!("another storage operation is still in progress")
+            }
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
@@ -42,24 +68,26 @@ impl Storage {
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
+            pending_events: Mutex::new(Vec::new()),
         })
     }
 
     pub fn save_room(&self, room: &RoomSnapshot, recovery_ms: u64) -> Result<()> {
         let json = serde_json::to_string(room)?;
-        let connection = self.connection.lock().expect("storage mutex poisoned");
-        connection.execute(
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO room_recovery(singleton,snapshot_json,recover_until_ms,updated_at_ms)
              VALUES(1,?1,?2,?3)
              ON CONFLICT(singleton) DO UPDATE SET snapshot_json=excluded.snapshot_json,
              recover_until_ms=excluded.recover_until_ms,updated_at_ms=excluded.updated_at_ms",
             params![
-                json,
+                &json,
                 room.updated_at_ms.saturating_add(recovery_ms),
                 room.updated_at_ms
             ],
         )?;
-        connection.execute(
+        transaction.execute(
             "INSERT INTO match_history(room_id,room_name,lifecycle,snapshot_json,updated_at_ms)
              VALUES(?1,?2,?3,?4,?5)
              ON CONFLICT(room_id) DO UPDATE SET lifecycle=excluded.lifecycle,
@@ -68,15 +96,16 @@ impl Storage {
                 room.id,
                 room.name,
                 format!("{:?}", room.lifecycle).to_lowercase(),
-                serde_json::to_string(room)?,
+                &json,
                 room.updated_at_ms
             ],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
     pub fn recover_room(&self, now_ms: u64) -> Result<Option<RoomSnapshot>> {
-        let connection = self.connection.lock().expect("storage mutex poisoned");
+        let connection = self.lock_connection()?;
         let mut statement = connection.prepare(
             "SELECT snapshot_json,recover_until_ms FROM room_recovery WHERE singleton=1",
         )?;
@@ -93,24 +122,96 @@ impl Storage {
     }
 
     pub fn append_event(&self, room_id: &str, envelope: &Envelope) -> Result<bool> {
+        self.queue_event(room_id, envelope)?;
+        Ok(self.flush_pending_events()? > 0)
+    }
+
+    /// Serializes an ordered event and queues it for the short storage batch.
+    /// Network handling never waits for an SQLite commit per score mutation.
+    pub fn queue_event(&self, room_id: &str, envelope: &Envelope) -> Result<()> {
         let run_id = envelope.run_id.as_deref().unwrap_or("unassigned");
-        let connection = self.connection.lock().expect("storage mutex poisoned");
-        let inserted = connection.execute(
-            "INSERT OR IGNORE INTO run_events(room_id,run_id,sequence,received_at_ms,envelope_json)
-             VALUES(?1,?2,?3,?4,?5)",
-            params![
-                room_id,
-                run_id,
-                envelope.sequence,
-                crate::room::unix_ms(),
-                serde_json::to_string(envelope)?
-            ],
-        )?;
-        Ok(inserted == 1)
+        let envelope_json = serde_json::to_string(envelope)?;
+        let mut pending = self
+            .pending_events
+            .lock()
+            .expect("pending storage events poisoned");
+        if pending.len() >= MAX_PENDING_EVENTS {
+            bail!("durable event backlog reached its safety limit");
+        }
+        pending.push(PendingEvent {
+            room_id: room_id.to_owned(),
+            run_id: run_id.to_owned(),
+            sequence: envelope.sequence,
+            received_at_ms: crate::room::unix_ms(),
+            envelope_json,
+        });
+        Ok(())
+    }
+
+    /// Commits every queued event in one WAL transaction. At the normal 25 ms
+    /// cadence this replaces dozens of durable autocommits with one commit while
+    /// preserving the primary-key ordering and duplicate protection.
+    pub fn flush_pending_events(&self) -> Result<usize> {
+        let mut pending = std::mem::take(
+            &mut *self
+                .pending_events
+                .lock()
+                .expect("pending storage events poisoned"),
+        );
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let result = (|| -> Result<usize> {
+            let mut connection = self.lock_connection()?;
+            let transaction = connection.transaction()?;
+            let mut inserted = 0;
+            {
+                let mut statement = transaction.prepare(
+                    "INSERT OR IGNORE INTO run_events(room_id,run_id,sequence,received_at_ms,envelope_json)
+                     VALUES(?1,?2,?3,?4,?5)",
+                )?;
+                for event in &pending {
+                    inserted += statement.execute(params![
+                        event.room_id,
+                        event.run_id,
+                        event.sequence,
+                        event.received_at_ms,
+                        event.envelope_json
+                    ])?;
+                }
+            }
+            transaction.commit()?;
+            Ok(inserted)
+        })();
+        if result.is_err() {
+            let mut retry = self
+                .pending_events
+                .lock()
+                .expect("pending storage events poisoned");
+            // Older failed events must remain ahead of anything queued while the
+            // transaction was running so a retry preserves arrival order.
+            pending.append(&mut retry);
+            if pending.len() > MAX_PENDING_EVENTS {
+                let dropped = pending.len() - MAX_PENDING_EVENTS;
+                pending.truncate(MAX_PENDING_EVENTS);
+                tracing::error!(dropped, "durable event backlog discarded newest events");
+            }
+            *retry = pending;
+        }
+        result
+    }
+
+    pub fn has_pending_events(&self) -> bool {
+        !self
+            .pending_events
+            .lock()
+            .expect("pending storage events poisoned")
+            .is_empty()
     }
 
     pub fn events(&self, room_id: &str, run_id: &str, from: u64) -> Result<Vec<Envelope>> {
-        let connection = self.connection.lock().expect("storage mutex poisoned");
+        self.flush_pending_events()?;
+        let connection = self.lock_connection()?;
         let mut statement = connection.prepare(
             "SELECT envelope_json FROM run_events
              WHERE room_id=?1 AND run_id=?2 AND sequence>=?3 ORDER BY sequence",
@@ -126,7 +227,8 @@ impl Storage {
     }
 
     pub fn prune_raw_events(&self, older_than_ms: u64) -> Result<usize> {
-        let connection = self.connection.lock().expect("storage mutex poisoned");
+        self.flush_pending_events()?;
+        let connection = self.lock_connection()?;
         Ok(connection.execute(
             "DELETE FROM run_events WHERE received_at_ms < ?1",
             params![older_than_ms],
@@ -134,7 +236,7 @@ impl Storage {
     }
 
     pub fn history(&self) -> Result<Vec<RoomSnapshot>> {
-        let connection = self.connection.lock().expect("storage mutex poisoned");
+        let connection = self.lock_connection()?;
         let mut statement = connection
             .prepare("SELECT snapshot_json FROM match_history ORDER BY updated_at_ms DESC")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
@@ -146,7 +248,8 @@ impl Storage {
     }
 
     pub fn delete_history(&self, room_id: &str) -> Result<bool> {
-        let connection = self.connection.lock().expect("storage mutex poisoned");
+        self.flush_pending_events()?;
+        let connection = self.lock_connection()?;
         connection.execute("DELETE FROM run_events WHERE room_id=?1", params![room_id])?;
         Ok(connection.execute(
             "DELETE FROM match_history WHERE room_id=?1",
@@ -180,5 +283,57 @@ mod tests {
             .is_none());
         drop(storage);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn queued_events_commit_in_one_ordered_batch() {
+        let path =
+            std::env::temp_dir().join(format!("bbt-storage-batch-{}.db", rand::random::<u64>()));
+        let storage = Storage::open(&path).unwrap();
+        for sequence in 0..250 {
+            let mut event = Envelope::new(
+                "run.score_delta",
+                sequence,
+                serde_json::json!({"runSequence":sequence}),
+            );
+            event.run_id = Some("run-batch".into());
+            storage.queue_event("room-batch", &event).unwrap();
+        }
+        assert_eq!(storage.flush_pending_events().unwrap(), 250);
+        let recovered = storage.events("room-batch", "run-batch", 0).unwrap();
+        assert_eq!(recovered.len(), 250);
+        assert_eq!(recovered.first().unwrap().sequence, 0);
+        assert_eq!(recovered.last().unwrap().sequence, 249);
+        drop(storage);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pending_event_backlog_is_bounded() {
+        let storage = Storage::open(":memory:").unwrap();
+        let event = Envelope::new("run.score_delta", 0, serde_json::json!({}));
+        for _ in 0..MAX_PENDING_EVENTS {
+            storage.queue_event("bounded-room", &event).unwrap();
+        }
+        assert!(storage.queue_event("bounded-room", &event).is_err());
+        assert_eq!(
+            storage.pending_events.lock().unwrap().len(),
+            MAX_PENDING_EVENTS
+        );
+    }
+
+    #[test]
+    fn busy_database_requeues_once_without_waiting_for_the_lock() {
+        let storage = Storage::open(":memory:").unwrap();
+        let mut event = Envelope::new("run.score_delta", 1, serde_json::json!({}));
+        event.run_id = Some("busy-run".into());
+        storage.queue_event("busy-room", &event).unwrap();
+        let connection = storage.connection.lock().unwrap();
+        let started = std::time::Instant::now();
+        assert!(storage.flush_pending_events().is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(storage.pending_events.lock().unwrap().len(), 1);
+        drop(connection);
+        assert_eq!(storage.flush_pending_events().unwrap(), 1);
     }
 }

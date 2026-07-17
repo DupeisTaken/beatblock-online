@@ -12,7 +12,11 @@ static LOVELY_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lovely-
 static OBS_PLUGIN_PAYLOAD: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/beatblock-together-obs.dll"));
 static RUNTIME_PAYLOAD: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockTogetherRuntime.exe"));
+    include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockOnlineRuntime.exe"));
+const RUNTIME_FILE_NAME: &str = "BeatblockOnlineRuntime.exe";
+// Keep upgrade cleanup compatible without presenting the retired product name
+// as a current executable anywhere in the installer UI or documentation.
+const LEGACY_RUNTIME_FILE_NAME: &str = concat!("Beatblock", "TogetherRuntime.exe");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +61,22 @@ struct ObsInstallManifest {
     plugin: PathBuf,
     locale: PathBuf,
     plugin_sha256: String,
+}
+
+struct ObsInstallTransaction {
+    plugin: PathBuf,
+    plugin_rollback: FileRollback,
+    locale_rollback: FileRollback,
+    marker_rollback: FileRollback,
+}
+
+impl ObsInstallTransaction {
+    fn commit(mut self) -> PathBuf {
+        self.plugin_rollback.commit();
+        self.locale_rollback.commit();
+        self.marker_rollback.commit();
+        self.plugin
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +612,52 @@ impl Installer {
         )
     }
 
+    pub fn installed_options(&self) -> Option<(Distribution, bool)> {
+        self.load_manifest()
+            .ok()
+            .flatten()
+            .map(|manifest| (manifest.distribution, manifest.firewall_public))
+    }
+
+    /// Stages the optional OBS source before changing the game, then commits it
+    /// only after the core transaction verifies. A failure in either component
+    /// therefore restores OBS and leaves no misleading partial-success state.
+    pub fn install_with_optional_obs<F>(
+        &self,
+        explicit_game_directory: Option<PathBuf>,
+        allow_unknown_build: bool,
+        requested_distribution: Option<Distribution>,
+        firewall_public: bool,
+        install_obs: bool,
+        mut progress: F,
+    ) -> Result<InstallManifest>
+    where
+        F: FnMut(OperationProgress),
+    {
+        let obs_transaction = if install_obs {
+            progress(OperationProgress::step(
+                OperationKind::Install,
+                "optional_components",
+                2,
+                "Staging and verifying the OBS 32 source",
+            ));
+            Some(self.stage_obs_plugin()?)
+        } else {
+            None
+        };
+        let manifest = self.install_with_progress_options(
+            explicit_game_directory,
+            allow_unknown_build,
+            requested_distribution,
+            firewall_public,
+            &mut progress,
+        )?;
+        if let Some(transaction) = obs_transaction {
+            transaction.commit();
+        }
+        Ok(manifest)
+    }
+
     /// Runs the file transaction with optional Windows integration. Production
     /// callers always enable platform changes; disabling them lets tests cover
     /// the real staging, swapping, hashing, backup, move, and manifest logic
@@ -615,7 +681,7 @@ impl Installer {
             "Validating the selected Beatblock folder",
         ));
         if RUNTIME_PAYLOAD.is_empty() {
-            bail!("this installer build does not contain BeatblockTogetherRuntime.exe");
+            bail!("this installer build does not contain BeatblockOnlineRuntime.exe");
         }
         let game_directory = explicit_game_directory
             .or_else(|| self.initial_game_directory())
@@ -658,7 +724,7 @@ impl Installer {
         std::fs::create_dir_all(stage_directory.join("bbt"))?;
         std::fs::create_dir_all(stage_directory.join("lovely"))?;
         let mut installed_files = Vec::new();
-        let runtime_path = self.data_dir.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime_path = self.data_dir.join("runtime").join(RUNTIME_FILE_NAME);
         progress(OperationProgress::step(
             OperationKind::Install,
             "runtime",
@@ -667,6 +733,33 @@ impl Installer {
         ));
         let mut runtime_rollback = FileRollback::replace(&runtime_path, RUNTIME_PAYLOAD)
             .context("install hidden runtime; exit Online before updating")?;
+        // Alpha builds used a different runtime filename. Remove every prior
+        // managed path transactionally so upgrades cannot leave a launchable
+        // stale binary behind; any later install failure restores it.
+        let mut previous_runtime_paths =
+            vec![self.data_dir.join("runtime").join(LEGACY_RUNTIME_FILE_NAME)];
+        if let Some(previous_runtime) = managed_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.runtime_path.as_ref())
+            .filter(|path| *path != &runtime_path)
+        {
+            if !previous_runtime_paths.contains(previous_runtime) {
+                previous_runtime_paths.push(previous_runtime.clone());
+            }
+        }
+        let mut previous_runtime_rollbacks = Vec::new();
+        for previous_runtime in previous_runtime_paths {
+            if previous_runtime.is_file() {
+                previous_runtime_rollbacks.push(
+                    FileRollback::remove(&previous_runtime).with_context(|| {
+                        format!(
+                            "remove the previous online runtime at {}; exit Online before updating",
+                            previous_runtime.display()
+                        )
+                    })?,
+                );
+            }
+        }
         installed_files.push(runtime_path.clone());
         write(
             &stage_directory.join("runtime-path.txt"),
@@ -796,17 +889,24 @@ impl Installer {
             maintenance_installer.to_string_lossy().as_bytes(),
             &mut installed_files,
         )?;
+        let firewall_rule_current = managed_manifest.as_ref().is_some_and(|manifest| {
+            manifest.firewall_installed
+                && manifest.firewall_public == firewall_public
+                && manifest.runtime_path.as_ref() == Some(&runtime_path)
+        });
         progress(OperationProgress::step(
             OperationKind::Install,
             "system_changes",
             76,
-            if apply_platform_changes {
+            if apply_platform_changes && firewall_rule_current {
+                "Keeping the existing program-scoped firewall rule"
+            } else if apply_platform_changes {
                 "Applying the program-scoped firewall rule"
             } else {
                 "Skipping external Windows changes for isolated verification"
             },
         ));
-        if apply_platform_changes {
+        if apply_platform_changes && !firewall_rule_current {
             Self::configure_firewall(&runtime_path, firewall_public, true)?;
         }
         let firewall_installed = apply_platform_changes;
@@ -863,6 +963,9 @@ impl Installer {
         self.save_manifest(&manifest)?;
         mod_rollback.commit()?;
         runtime_rollback.commit();
+        for rollback in &mut previous_runtime_rollbacks {
+            rollback.commit();
+        }
         if let Some(rollback) = lovely_rollback.as_mut() {
             rollback.commit();
         }
@@ -1016,6 +1119,10 @@ impl Installer {
     }
 
     pub fn install_obs_plugin(&self) -> Result<PathBuf> {
+        Ok(self.stage_obs_plugin()?.commit())
+    }
+
+    fn stage_obs_plugin(&self) -> Result<ObsInstallTransaction> {
         if OBS_PLUGIN_PAYLOAD.is_empty() {
             bail!("this installer build does not contain the OBS plugin payload");
         }
@@ -1024,13 +1131,22 @@ impl Installer {
         let program_data = std::env::var_os("ProgramData")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        self.install_obs_plugin_into(obs, &program_data)
+        self.stage_obs_plugin_into(obs, &program_data)
     }
 
     /// Installs OBS files transactionally into a supplied ProgramData root.
     /// The public path supplies the real Windows directory; tests use a
     /// disposable root while exercising the identical payload and marker code.
+    #[cfg(test)]
     fn install_obs_plugin_into(&self, obs: PathBuf, program_data: &Path) -> Result<PathBuf> {
+        Ok(self.stage_obs_plugin_into(obs, program_data)?.commit())
+    }
+
+    fn stage_obs_plugin_into(
+        &self,
+        obs: PathBuf,
+        program_data: &Path,
+    ) -> Result<ObsInstallTransaction> {
         // ProgramData is OBS' recommended Windows plugin layout. It avoids the
         // legacy Program Files path that OBS has announced it will retire.
         let (plugin, locale) = obs_program_data_paths(program_data);
@@ -1044,19 +1160,21 @@ impl Installer {
             plugin_sha256: hex::encode(Sha256::digest(OBS_PLUGIN_PAYLOAD)),
         };
         let marker_payload = serde_json::to_vec_pretty(&record)?;
-        let mut plugin_rollback =
+        let plugin_rollback =
             FileRollback::replace(&plugin, OBS_PLUGIN_PAYLOAD).context("install OBS source DLL")?;
-        let mut locale_rollback =
+        let locale_rollback =
             FileRollback::replace(&locale, locale_payload).context("install OBS source locale")?;
-        let mut marker_rollback = FileRollback::replace(&marker, &marker_payload)
+        let marker_rollback = FileRollback::replace(&marker, &marker_payload)
             .context("record OBS source installation")?;
         if !file_matches(&plugin, OBS_PLUGIN_PAYLOAD) || !file_matches(&locale, locale_payload) {
             bail!("OBS source post-install hash verification failed");
         }
-        plugin_rollback.commit();
-        locale_rollback.commit();
-        marker_rollback.commit();
-        Ok(plugin)
+        Ok(ObsInstallTransaction {
+            plugin,
+            plugin_rollback,
+            locale_rollback,
+            marker_rollback,
+        })
     }
 
     pub fn obs_plugin_available(&self) -> bool {
@@ -1096,11 +1214,18 @@ impl Installer {
             10,
             "Preparing the selected game copy",
         ));
+        let log_directory = self
+            .mods_directory()
+            .context("Windows APPDATA is unavailable")?
+            .join("lovely/log");
         let app_id_path = selected.join("steam_appid.txt");
-        let prior_app_id = std::fs::read(&app_id_path).ok();
-        if prior_app_id.is_none() {
-            std::fs::write(&app_id_path, b"3045200\n")?;
-        }
+        // A test copy may need the Steam application id to start, but an early
+        // spawn/log error must not strand this temporary file in the game.
+        let _app_id_override = if app_id_path.is_file() {
+            None
+        } else {
+            Some(FileRollback::replace(&app_id_path, b"3045200\n")?)
+        };
         let started = std::time::SystemTime::now();
         let mut child = std::process::Command::new(&executable)
             .current_dir(selected)
@@ -1112,19 +1237,19 @@ impl Installer {
             35,
             "Waiting for Lovely initialization",
         ));
-        let log_directory = self
-            .mods_directory()
-            .context("Windows APPDATA is unavailable")?
-            .join("lovely/log");
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut latest_log = None;
         let mut last_text = String::new();
         let result = loop {
-            if let Some(status) = child.try_wait()? {
-                break Err(anyhow::anyhow!(
-                    "Beatblock exited during startup ({status}). {}",
-                    lovely_error_excerpt(&last_text)
-                ));
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    break Err(anyhow::anyhow!(
+                        "Beatblock exited during startup ({status}). {}",
+                        lovely_error_excerpt(&last_text)
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => break Err(error).context("inspect Beatblock startup process"),
             }
             if let Some(path) = newest_file_since(&log_directory, started) {
                 last_text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1153,10 +1278,9 @@ impl Installer {
             }
             std::thread::sleep(Duration::from_millis(200));
         };
-        if let Some(bytes) = prior_app_id {
-            std::fs::write(&app_id_path, bytes)?;
-        } else {
-            let _ = std::fs::remove_file(&app_id_path);
+        if result.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
         result.with_context(|| {
             latest_log
@@ -1245,6 +1369,10 @@ impl Installer {
             }
             let _ = std::fs::remove_file(runtime);
         }
+        // Also clean a stale alpha runtime if a hand-edited or partial manifest
+        // no longer references it directly.
+        let legacy_runtime = self.data_dir.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
+        let _ = std::fs::remove_file(legacy_runtime);
         if apply_platform_changes {
             let _ = self.unregister_uninstall();
         }
@@ -1340,7 +1468,7 @@ impl Installer {
         F: FnMut(OperationProgress),
     {
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, WAIT_OBJECT_0},
+            Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0},
             System::Threading::{GetExitCodeProcess, WaitForSingleObject},
             UI::{
                 Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
@@ -1367,6 +1495,7 @@ impl Installer {
         };
         if unsafe { ShellExecuteExW(&mut info) } == 0 || info.hProcess.is_null() {
             let error = std::io::Error::last_os_error();
+            let _ = std::fs::remove_file(status_path);
             bail!("administrator approval was cancelled or Windows could not start the helper: {error}");
         }
         let mut last = None;
@@ -1385,11 +1514,22 @@ impl Installer {
             if wait == WAIT_OBJECT_0 {
                 break;
             }
+            if wait == WAIT_FAILED {
+                let error = std::io::Error::last_os_error();
+                unsafe { CloseHandle(info.hProcess) };
+                let _ = std::fs::remove_file(status_path);
+                bail!("waiting for the administrator helper failed: {error}");
+            }
         }
         let mut code = 1u32;
+        let read_exit_code = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
+        let exit_code_error = (read_exit_code == 0).then(std::io::Error::last_os_error);
         unsafe {
-            GetExitCodeProcess(info.hProcess, &mut code);
             CloseHandle(info.hProcess);
+        }
+        if let Some(error) = exit_code_error {
+            let _ = std::fs::remove_file(status_path);
+            bail!("reading the administrator helper result failed: {error}");
         }
         if code != 0 {
             let detail = last_event
@@ -1570,6 +1710,44 @@ fn validate_staged_payload(directory: &Path, distribution: Distribution) -> Resu
             bail!("staged adapter is missing {relative}");
         }
     }
+    validate_online_recovery_contract(directory)?;
+    Ok(())
+}
+
+/// The installer is the public distribution boundary, so verify the staged
+/// Lua has the recovery behavior that prevents host/join actions hanging after
+/// an IPC loss. Hash checks catch corruption; these markers catch stale builds.
+fn validate_online_recovery_contract(directory: &Path) -> Result<()> {
+    let contracts = [
+        ("bbt/core.lua", "pendingRequestDeadlineMs"),
+        ("bbt/core.lua", "message.type == 'runtime.disconnected'"),
+        ("bbt/core.lua", "CLIENT_INSTANCE_ID"),
+        ("bbt/core.lua", "BBT.send('client.ping'"),
+        ("bbt/core.lua", "message.type == 'runtime.heartbeat'"),
+        ("bbt/ipc_thread.lua", "runtime.disconnected"),
+        ("bbt/ipc_thread.lua", "launchAttempts"),
+        ("bbt/ipc_thread.lua", "CreateProcessA"),
+        ("lovely/hooks.toml", "loc.json.bbtOnline"),
+        (
+            "bbt/online_state.lua",
+            "Room password must contain 4-128 characters.",
+        ),
+        (
+            "bbt/online_state.lua",
+            "love.graphics.printf(BBT.lastError,74,239,452,'center')",
+        ),
+        ("bbt/online_state.lua", "ROOM ADDRESS"),
+        ("bbt/online_state.lua", "actualFps"),
+        ("bbt/renderer.lua", "readbackPending = {false,false}"),
+        ("bbt/renderer.lua", "Renderer.frames.pointer + 32"),
+    ];
+    for (relative, marker) in contracts {
+        let source = std::fs::read_to_string(directory.join(relative))
+            .with_context(|| format!("read staged recovery module {relative}"))?;
+        if !source.contains(marker) {
+            bail!("staged payload is missing Online recovery contract in {relative}: {marker}");
+        }
+    }
     Ok(())
 }
 
@@ -1595,12 +1773,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temporary, bytes)?;
-    let replace = (|| -> std::io::Result<()> {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        std::fs::rename(&temporary, path)
-    })();
+    let replace = crate::exports::replace_file(&temporary, path);
     if replace.is_err() {
         // Failed replacements must not strand payload bytes beside the target.
         // This is especially important when a damaged install has a directory
@@ -1953,8 +2126,8 @@ mod tests {
     }
 
     #[test]
-    fn detector_accepts_reference_game_shape() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.reference/Beatblock");
+    fn detector_accepts_isolated_test_game_shape() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock");
         assert!(validate_game_directory(&root).is_ok());
         assert_eq!(
             sha256_file(&root.join("Beatblock.exe")).unwrap(),
@@ -2015,7 +2188,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(game.join("version.dll"), LOVELY_PAYLOAD).unwrap();
-        let runtime = data.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime = data.join("runtime").join(RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, RUNTIME_PAYLOAD).unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
@@ -2113,6 +2286,9 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(game.join("version.dll"), b"existing Lovely").unwrap();
         std::fs::write(data.join("runtime.sqlite3"), b"history").unwrap();
+        let legacy_runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
+        std::fs::create_dir_all(legacy_runtime.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_runtime, b"legacy runtime").unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
 
         let rejected = installer.install_with_progress_platform(
@@ -2125,6 +2301,7 @@ mod tests {
         );
         assert!(rejected.unwrap_err().to_string().contains("not certified"));
         assert!(!mods.join("BeatblockTogether").exists());
+        assert!(legacy_runtime.is_file());
 
         let mut progress = Vec::new();
         let manifest = install_isolated(
@@ -2136,9 +2313,15 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.distribution, Distribution::Standalone);
         assert!(!manifest.firewall_installed);
+        assert!(!legacy_runtime.exists());
+        assert!(data.join("runtime").join(RUNTIME_FILE_NAME).is_file());
         assert!(mods
             .join("BeatblockTogether/bbt/dashboard_model.lua")
             .is_file());
+        let installed_core =
+            std::fs::read_to_string(mods.join("BeatblockTogether/bbt/core.lua")).unwrap();
+        assert!(installed_core.contains("pendingRequestDeadlineMs"));
+        assert!(installed_core.contains("runtime.disconnected"));
         assert!(mods
             .join("BeatblockTogether/lovely/bootstrap.toml")
             .is_file());
@@ -2151,12 +2334,12 @@ mod tests {
         assert_eq!(progress.iter().filter(|event| event.terminal).count(), 1);
 
         std::fs::write(
-            mods.join("BeatblockTogether/bbt/dashboard_model.lua"),
-            b"corrupt",
+            mods.join("BeatblockTogether/bbt/core.lua"),
+            b"stale Online command lifecycle",
         )
         .unwrap();
         std::fs::write(
-            data.join("runtime/BeatblockTogetherRuntime.exe"),
+            data.join("runtime").join(RUNTIME_FILE_NAME),
             b"corrupt runtime",
         )
         .unwrap();
@@ -2177,11 +2360,11 @@ mod tests {
             1
         );
         assert!(file_matches(
-            &mods.join("BeatblockTogether/bbt/dashboard_model.lua"),
-            include_bytes!("../../mod/shared/bbt/dashboard_model.lua")
+            &mods.join("BeatblockTogether/bbt/core.lua"),
+            include_bytes!("../../mod/shared/bbt/core.lua")
         ));
         assert!(file_matches(
-            &data.join("runtime/BeatblockTogetherRuntime.exe"),
+            &data.join("runtime").join(RUNTIME_FILE_NAME),
             RUNTIME_PAYLOAD
         ));
         assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
@@ -2218,7 +2401,8 @@ mod tests {
             b"existing Lovely"
         );
         assert!(!data.join("install-manifest.json").exists());
-        assert!(!data.join("runtime/BeatblockTogetherRuntime.exe").exists());
+        assert!(!data.join("runtime").join(RUNTIME_FILE_NAME).exists());
+        assert!(!legacy_runtime.exists());
         assert!(!installed_obs.exists());
         assert!(data.join("runtime.sqlite3").is_file());
         let _ = std::fs::remove_dir_all(root);
@@ -2235,7 +2419,7 @@ mod tests {
         std::fs::create_dir_all(game.join("version.dll")).unwrap();
         std::fs::create_dir_all(mods.join("BeatblockTogether")).unwrap();
         std::fs::write(mods.join("BeatblockTogether/previous.txt"), b"previous mod").unwrap();
-        let runtime = data.join("runtime/BeatblockTogetherRuntime.exe");
+        let runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, b"previous runtime").unwrap();
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
@@ -2421,6 +2605,19 @@ mod tests {
     }
 
     #[test]
+    fn embedded_mod_payload_contains_online_recovery_contracts() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-recovery-contract-{}", rand::random::<u64>()));
+        for (relative, bytes) in SHARED_MOD_PAYLOAD {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        validate_online_recovery_contract(&root).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn progress_is_monotonic_and_has_one_terminal_result() {
         let mut events = vec![
             OperationProgress::step(OperationKind::Install, "validation", 3, "validate"),
@@ -2487,6 +2684,26 @@ mod tests {
         let source = include_str!("../../obs-plugin/src/plugin.c");
         assert!(source.contains(r"BeatblockTogether\\BeatblockTogether\\data\\render-streams"));
         assert!(source.contains("beatblock_together_player_stream"));
+        let stale_cleanup = source
+            .split("static void clear_stale_resources")
+            .nth(1)
+            .and_then(|source| source.split("static const char").next())
+            .expect("OBS source contains stale-texture cleanup");
+        assert!(
+            !stale_cleanup.contains("ctx->sequence = 0"),
+            "stale cleanup must not republish and recreate the abandoned texture"
+        );
+        assert!(stale_cleanup.contains("retry_frame_mapping_later(ctx)"));
+        assert!(stale_cleanup.contains("clear_video_frame(ctx)"));
+        let frame_cleanup = source
+            .split("static void clear_video_frame")
+            .nth(1)
+            .and_then(|source| source.split("static void clear_stale_resources").next())
+            .expect("OBS source contains frame-buffer cleanup");
+        assert!(
+            frame_cleanup.contains("ctx->pixel_capacity = 0"),
+            "stale cleanup must release its retained CPU frame buffer"
+        );
     }
 
     #[test]
@@ -2510,6 +2727,26 @@ mod tests {
                 r"C:\ProgramData\obs-studio\plugins\beatblock-together-obs\data\locale\en-US.ini"
             )
         );
+    }
+
+    #[test]
+    fn staged_obs_install_rolls_back_until_core_transaction_commits() {
+        let root = std::env::temp_dir().join(format!("bbt-obs-atomic-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let obs = root.join("obs-studio");
+        let program_data = root.join("ProgramData");
+        std::fs::create_dir_all(obs.join("bin/64bit")).unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), root.join("mods"));
+        let (plugin, _) = obs_program_data_paths(&program_data);
+        std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+        std::fs::write(&plugin, b"previous plugin").unwrap();
+
+        let transaction = installer.stage_obs_plugin_into(obs, &program_data).unwrap();
+        assert!(file_matches(&plugin, OBS_PLUGIN_PAYLOAD));
+        drop(transaction);
+        assert_eq!(std::fs::read(&plugin).unwrap(), b"previous plugin");
+        assert!(!data.join("obs-install.json").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

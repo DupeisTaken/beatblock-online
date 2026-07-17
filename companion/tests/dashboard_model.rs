@@ -58,6 +58,10 @@ assert(Dashboard.primary({runtimeReady=true,room=lobby('set_complete',chart,{hos
 local summary=Dashboard.summary({room=lobby('forming',chart,{host,ready,spectator,pending})})
 assert(summary.players==2 and summary.spectators==1 and summary.pending==1)
 assert(summary.ready==2 and summary.verified==2 and summary.allReady==true)
+ready.connected=false
+summary=Dashboard.summary({room=lobby('forming',chart,{host,ready,spectator,pending})})
+assert(summary.players==1 and summary.ready==1 and summary.verified==1 and summary.allReady==true)
+ready.connected=true
 assert(Dashboard.participantStatus(pending)=='PENDING')
 local selection,offset=Dashboard.scroll(8,0,16,1,8)
 assert(selection==9 and offset==1)
@@ -77,7 +81,7 @@ assert(title=='PLAY ONLINE' and string.find(copy,'direct%-IP'))
 
 fn execute(source: &str) {
     let library_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.reference/Beatblock/lua51.dll");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock/lua51.dll");
     let wide = library_path
         .as_os_str()
         .encode_wide()

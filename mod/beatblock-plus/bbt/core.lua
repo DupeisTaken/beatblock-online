@@ -16,6 +16,7 @@ local BBT = {
   chartVerified = false,
   selectingOnlineChart = false,
   chartSelectionMode = nil,
+  chartSelectionPrevious = nil,
   lastError = nil,
   launching = false,
   clockSynchronized = false,
@@ -27,6 +28,13 @@ local BBT = {
 }
 
 local SUPPORTED_GAME_BUILD = 'c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b'
+local CLIENT_INSTANCE_ID = tostring(os.time())..'-'..tostring(math.random(100000,999999))
+local DEFAULT_COMMAND_TIMEOUT_MS = 10000
+local COMMAND_TIMEOUT_MS = {
+  ['room.host_request'] = 12000,
+  ['room.join_request'] = 20000,
+  ['runtime.restart_request'] = 15000,
+}
 
 local function nowMs()
   return os.time() * 1000
@@ -92,13 +100,30 @@ function BBT.send(kind, payload)
 end
 
 function BBT.command(kind, payload)
+  if BBT.pendingRequestId and kind ~= 'runtime.session_end' then
+    BBT.lastError = 'Please wait for the current Online action to finish.'
+    return nil
+  end
   BBT.lastError = nil
   payload = payload or {}
   BBT.requestSequence = BBT.requestSequence + 1
-  local requestId = 'game-' .. tostring(BBT.requestSequence)
+  local requestId = CLIENT_INSTANCE_ID .. '-' .. tostring(BBT.requestSequence)
   payload.requestId = requestId
   BBT.pendingRequestId = requestId
+  BBT.pendingRequestKind = kind
+  BBT.pendingRequestProgress = nil
+  BBT.pendingRequestDeadlineMs = monotonicMs() + (COMMAND_TIMEOUT_MS[kind] or DEFAULT_COMMAND_TIMEOUT_MS)
   BBT.send(kind, payload)
+  return requestId
+end
+
+-- Every command has exactly one terminal state. Centralizing cleanup prevents
+-- a lost transport, timeout, or late reply from leaving Online permanently busy.
+local function clearPendingRequest()
+  BBT.pendingRequestId = nil
+  BBT.pendingRequestKind = nil
+  BBT.pendingRequestDeadlineMs = nil
+  BBT.pendingRequestProgress = nil
 end
 
 -- The native engine is deliberately lazy: normal Beatblock menus never start it.
@@ -107,6 +132,7 @@ function BBT.startOnlineRuntime()
   BBT.sessionActive = true
   BBT.companionConnected = false
   BBT.runtimeStarting = true
+  clearPendingRequest()
   love.thread.getChannel('bbt_ipc_control'):clear()
   love.thread.getChannel('bbt_outbound'):clear()
   love.thread.getChannel('bbt_inbound'):clear()
@@ -126,7 +152,7 @@ function BBT.startOnlineRuntime()
     local pathChannel = love.thread.getChannel('bbt_mod_path')
     pathChannel:clear(); pathChannel:push(BBT.modPath)
     thread:start()
-    BBT.send('client.hello', { clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = BBT.distribution, mods = {} })
+    BBT.send('client.hello', { instanceId=CLIENT_INSTANCE_ID, clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = BBT.distribution, mods = {} })
   else
     BBT.sessionActive = false
     BBT.lastError = 'Could not start the Beatblock Together runtime IPC: ' .. tostring(thread)
@@ -140,6 +166,7 @@ function BBT.exitOnline()
   -- expendable once the user explicitly leaves Online.
   love.thread.getChannel('bbt_outbound'):clear()
   BBT.command('runtime.session_end', {})
+  clearPendingRequest()
   BBT.sessionActive = false
   BBT.connected = false
   BBT.companionConnected = false
@@ -178,8 +205,16 @@ function BBT.isOrganizer()
 end
 
 function BBT.openChartSelect(mode)
+  if BBT.pendingRequestId then
+    BBT.lastError = 'Wait for the current Online action before selecting a chart.'
+    return
+  end
   BBT.selectingOnlineChart = true
   BBT.chartSelectionMode = mode or 'verify'
+  BBT.chartSelectionPrevious = BBT.chartSelectionMode == 'setlist' and {
+    chart = BBT.localChart,
+    verified = BBT.chartVerified,
+  } or nil
   local previous = cs
   local menuMusicManager = previous and previous.menuMusicManager
   cs = bs.load('SongSelect')
@@ -194,47 +229,61 @@ end
 
 local expectedMaxHits
 
+local function chartPreloadReady(levelData, soundData)
+  if not levelData or not levelData.events then return false end
+  for _, event in ipairs(levelData.events) do
+    if event.type == 'play' then return soundData ~= nil and soundData ~= false end
+  end
+  return true
+end
+
 function BBT.openOfficialSelect(mode)
+  if BBT.pendingRequestId then
+    BBT.lastError = 'Wait for the current Online action before selecting a chart.'
+    return
+  end
+  -- Freeplay's SongSelect owns one coherent chart/audio preload pair. Atom
+  -- Map's asynchronous quark state cannot be transferred safely into an
+  -- independently scheduled online launch.
+  BBT.selectingOnlineChart = true
   BBT.selectingOfficialChart = true
   BBT.chartSelectionMode = mode or 'verify'
+  BBT.chartSelectionPrevious = BBT.chartSelectionMode == 'setlist' and {
+    chart = BBT.localChart,
+    verified = BBT.chartVerified,
+  } or nil
   local previous = cs
   local music = previous and previous.menuMusicManager
-  cs = bs.load('AtomMap')
+  cs = bs.load('SongSelect')
   if previous and previous.leave then previous:leave() end
+  if music then music:clearOnBeatHooks() end
   cs.menuMusicManager = music
+  cs.topDirectory = 'levels/Songwheel/'
+  cs.allowEditor = false
+  cs.bbtOnlineSelection = true
   cs:init()
 end
 
-function BBT.onOfficialChartSelected(selector, filename, variant)
-  if not BBT.selectingOfficialChart then return false end
-  local selected = selector.activeQuark
-  local level = selected and selected.level
-  local variantName = variant and (variant.name or variant.display) or selected and selected.currVariant and (selected.currVariant.name or selected.currVariant.display) or 'Default'
-  BBT.localChart = {
-    levelPath = filename,
-    variantName = variantName,
-    variantInfo = variant or (selected and selected.currVariant),
-    levelData = level,
-    songName = level and level.metadata and level.metadata.songName or filename,
-    expectedMaxHits = expectedMaxHits(level) or 1,
-    official = true,
-  }
-  BBT.chartVerified = false
-  BBT.selectingOfficialChart = false
-  BBT.command((BBT.chartSelectionMode == 'host' or BBT.chartSelectionMode == 'setlist') and 'room.official_chart_select' or 'room.official_chart_verify', {
-    chartId = filename,
-    songName = BBT.localChart.songName,
-    variant = variantName,
-    expectedMaxHits = BBT.localChart.expectedMaxHits,
-    appendToSetlist = BBT.chartSelectionMode == 'setlist',
-  })
-  BBT.chartSelectionMode = nil
-  local music = selector.menuMusicManager
-  if selector.source then selector.source:stop(); selector.source = nil end
+-- SongSelect normally returns to the main menu. Online selection owns the
+-- state, so both success and cancellation return to the same room.
+local function returnFromChartSelector(selector)
+  local music = selector and selector.menuMusicManager
+  if selector and selector.source then selector.source:stop(); selector.source = nil end
+  if selector and selector.resetLevelPreload then pcall(selector.resetLevelPreload, selector) end
+  if selector and selector.deletePlayer then pcall(selector.deletePlayer, selector) end
   if music then music:clearOnBeatHooks(); music:forceUnmute() end
   cs = bs.load('Online')
   cs.menuMusicManager = music
   cs:init()
+end
+
+function BBT.cancelChartSelection(selector)
+  if not BBT.selectingOnlineChart and not BBT.selectingOfficialChart then return false end
+  BBT.selectingOnlineChart = false
+  BBT.selectingOfficialChart = false
+  BBT.chartSelectionMode = nil
+  BBT.chartSelectionPrevious = nil
+  returnFromChartSelector(selector)
   return true
 end
 
@@ -266,11 +315,17 @@ expectedMaxHits = function(levelData)
 end
 
 function BBT.onChartSelected(selector, levelPath, variantName)
-  local menuMusicManager = selector.menuMusicManager
   local item = selector.menuItems and selector.menuItems[selector.selection]
-  if not item then BBT.lastError = 'Beatblock did not expose the selected chart'; return end
+  if not item then
+    BBT.cancelChartSelection(selector)
+    BBT.lastError = 'Beatblock did not expose the selected chart'
+    return
+  end
+  local officialSelection = BBT.selectingOfficialChart
+  local selectionMode = BBT.chartSelectionMode
+  local previousSelection = BBT.chartSelectionPrevious
   local variantInfo = selector.getVariantInfo and selector:getVariantInfo(item, variantName) or nil
-  local packagePath = selectedPackagePath(levelPath)
+  local packagePath = not officialSelection and selectedPackagePath(levelPath) or nil
   BBT.localChart = {
     levelPath = levelPath,
     packagePath = packagePath,
@@ -280,33 +335,45 @@ function BBT.onChartSelected(selector, levelPath, variantName)
     soundData = selector.preloadSoundData,
     songName = item.name or (item.rawMetadata and item.rawMetadata.songName) or 'Unknown chart',
     expectedMaxHits = expectedMaxHits(selector.levelData),
+    official = officialSelection,
   }
   BBT.chartVerified = false
   BBT.selectingOnlineChart = false
-  if packagePath and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
-    BBT.command((BBT.chartSelectionMode == 'host' or BBT.chartSelectionMode == 'setlist') and 'room.chart_select_request' or 'room.chart_verify_request', {
+  BBT.selectingOfficialChart = false
+  local selectionError
+  local preloadReady = chartPreloadReady(BBT.localChart.levelData, BBT.localChart.soundData)
+  if officialSelection and preloadReady and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
+    BBT.command((selectionMode == 'host' or selectionMode == 'setlist') and 'room.official_chart_select' or 'room.official_chart_verify', {
+      chartId = levelPath,
+      songName = BBT.localChart.songName,
+      variant = BBT.localChart.variantName,
+      expectedMaxHits = BBT.localChart.expectedMaxHits,
+      appendToSetlist = selectionMode == 'setlist',
+    })
+  elseif packagePath and preloadReady and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
+    BBT.command((selectionMode == 'host' or selectionMode == 'setlist') and 'room.chart_select_request' or 'room.chart_verify_request', {
       path = packagePath,
       levelPath = levelPath,
       songName = BBT.localChart.songName,
       variant = BBT.localChart.variantName,
       expectedMaxHits = BBT.localChart.expectedMaxHits,
-      appendToSetlist = BBT.chartSelectionMode == 'setlist',
+      appendToSetlist = selectionMode == 'setlist',
     })
-  elseif packagePath then
-    BBT.lastError = 'Chart notes were not preloaded; wait for the song preview and select it again'
+  elseif (officialSelection or packagePath) and not preloadReady then
+    selectionError = 'Chart audio is still loading; wait for the Freeplay preview and select it again'
+  elseif officialSelection or packagePath then
+    selectionError = 'Chart notes were not preloaded; wait for the Freeplay preview and select it again'
   else
-    BBT.lastError = 'Could not resolve the selected level package on disk'
+    selectionError = 'Could not resolve the selected level package on disk'
+  end
+  if selectionMode == 'setlist' and previousSelection and previousSelection.chart then
+    BBT.localChart = previousSelection.chart
+    BBT.chartVerified = previousSelection.verified
   end
   BBT.chartSelectionMode = nil
-  if selector.source then selector.source:stop(); selector.source = nil end
-  if selector.deletePlayer then selector:deletePlayer() end
-  if menuMusicManager then
-    menuMusicManager:clearOnBeatHooks()
-    menuMusicManager:forceUnmute()
-  end
-  cs = bs.load('Online')
-  cs.menuMusicManager = menuMusicManager
-  cs:init()
+  BBT.chartSelectionPrevious = nil
+  returnFromChartSelector(selector)
+  if selectionError then BBT.lastError = selectionError end
 end
 
 function BBT.maybeLaunchScheduledChart()
@@ -318,6 +385,16 @@ function BBT.maybeLaunchScheduledChart()
   returnData = { state = 'Online', vars = {} }
   local previous = cs
   cs = bs.load('Game')
+  -- Online owns the menu manager and may retain a selector preview source.
+  -- Stop both before Game init so intro/menu audio cannot leak into the chart.
+  if previous and previous.source then
+    pcall(previous.source.stop, previous.source)
+    previous.source = nil
+  end
+  if previous and previous.menuMusicManager then
+    previous.menuMusicManager:clearOnBeatHooks()
+    previous.menuMusicManager:stop()
+  end
   if GameManager and GameManager.transferStateData and previous then
     GameManager:transferStateData(cs, previous)
   end
@@ -430,7 +507,8 @@ local function handleCommand(raw)
     BBT.lastError = 'Incompatible runtime protocol. Re-run the Beatblock Together installer.'
     return
   end
-  if message.type ~= 'runtime.launch_status' and message.type ~= 'runtime.error' then
+  BBT.runtimeLastSeenMs = monotonicMs()
+  if message.type ~= 'runtime.launch_status' and message.type ~= 'runtime.error' and message.type ~= 'runtime.disconnected' then
     BBT.companionConnected = true
   end
   if message.type == 'room.context' or message.type == 'lobby.context' then
@@ -443,8 +521,10 @@ local function handleCommand(raw)
     BBT.context.sessionId = message.payload.sessionId or BBT.context.sessionId
     BBT.context.role = message.payload.role or BBT.context.role
     BBT.companionConnected = true
-    BBT.connected = message.payload.connection == 'hosting' or message.payload.connection == 'connected'
+    BBT.connectionStatus = message.payload.connection or 'offline'
+    BBT.connected = BBT.connectionStatus == 'hosting' or BBT.connectionStatus == 'connected'
     BBT.runtimeStarting = false
+    BBT.runtimeLaunchStatus = nil
     if message.payload.runtimeTimeMs then
       BBT.serverMonotonicOffsetMs = message.payload.runtimeTimeMs - monotonicMs()
       BBT.clockSynchronized = true
@@ -459,13 +539,21 @@ local function handleCommand(raw)
   elseif message.type == 'room.snapshot' or message.type == 'lobby.snapshot' then
     BBT.lastLobby = message.payload
     BBT.connected = message.payload.lifecycle ~= 'closed' and message.payload.id ~= 'offline'
+    if BBT.connected then
+      local player=BBT.currentPlayer()
+      BBT.connectionStatus=player and player.sessionId==message.payload.hostSessionId and 'hosting' or 'connected'
+      if player then BBT.context.sessionId=player.sessionId end
+    else
+      BBT.connectionStatus='offline'
+    end
     BBT.context.lobbyId = message.payload.id or BBT.context.lobbyId
     BBT.context.lobbyName = message.payload.name or BBT.context.lobbyName
-    BBT.scheduledStartTimeMs = message.payload.scheduledStartTimeMs or BBT.scheduledStartTimeMs
+    BBT.scheduledStartTimeMs = message.payload.scheduledStartTimeMs
     if message.payload.chart then
       BBT.chartVerified = BBT.localChart ~= nil
         and BBT.localChart.hash == message.payload.chart.hash
         and BBT.localChart.variantName == message.payload.chart.variant
+        and BBT.localChart.expectedMaxHits == message.payload.chart.expectedMaxHits
     else
       BBT.chartVerified = false
     end
@@ -484,17 +572,42 @@ local function handleCommand(raw)
     BBT.renderers = message.payload.renderers or {}
     BBT.history = message.payload.history or {}
     BBT.settings = message.payload.settings or BBT.settings
+    BBT.connectionStatus = message.payload.connection or BBT.connectionStatus
+    BBT.connected = BBT.connectionStatus == 'hosting' or BBT.connectionStatus == 'connected'
+    BBT.context.sessionId = message.payload.sessionId or BBT.context.sessionId
     if BBT.settings and BBT.settings.hudEnabled ~= nil then BBT.hudEnabled = BBT.settings.hudEnabled == true end
     BBT.diagnostics = message.payload.diagnostics or BBT.diagnostics
+  elseif message.type == 'runtime.heartbeat' then
+    BBT.runtimeLastSeenMs = monotonicMs()
   elseif message.type == 'renderer.snapshot' then
     BBT.renderers = message.payload.renderers or BBT.renderers
     BBT.diagnostics = BBT.diagnostics or {}
     BBT.diagnostics.rendererBudgetWarning = message.payload.budgetWarning
+  elseif message.type == 'control.progress' then
+    if message.payload.requestId == BBT.pendingRequestId then
+      BBT.pendingRequestProgress = message.payload.stage or message.payload.message
+    end
   elseif message.type == 'control.ack' then
-    if message.payload.requestId == BBT.pendingRequestId then BBT.pendingRequestId = nil end
+    if message.payload.requestId == BBT.pendingRequestId then
+      BBT.lastCompletedRequestId = BBT.pendingRequestId
+      clearPendingRequest()
+    end
   elseif message.type == 'runtime.error' or message.type == 'control.error' then
     BBT.lastError = message.payload.message or 'The runtime rejected the command'
     if message.type == 'runtime.error' then BBT.runtimeStarting = false end
+    if message.payload.requestId and message.payload.requestId == BBT.pendingRequestId then
+      clearPendingRequest()
+    end
+  elseif message.type == 'runtime.disconnected' then
+    BBT.companionConnected = false
+    BBT.connected = false
+    BBT.runtimeStarting = true
+    BBT.connectionStatus = 'reconnecting'
+    BBT.runtimeLaunchStatus = message.payload.phase or 'runtime disconnected; reconnecting'
+    if BBT.pendingRequestId then
+      BBT.lastError = message.payload.message or 'The runtime disconnected before the Online action completed. Reconnecting; please retry.'
+      clearPendingRequest()
+    end
   elseif message.type == 'runtime.launch_status' then
     BBT.runtimeLaunchStatus = message.payload.phase
   elseif message.type == 'clock.pong' then
@@ -556,11 +669,31 @@ function BBT.update(dt)
   end
   local incoming = love.thread.getChannel('bbt_inbound')
   while incoming:getCount() > 0 do handleCommand(incoming:pop()) end
+  if BBT.pendingRequestId and BBT.pendingRequestDeadlineMs and monotonicMs() >= BBT.pendingRequestDeadlineMs then
+    local kind = BBT.pendingRequestKind or 'Online action'
+    BBT.lastError = kind .. ' did not receive a runtime response. Check the runtime connection and retry.'
+    clearPendingRequest()
+  end
   BBT.snapshotTimer = BBT.snapshotTimer + dt
   BBT.renderTimer = BBT.renderTimer + dt
   BBT.keyframeTimer = BBT.keyframeTimer + dt
-  if BBT.renderTimer >= 1 / 60 then
-    BBT.renderTimer = 0
+  BBT.heartbeatTimer = (BBT.heartbeatTimer or 0) + dt
+  local inGame = cs and cs.level and not cs.results
+  if BBT.heartbeatTimer >= 2 then
+    BBT.heartbeatTimer = BBT.heartbeatTimer - 2
+    BBT.send('client.ping',{instanceId=CLIENT_INSTANCE_ID})
+  end
+  if BBT.companionConnected and BBT.runtimeLastSeenMs and monotonicMs()-BBT.runtimeLastSeenMs>6000 then
+    BBT.companionConnected=false; BBT.connected=false; BBT.connectionStatus='reconnecting'; BBT.runtimeStarting=true
+    BBT.runtimeLaunchStatus='runtime heartbeat lost; reconnecting'
+    if BBT.pendingRequestId then BBT.lastError='The runtime stopped responding. Reconnecting; please retry.'; clearPendingRequest() end
+  end
+  -- A renderer needs exact 60 Hz input while playing, but idle Online screens
+  -- only need an occasional held-state sample. Avoid serializing and parsing
+  -- ninety JSON envelopes per second when no chart is active.
+  local renderInterval = inGame and 1 / 60 or 1 / 5
+  if BBT.renderTimer >= renderInterval then
+    BBT.renderTimer = math.min(BBT.renderTimer - renderInterval, renderInterval)
     local tapMask = 0
     if maininput and maininput.down then
       local ok1, down1 = pcall(maininput.down, maininput, 'tap1')
@@ -574,13 +707,15 @@ function BBT.update(dt)
     BBT.send('render.sample', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, tapMask = tapMask, flags = flags })
   end
   if BBT.keyframeTimer >= 1 then
-    BBT.keyframeTimer = 0
+    BBT.keyframeTimer = math.min(BBT.keyframeTimer - 1, 1)
     BBT.send('render.keyframe', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, totals = totals(), activeNotes = cs and cs.notes and #cs.notes or 0 })
   end
-  if BBT.snapshotTimer < 1 / 30 then return end
-  BBT.snapshotTimer = 0
+  -- Score mutations remain event-driven. Fifteen gameplay snapshots per second
+  -- are enough for overlays; idle screens publish only a two-Hz liveness state.
+  local snapshotInterval = inGame and 1 / 15 or 1 / 2
+  if BBT.snapshotTimer < snapshotInterval then return end
+  BBT.snapshotTimer = math.min(BBT.snapshotTimer - snapshotInterval, snapshotInterval)
   local current = totals()
-  local inGame = cs and cs.level and not cs.results
   local runReady = inGame and current.maxHits > 0
   if runReady and not BBT.wasRunReady then
     BBT.launching = false

@@ -44,3 +44,16 @@ pub async fn map_host_port(port: u16) -> Result<PortMapping> {
         lease_seconds,
     })
 }
+
+/// Best-effort counterpart to `map_host_port`. The finite lease remains the
+/// crash fallback, while orderly room exits release the router allocation
+/// immediately so rapid re-hosting cannot leave stale forwards behind.
+pub async fn unmap_host_port(port: u16) -> Result<()> {
+    let gateway = search_gateway(SearchOptions::default())
+        .await
+        .context("no UPnP Internet Gateway Device answered cleanup discovery")?;
+    gateway
+        .remove_port(PortMappingProtocol::UDP, port)
+        .await
+        .context("router rejected removal of the UPnP UDP mapping")
+}

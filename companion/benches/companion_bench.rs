@@ -65,6 +65,7 @@ async fn main() {
 
     let state = app(root.clone());
     let mut export_ms = Vec::with_capacity(250);
+    let mut export_enqueue_ms = Vec::with_capacity(250);
     for sequence in 0..250 {
         let started = Instant::now();
         state
@@ -81,8 +82,19 @@ async fn main() {
             ))
             .await
             .unwrap();
-        export_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+        export_enqueue_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+        // Measure completed publication in realistic coalesced batches instead
+        // of reporting only the near-zero queueing time as filesystem latency.
+        if sequence % 10 == 9 {
+            let started = Instant::now();
+            state.exports.flush();
+            export_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+        }
     }
+    let exported: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("exports/gameplay.json")).unwrap())
+            .unwrap();
+    assert_eq!(exported["combo"], 249);
 
     let journal_started = Instant::now();
     for sequence in 0..5_000 {
@@ -95,16 +107,37 @@ async fn main() {
             .await
             .unwrap();
     }
+    state.journals.flush();
     let journal_seconds = journal_started.elapsed().as_secs_f64();
     let recovered = state.journal_events();
     assert_eq!(recovered.len(), 5_000);
 
     let mut p95_values = export_ms.clone();
     let export_p95_ms = percentile(&mut p95_values, 0.95);
+    let mut enqueue_p95_values = export_enqueue_ms.clone();
+    let export_enqueue_p95_ms = percentile(&mut enqueue_p95_values, 0.95);
     let journal_events_per_second = 5_000.0 / journal_seconds;
-    let passed = cached_ms < cold_ms && export_p95_ms < 100.0 && journal_events_per_second > 100.0;
+    let sqlite_started = Instant::now();
+    for sequence in 0..5_000 {
+        let mut event = envelope(
+            "run.score_delta",
+            sequence,
+            json!({"lobbyId":"lobby-1","runId":"run-1","runSequence":sequence}),
+        );
+        event.run_id = Some("run-1".into());
+        state.storage.queue_event("lobby-1", &event).unwrap();
+    }
+    state.storage.flush_pending_events().unwrap();
+    let sqlite_seconds = sqlite_started.elapsed().as_secs_f64();
+    let sqlite_recovered = state.storage.events("lobby-1", "run-1", 0).unwrap();
+    let sqlite_journal_events_per_second = 5_000.0 / sqlite_seconds;
+    assert_eq!(sqlite_recovered.len(), 5_000);
+    let passed = cached_ms < cold_ms
+        && export_p95_ms < 100.0
+        && journal_events_per_second > 100.0
+        && sqlite_journal_events_per_second > 1_000.0;
     let report = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAtMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
         "passed": passed,
         "workload": {"chartBytes": 128 * 32 * 1024, "snapshots": 250, "journalEvents": 5_000},
@@ -114,15 +147,27 @@ async fn main() {
             "chartCacheSpeedup": cold_ms / cached_ms.max(0.001),
             "exportMeanMs": export_ms.iter().sum::<f64>() / export_ms.len() as f64,
             "exportP95Ms": export_p95_ms,
+            "exportEnqueueP95Ms": export_enqueue_p95_ms,
+            "exportFilesWritten": state.exports.completed_writes(),
+            "exportBytesWritten": state.exports.completed_bytes(),
             "journalEventsPerSecond": journal_events_per_second,
-            "journalRecoveredEvents": recovered.len()
+            "journalRecoveredEvents": recovered.len(),
+            "sqliteJournalEventsPerSecond": sqlite_journal_events_per_second,
+            "sqliteJournalRecoveredEvents": sqlite_recovered.len()
         },
-        "thresholds": {"cacheHitFasterThanCold": true, "exportP95Ms": 100, "journalEventsPerSecond": 100}
+        "thresholds": {
+            "cacheHitFasterThanCold": true,
+            "exportP95Ms": 100,
+            "exportFilesWritten": 60,
+            "journalEventsPerSecond": 100,
+            "sqliteJournalEventsPerSecond": 1_000
+        }
     });
     let output = report_path();
     write_report(&output, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
     println!("Report: {}", output.display());
+    drop(state);
     let _ = std::fs::remove_dir_all(root);
     assert!(passed, "companion benchmark thresholds were not met");
 }

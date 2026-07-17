@@ -45,6 +45,7 @@ The Connect state shows Online service status, configured UDP port, localhost AP
 - **Join as Spectator** uses the same form but requests the spectator role.
 
 Room spectators stay on the adaptive Online dashboard and receive live roster, ranking, lifecycle, and result snapshots. They do not launch the competitive chart and do not receive a remote video feed; reconstructed player video is a host-side OBS slot feature.
+
 - **Exit Online** asks for confirmation before terminating session services.
 
 Passwords travel only through the local runtime control channel and the room's password-authenticated handshake. They are never included in room snapshots, join links, exports, or logs.
@@ -75,7 +76,7 @@ Reject, remove, close-room, force-start, history deletion, token rotation, and r
 
 The utility overlays temporarily cover the dashboard. Closing one restores the same roster selection, scroll offset, and room state.
 
-- **Setlist:** lock an Atom Map or custom chart, append official/custom charts, reorder or remove entries, and locate the host's exact chart as a participant.
+- **Setlist:** lock a Freeplay or custom chart, append official/custom charts, reorder or remove entries, and locate the host's exact chart as a participant.
 - **Spectate + OBS:** assign the selected roster participant to stable Stream A-D, choose the featured slot, stop a renderer, and open text exports.
 - **History:** refresh saved summaries, delete a selected result, or prune raw journals older than 30 days while retaining summaries.
 - **Settings:** toggle the gameplay HUD; inspect protocol, runtime, connection, peers, renderer budget, and local API; open logs/exports; rotate the API token; restart the runtime; or open the installer.
@@ -94,6 +95,18 @@ Mouse, keyboard, and controller use one focus order: roster, primary action, con
 
 The minimal gameplay HUD remains enabled by default and shows rank, accuracy delta, link state, and warnings. Disable it from Settings; this does not stop telemetry or OBS exports.
 
+Chart selection becomes authoritative only after both the selected variant's
+event data and any required audio have finished preloading. Official charts use
+Beatblock's Freeplay list (`levels/Songwheel/`), keeping variant resolution,
+event loading, and audio preview in the same SongSelect state. Selecting too
+early returns to Online with a concrete retry message instead of launching a
+Game state that can wait forever. Custom Song Select follows the same
+chart-plus-audio readiness rule.
+
 ## Session shutdown
 
-**Exit Online** closes or leaves the room, stops renderer children, flushes SQLite and exports, shuts down the localhost API, and terminates the hidden runtime. Online Song Select, gameplay, and Results keep the same session alive. If the runtime crashes during a competitive run, the run is invalidated and only one bounded restart is attempted.
+**Exit Online** closes or leaves the room, stops renderer children, flushes SQLite and exports, shuts down the localhost API, and terminates the hidden runtime. Online Song Select, gameplay, and Results keep the same session alive. If the runtime disconnects, the current control action fails immediately, the header switches to reconnecting, and hidden relaunch attempts continue with an eight-second maximum backoff. Control requests also have bounded response deadlines, so a host or join button cannot remain busy indefinitely.
+
+Force Start still launches every verified participant, even when they have not
+readied. An assigned participant that never reaches Game is finalized as DNF
+after a 30-second launch grace period, allowing the room to reach Results.
