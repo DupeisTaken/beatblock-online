@@ -47,6 +47,61 @@ export function inspectZip(buffer, label = 'archive') {
   return { size: buffer.length };
 }
 
+export function listZipEntries(buffer, label = 'archive') {
+  inspectZip(buffer, label);
+
+  // ZIP comments are limited to 65,535 bytes, so the end record must be in
+  // this bounded suffix. Reading the central directory avoids OS-specific
+  // `tar`/`unzip` behavior and does not inflate untrusted archive contents.
+  const minimumRecordSize = 22;
+  const searchStart = Math.max(0, buffer.length - minimumRecordSize - 0xffff);
+  let endOffset = -1;
+  for (let offset = buffer.length - minimumRecordSize; offset >= searchStart; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      endOffset = offset;
+      break;
+    }
+  }
+  if (endOffset < 0) throw new Error(`${label} is missing its ZIP central directory`);
+
+  const commentLength = buffer.readUInt16LE(endOffset + 20);
+  if (endOffset + minimumRecordSize + commentLength !== buffer.length) {
+    throw new Error(`${label} has a malformed ZIP end record`);
+  }
+  const diskNumber = buffer.readUInt16LE(endOffset + 4);
+  const centralDisk = buffer.readUInt16LE(endOffset + 6);
+  const diskEntries = buffer.readUInt16LE(endOffset + 8);
+  const totalEntries = buffer.readUInt16LE(endOffset + 10);
+  if (diskNumber !== 0 || centralDisk !== 0 || diskEntries !== totalEntries) {
+    throw new Error(`${label} uses an unsupported multi-disk ZIP layout`);
+  }
+
+  const centralSize = buffer.readUInt32LE(endOffset + 12);
+  const centralOffset = buffer.readUInt32LE(endOffset + 16);
+  if (centralOffset + centralSize !== endOffset) {
+    throw new Error(`${label} has a malformed ZIP central directory`);
+  }
+
+  const entries = [];
+  let offset = centralOffset;
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (offset + 46 > endOffset || buffer.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error(`${label} has a malformed ZIP directory entry`);
+    }
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const entryCommentLength = buffer.readUInt16LE(offset + 32);
+    const nextOffset = offset + 46 + nameLength + extraLength + entryCommentLength;
+    if (nextOffset > endOffset) {
+      throw new Error(`${label} has a truncated ZIP directory entry`);
+    }
+    entries.push(buffer.toString('utf8', offset + 46, offset + 46 + nameLength));
+    offset = nextOffset;
+  }
+  if (offset !== endOffset) throw new Error(`${label} has unparsed ZIP directory data`);
+  return entries;
+}
+
 export async function verifyRelease({ pePaths, zipPaths, checksumPaths, checksumPath }) {
   for (const path of pePaths) {
     inspectPe(await readFile(path), basename(path));

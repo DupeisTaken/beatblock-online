@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { listZipEntries } from './verify-release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(resolve(root, path), 'utf8');
@@ -291,7 +291,11 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
     root,
     `mod/releases/beatblock-together-${distribution}-0.3.0-alpha.1.zip`,
   );
-  const entries = execFileSync('tar', ['-tf', archive], { encoding: 'utf8' });
+  const entries = new Set(
+    listZipEntries(await readFile(archive), `${distribution} release ZIP`).map((entry) =>
+      entry.replaceAll('\\', '/'),
+    ),
+  );
   const prefix = 'BeatblockTogether/';
   const distributionFiles =
     distribution === 'standalone'
@@ -305,7 +309,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
     'lovely/hooks.toml',
     ...distributionFiles,
   ]) {
-    if (!entries.replaceAll('\\', '/').includes(prefix + required))
+    if (!entries.has(prefix + required))
       throw new Error(`${distribution} release ZIP is missing ${required}`);
   }
 }
