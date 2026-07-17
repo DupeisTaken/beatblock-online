@@ -68,6 +68,11 @@ end
 function Renderer.shutdown()
   unmapFile(Renderer.inputs)
   unmapFile(Renderer.frames)
+  -- Drop pending GPU readbacks and canvases when initialization fails. Normal
+  -- renderer termination is process-scoped, but this path must not retain
+  -- graphics resources while the hidden child is waiting to exit.
+  Renderer.readbackPending = {false,false}
+  Renderer.readbackRequests = {nil,nil}
   Renderer.inputs, Renderer.frames, Renderer.outputs = nil, nil, nil
   Renderer.active = false
 end
@@ -95,6 +100,9 @@ function Renderer.init()
   end
   if Renderer.fps ~= 30 and Renderer.fps ~= 60 then
     return failInitialization('renderer FPS must be 30 or 60')
+  end
+  if Renderer.mode ~= 'clean' and Renderer.mode ~= 'full' then
+    return failInitialization('renderer mode must be clean or full')
   end
   Renderer.frameSize = Renderer.width * Renderer.height * 4
   Renderer.frameInterval = 1 / math.max(1, Renderer.fps)
@@ -189,26 +197,29 @@ function Renderer.tapInputs()
     Renderer.tapMask == 0 and Renderer.previousTapMask ~= 0
 end
 
-local function drawClean()
-  love.graphics.clear(0.025, 0.04, 0.075, 1)
-  love.graphics.push()
-  love.graphics.scale(Renderer.width / project.res.x, Renderer.height / project.res.y)
-  love.graphics.setColor(.2, .3, .45, 1)
-  love.graphics.setLineWidth(3)
-  local radius = math.min(project.res.x, project.res.y) * .28
-  love.graphics.circle('line', project.res.cx, project.res.cy, radius)
-  local groups = {{cs and cs.notes, {.35,.72,1,1}}, {cs and cs.taps, {.42,1,.7,1}}, {cs and cs.mines, {1,.35,.4,1}}}
-  for _, group in ipairs(groups) do
-    love.graphics.setColor(group[2])
-    for _, note in ipairs(group[1] or {}) do
-      if note.x and note.y and not note.delete then love.graphics.circle('fill', note.x, note.y, note.tap and 7 or 5) end
-    end
+local function drawSource(source)
+  if not source or not source.getDimensions then error('renderer capture source is unavailable') end
+  local sourceWidth, sourceHeight = source:getDimensions()
+  if not sourceWidth or sourceWidth <= 0 or not sourceHeight or sourceHeight <= 0 then
+    error('renderer capture source has invalid dimensions')
   end
-  local angle = math.rad((Renderer.angle or 0) - 90)
-  local px, py = project.res.cx + math.cos(angle) * radius, project.res.cy + math.sin(angle) * radius
-  love.graphics.setColor(1,1,1,1); love.graphics.setLineWidth(8)
-  love.graphics.line(px - math.cos(angle)*14, py - math.sin(angle)*14, px + math.cos(angle)*14, py + math.sin(angle)*14)
+  love.graphics.push('all')
+  local success, message = xpcall(function()
+    -- Beatblock leaves draw state behind for the rest of its own composition.
+    -- Reset it inside the output canvas so shader, transform, blend, or tint
+    -- state cannot turn a valid gameplay canvas into a black OBS frame.
+    love.graphics.origin()
+    love.graphics.setShader()
+    love.graphics.setBlendMode('alpha', 'alphamultiply')
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.clear(0, 0, 0, 1)
+    local scale = math.min(Renderer.width / sourceWidth, Renderer.height / sourceHeight)
+    local x = (Renderer.width - sourceWidth * scale) / 2
+    local y = (Renderer.height - sourceHeight * scale) / 2
+    love.graphics.draw(source, x, y, 0, scale, scale)
+  end, debug.traceback)
   love.graphics.pop()
+  if not success then error(message, 0) end
 end
 
 local function copyFrame(data, readbackSlot, ticket)
@@ -218,15 +229,28 @@ local function copyFrame(data, readbackSlot, ticket)
   end
   Renderer.readbackPending[readbackSlot] = false
   Renderer.readbackRequests[readbackSlot] = nil
-  if not Renderer.frames or not data then return end
+  if not Renderer.frames then return end
+  if not data then
+    Renderer.droppedFrames = Renderer.droppedFrames + 1
+    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    return
+  end
   local pointer = data.getFFIPointer and data:getFFIPointer() or nil
-  if not pointer then return end
+  local dataSize = data.getSize and data:getSize() or 0
+  -- Never commit a short readback over a previously valid ring slot: OBS would
+  -- otherwise receive a frame made from new leading bytes and stale trailing
+  -- bytes while its sequence check still appeared healthy.
+  if not pointer or dataSize ~= Renderer.frameSize then
+    Renderer.droppedFrames = Renderer.droppedFrames + 1
+    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    return
+  end
   -- Async callbacks are permitted to complete out of order. Never publish an
   -- older capture over a newer one already visible to OBS.
   if ticket <= Renderer.sequence then Renderer.droppedFrames = Renderer.droppedFrames + 1; return end
   Renderer.sequence = ticket
   local index = Renderer.sequence % 3
-  ffi.copy(Renderer.frames.pointer + 64 + index * Renderer.frameSize, pointer, math.min(Renderer.frameSize, data:getSize()))
+  ffi.copy(Renderer.frames.pointer + 64 + index * Renderer.frameSize, pointer, Renderer.frameSize)
   ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
   -- The aligned sequence is the commit marker and is written after all pixels.
   ffi.cast('uint64_t*', Renderer.frames.pointer + 32)[0] = Renderer.sequence
@@ -257,7 +281,7 @@ local function finishReadbacks()
   end
 end
 
-function Renderer.capture(source)
+function Renderer.capture(cleanSource, fullSource)
   if not Renderer.active or not Renderer.frames then return end
   local now = love.timer.getTime()
   -- LÖVE 12 returns a GraphicsReadback object; it does not accept a callback.
@@ -280,11 +304,13 @@ function Renderer.capture(source)
   end
   Renderer.update()
   local output=Renderer.outputs[readbackSlot]
+  -- Clean mode is the real uncomposited gameplay canvas. Full mode includes
+  -- Beatblock's shader/composition pass and the online race HUD. The previous
+  -- synthetic clean renderer referenced cs.notes/cs.taps/cs.mines fields that
+  -- Game never owns, so a healthy stream contained little more than a circle.
+  local source = Renderer.mode == 'full' and fullSource or cleanSource
   output:renderTo(function()
-    if Renderer.mode == 'clean' then drawClean() else
-      love.graphics.clear(0,0,0,1); love.graphics.setColor(1,1,1,1)
-      love.graphics.draw(source, 0, 0, 0, Renderer.width/source:getWidth(), Renderer.height/source:getHeight())
-    end
+    drawSource(source)
   end)
   Renderer.captureSequence = Renderer.captureSequence + 1
   local ticket=Renderer.captureSequence
@@ -300,12 +326,14 @@ function Renderer.capture(source)
   local success, data = pcall(love.graphics.readbackTexture, output)
   if success then copyFrame(data,readbackSlot,ticket) else
     Renderer.readbackPending[readbackSlot] = false
+    Renderer.droppedFrames = Renderer.droppedFrames + 1
+    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
   end
 end
 
-function Renderer.captureSafe(source)
+function Renderer.captureSafe(cleanSource, fullSource)
   if Renderer.captureError then return end
-  local success, message = xpcall(function() Renderer.capture(source) end, debug.traceback)
+  local success, message = xpcall(function() Renderer.capture(cleanSource, fullSource) end, debug.traceback)
   if success then return end
   reportError('renderer capture failed:\n' .. tostring(message))
 end

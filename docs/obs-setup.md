@@ -15,7 +15,7 @@ recover without recreating the OBS source.
 
 The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer; Beatblock Online does not register a silent placeholder audio source.
 
-Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode renders the chart process; clean mode draws deterministic essential notes, paddle, taps, holds, mines, and outcomes without custom backgrounds/VFX. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
+Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Clean mode captures Beatblock's real raw gameplay canvas before the final shader/HUD composition; full mode captures the composited game view and online race HUD. Both modes preserve the source aspect ratio. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
 
 Renderer processes receive their stream configuration through environment
 variables, not command-line flags, because Lovely parses the game's command line
@@ -28,6 +28,18 @@ player's normal mod set or sharing Lovely logs/dumps with the host game. Because
 LÖVE also resolves Beatblock's save directory through a Windows known folder,
 the renderer adapter disables save writes before entering Game state so a hidden
 renderer cannot overwrite the player's save.
+
+Developers can validate the raw producer without opening OBS by pointing the
+physical probe at an isolated Beatblock test build. Run it once with
+`BBT_PROBE_MODE=clean` and once with `BBT_PROBE_MODE=full`; it rejects torn,
+transparent, uniformly black, or spatially empty frames and writes a BMP for
+visual review:
+
+```powershell
+$env:BBT_PROBE_GAME = 'C:\path\to\Beatblock.exe'
+$env:BBT_PROBE_MODE = 'clean'
+cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
+```
 
 Renderers normalize chart-directory paths, resolve named variants to their
 manifest objects, and satisfy Beatblock's threaded audio-preload gate with an

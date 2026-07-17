@@ -64,7 +64,17 @@ for (const contract of [
   [renderer, 'sdfunc.save = function() end'],
   [renderer, 'Renderer.originalErrorHandler = love.errorhandler'],
   [renderer, "reportError('renderer crashed:\\n'"],
-  [renderer, 'function Renderer.captureSafe(source)'],
+  [renderer, 'function Renderer.captureSafe(cleanSource, fullSource)'],
+  [renderer, "local source = Renderer.mode == 'full' and fullSource or cleanSource"],
+  [renderer, "love.graphics.push('all')"],
+  [renderer, "love.graphics.setBlendMode('alpha', 'alphamultiply')"],
+  [renderer, 'love.graphics.pop()'],
+  [
+    renderer,
+    'local scale = math.min(Renderer.width / sourceWidth, Renderer.height / sourceHeight)',
+  ],
+  [renderer, 'dataSize ~= Renderer.frameSize'],
+  [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
   [online, 'Room password must contain 4-128 characters.'],
   [online, "love.graphics.printf(BBT.lastError,74,239,452,'center')"],
@@ -86,8 +96,20 @@ if (!obsPlugin.includes('read_committed_sequence(header)'))
   throw new Error('OBS source does not confirm read-only sequence snapshots around its frame copy');
 if (obsPlugin.includes('InterlockedCompareExchange64'))
   throw new Error('OBS source performs a write primitive against its FILE_MAP_READ frame view');
-if (!hooks.includes('BBTRenderer.captureSafe(self.canv)'))
-  throw new Error('Renderer capture hook can still crash the Beatblock child');
+if (
+  !obsPlugin.includes('gs_effect_get_param_by_name(draw, "image")') ||
+  !obsPlugin.includes('gs_effect_set_texture_srgb(image, ctx->texture)')
+)
+  throw new Error('OBS custom-draw source does not bind its frame texture to the base effect');
+if (!hooks.includes('BBTRenderer.captureSafe(self.canv, shuv.canvas)'))
+  throw new Error('Renderer capture hook does not receive both raw and composited gameplay');
+if (
+  hooks.indexOf('BBTRenderer.captureSafe(self.canv, shuv.canvas)') <
+  hooks.indexOf('if BBT then BBT.drawRaceHud() end')
+)
+  throw new Error('Renderer capture runs before Beatblock finishes its visible composition');
+if (renderer.includes('cs and cs.notes') || renderer.includes('local function drawClean()'))
+  throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))
   throw new Error('Renderer hold can block Beatblock before chart preloading completes');
 const officialSelect = core.slice(
