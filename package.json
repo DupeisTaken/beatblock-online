@@ -18,6 +18,8 @@
     "generate:protocol": "pnpm --filter @bbt/protocol build && node scripts/generate-protocol.mjs",
     "validate:patches": "node scripts/validate-patches.mjs",
     "test:mod": "node scripts/package-mods.mjs && node scripts/validate-patches.mjs && node scripts/test-mod.mjs",
+    "test:mod:source": "node scripts/package-mods.mjs && node scripts/validate-patches.mjs --source-only && node scripts/test-mod.mjs",
+    "test:patch-validation": "node --test scripts/validate-patches.test.mjs",
     "test:installer": "powershell -NoProfile -File scripts/test-install-mod.ps1",
     "test:runtime": "node scripts/test-runtime-lifecycle.mjs",
     "format": "prettier --write .",

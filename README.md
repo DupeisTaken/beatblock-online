@@ -32,7 +32,8 @@ Install Node workspace dependencies once with `pnpm install`. Rust must be avail
 
 ```text
 pnpm generate:protocol  Regenerate protocol v2 schemas
-pnpm test:mod           Package and validate both Lua adapters
+pnpm test:mod           Package and fully validate both Lua adapters against .test
+pnpm test:mod:source    Run the source-safe adapter gate used by GitHub Actions
 pnpm test               Run protocol and Rust unit tests
 pnpm test:stress        Run direct-room and export stress tests
 pnpm trial              Run the complete acceptance and benchmark suite
