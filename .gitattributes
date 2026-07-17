@@ -1,0 +1,3 @@
+# Keep source and generated text deterministic across Linux and Windows runners.
+# Git's automatic text detection leaves binary release and report assets untouched.
+* text=auto eol=lf
