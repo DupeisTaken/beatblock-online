@@ -19,6 +19,14 @@ const [core, dashboard, components, online, ipc, renderer, hooks, commands, read
     read('README.md'),
     read('obs-plugin/src/plugin.c'),
   ]);
+const onlineIcon = await readFile(resolve(root, 'mod/shared/assets/online.png'));
+if (
+  onlineIcon.toString('ascii', 1, 4) !== 'PNG' ||
+  onlineIcon.readUInt32BE(16) !== 72 ||
+  onlineIcon.readUInt32BE(20) !== 72
+) {
+  throw new Error('Online menu icon must be a valid 72x72 PNG');
+}
 const bootstrap = await read('mod/standalone/lovely/bootstrap.toml');
 if (!bootstrap.includes('{{lovely_hack:patch_dir}}'))
   throw new Error("Standalone bootstrap must use Lovely's supported patch_dir placeholder");
@@ -77,16 +85,24 @@ for (const contract of [
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
-  [online, "workspace='room'"],
+  [online, "workspace=options.workspace or 'room'"],
   [online, "BBT.command('room.commentator_set'"],
   [online, "BBT.command('broadcast.mirror_set'"],
   [online, "BBT.command('chart.transfer_decision'"],
+  [online, "modal.error='PASSWORD IS REQUIRED'"],
+  [online, 'if problem then'],
+  [online, 'self.holdEntityDraw=true'],
+  [online, 'em.clear({self.menuMusicManager})'],
+  [online, 'applyBeatblockMenuFont()'],
+  [online, 'st:setBgDraw(function(self)'],
   [components, 'font:getHeight()'],
   [components, 'height < 22'],
 ]) {
   if (!contract[0].includes(contract[1]))
     throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
 }
+if (ipc.includes('"version":2'))
+  throw new Error('IPC worker still emits retired protocol-v2 local status envelopes');
 if (ipc.includes('launchCount >= 2'))
   throw new Error('IPC runtime recovery still stops permanently after two launch attempts');
 if (!hooks.includes('name = "bbt.dashboard_model"'))
@@ -148,8 +164,15 @@ if (
   scheduledLaunch.indexOf('cs:init(BBT.localChart')
 )
   throw new Error('Menu music is stopped after Game initialization');
-if (!hooks.includes('loc.json.bbtOnline') || !hooks.includes('sprites.menu.play'))
-  throw new Error('Online menu entry must provide a localized label and native icon');
+if (
+  !hooks.includes('loc.json.bbtOnline') ||
+  !hooks.includes("BBT.assetImage('assets/online.png')") ||
+  !hooks.includes('sprites.menu.bbtOnline')
+) {
+  throw new Error('Online menu entry must provide a localized label and its branded icon');
+}
+if (!core.includes('function BBT.assetImage(relativePath)'))
+  throw new Error('Online menu icon is missing its external asset loader');
 if (
   core.includes("BBT.send('client.hello'") &&
   core.indexOf("BBT.send('client.hello'") < core.indexOf('function BBT.startOnlineRuntime()')
@@ -159,14 +182,25 @@ if (`${core}\n${online}`.includes('manager.open_request'))
   throw new Error('Obsolete visible Manager command remains');
 
 for (const contrastContract of [
-  'muted={1,1,1,.68}',
-  'dimBlack={0,0,0,.55}',
-  "enabled and 'black' or 'dimBlack'",
+  'muted={1,0,0,1}',
+  'applyBeatblockPalette(false)',
+  'applyBeatblockPalette(true)',
+  'function ui:veil()',
+  'or self.palette.black',
+  "enabled and 'black' or 'muted'",
   "selected and 'black'",
 ]) {
   if (!`${online}\n${components}`.includes(contrastContract))
     throw new Error(`Online font contrast contract is missing ${contrastContract}`);
 }
+if (!online.includes('shuv.showBadColors=showBadColors'))
+  throw new Error('Online palette lifecycle does not explicitly restore the native menu shader');
+if (/muted=\{(?:\.\d+|1,1,1,\.)/.test(online))
+  throw new Error('Online muted copy still uses a palette-unstable RGB or alpha color');
+if (online.includes("ui:color('black',.78)"))
+  throw new Error('Online modal still uses palette-unstable alpha dimming');
+if (online.includes("'connect_host'"))
+  throw new Error('Connect duplicates the session strip Host action');
 if (online.includes('local PAGES ='))
   throw new Error('Online still uses the obsolete six-page tab bar');
 for (const dashboardContract of [
@@ -254,7 +288,7 @@ for (const capability of [
   'HOST A ROOM',
   'JOIN AS PLAYER',
   'JOIN AS SPECTATOR',
-  'PLAY TOGETHER',
+  'CHOOSE HOW YOU JOIN',
   'SELECT OFFICIAL',
   'SELECT CUSTOM',
   'LOCATE MATCHING CHART',
@@ -296,9 +330,11 @@ for (const handoff of ['self.menuMusicManager:update(dt)', 'cs.menuMusicManager=
   if (!online.includes(handoff)) throw new Error(`Online music continuity is missing ${handoff}`);
 }
 for (const handoff of [
-  'local function returnFromChartSelector(selector)',
+  'local function returnFromChartSelector(selector, returnWorkspace)',
   'music:forceUnmute()',
   'cs.menuMusicManager = music',
+  "cs:init({workspace=returnWorkspace or 'room'})",
+  "return (mode == 'host' or mode == 'setlist') and 'setlist' or 'room'",
 ]) {
   if (!core.includes(handoff))
     throw new Error(`Chart-selection music handoff is missing ${handoff}`);
@@ -320,6 +356,9 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
     if (hash(shared) !== hash(packaged))
       throw new Error(`${distribution}/${file} was not generated from the shared core`);
   }
+  const packagedIcon = await readFile(resolve(root, `mod/${distribution}/assets/online.png`));
+  if (hash(onlineIcon) !== hash(packagedIcon))
+    throw new Error(`${distribution}/assets/online.png was not generated from the shared asset`);
   const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.3.0-alpha.2.zip`);
   const entries = new Set(
     listZipEntries(await readFile(archive), `${distribution} release ZIP`).map((entry) =>
@@ -332,6 +371,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
       ? ['lovely/bootstrap.toml', 'README.txt']
       : ['mod.json', 'main.lua', 'config.lua', 'states/Online.lua', 'README.txt'];
   for (const required of [
+    'assets/online.png',
     'bbt/core.lua',
     'bbt/dashboard_model.lua',
     'bbt/dashboard_components.lua',

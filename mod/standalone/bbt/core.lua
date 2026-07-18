@@ -189,6 +189,31 @@ function BBT.openInstaller()
   if not result or result <= 32 then BBT.lastError = 'Windows could not open the installer maintenance copy.' end
 end
 
+-- Lovely's patch directory is outside LÖVE's virtual filesystem. Read visual
+-- assets through normal I/O, then wrap the bytes in FileData for the renderer.
+-- The cache prevents repeated menu visits from allocating duplicate textures.
+function BBT.assetImage(relativePath)
+  BBT.assetImages = BBT.assetImages or {}
+  if BBT.assetImages[relativePath] ~= nil then
+    return BBT.assetImages[relativePath] or nil
+  end
+  local file = io.open(BBT.modPath .. '/' .. relativePath, 'rb')
+  local bytes = file and file:read('*a') or nil
+  if file then file:close() end
+  if not bytes then
+    BBT.assetImages[relativePath] = false
+    if log then log('Beatblock Online asset is missing: '..relativePath, 'warning') end
+    return nil
+  end
+  local ok, image = pcall(function()
+    local data = love.filesystem.newFileData(bytes, relativePath)
+    return love.graphics.newImage(data)
+  end)
+  BBT.assetImages[relativePath] = ok and image or false
+  if not ok and log then log('Beatblock Online could not load asset '..relativePath..': '..tostring(image), 'warning') end
+  return ok and image or nil
+end
+
 function BBT.currentPlayer()
   if not BBT.lastLobby or not BBT.lastLobby.participants then return nil end
   for _, player in ipairs(BBT.lastLobby.participants) do
@@ -265,8 +290,12 @@ function BBT.openOfficialSelect(mode)
 end
 
 -- SongSelect normally returns to the main menu. Online selection owns the
--- state, so both success and cancellation return to the same room.
-local function returnFromChartSelector(selector)
+-- state, so success and cancellation return to the originating workspace.
+local function chartSelectionReturnWorkspace(mode)
+  return (mode == 'host' or mode == 'setlist') and 'setlist' or 'room'
+end
+
+local function returnFromChartSelector(selector, returnWorkspace)
   local music = selector and selector.menuMusicManager
   if selector and selector.source then selector.source:stop(); selector.source = nil end
   if selector and selector.resetLevelPreload then pcall(selector.resetLevelPreload, selector) end
@@ -274,16 +303,19 @@ local function returnFromChartSelector(selector)
   if music then music:clearOnBeatHooks(); music:forceUnmute() end
   cs = bs.load('Online')
   cs.menuMusicManager = music
-  cs:init()
+  -- Re-enter the workspace that launched Song Select. Adding another setlist
+  -- chart should be a continuous workflow, not an implicit navigation reset.
+  cs:init({workspace=returnWorkspace or 'room'})
 end
 
 function BBT.cancelChartSelection(selector)
   if not BBT.selectingOnlineChart and not BBT.selectingOfficialChart then return false end
+  local returnWorkspace = chartSelectionReturnWorkspace(BBT.chartSelectionMode)
   BBT.selectingOnlineChart = false
   BBT.selectingOfficialChart = false
   BBT.chartSelectionMode = nil
   BBT.chartSelectionPrevious = nil
-  returnFromChartSelector(selector)
+  returnFromChartSelector(selector, returnWorkspace)
   return true
 end
 
@@ -372,7 +404,7 @@ function BBT.onChartSelected(selector, levelPath, variantName)
   end
   BBT.chartSelectionMode = nil
   BBT.chartSelectionPrevious = nil
-  returnFromChartSelector(selector)
+  returnFromChartSelector(selector, chartSelectionReturnWorkspace(selectionMode))
   if selectionError then BBT.lastError = selectionError end
 end
 

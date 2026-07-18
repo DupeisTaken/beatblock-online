@@ -9,8 +9,10 @@ const distributions = ['standalone', 'beatblock-plus'];
 for (const name of distributions) {
   const target = resolve(root, `mod/${name}`);
   await rm(resolve(target, 'bbt'), { recursive: true, force: true });
+  await rm(resolve(target, 'assets'), { recursive: true, force: true });
   await mkdir(resolve(target, 'lovely'), { recursive: true });
   await cp(resolve(shared, 'bbt'), resolve(target, 'bbt'), { recursive: true });
+  await cp(resolve(shared, 'assets'), resolve(target, 'assets'), { recursive: true });
   await cp(resolve(shared, 'lovely/hooks.toml'), resolve(target, 'lovely/hooks.toml'));
 }
 

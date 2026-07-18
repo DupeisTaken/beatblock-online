@@ -161,10 +161,12 @@ pattern = "self.mainMenu:addOption('credits',function()"
 position = "before"
 payload = '''
 -- RadialList localizes option keys and substitutes a question-mark icon when
--- none is supplied. Register the label for the active language and reuse the
--- native Play glyph so the injected entry looks intentional on every launch.
+-- none is supplied. Register the label for the active language and load the
+-- mod-owned globe with its Beatblock sublabel; fallback keeps the menu usable
+-- if an installation is incomplete.
 loc.json.bbtOnline = loc.json.bbtOnline or {}
 loc.json.bbtOnline[loc.lang] = 'Online'
+sprites.menu.bbtOnline = (BBT and BBT.assetImage and BBT.assetImage('assets/online.png')) or sprites.menu.fallback
 self.mainMenu:addOption('bbtOnline', function()
   local bbtMenuMusicManager = self.menuMusicManager
   cs = bs.load('Online')
@@ -172,6 +174,6 @@ self.mainMenu:addOption('bbtOnline', function()
   self:leave()
   cs.menuMusicManager = bbtMenuMusicManager
   cs:init()
-end, 51, nil, sprites.menu.play)
+end, 51, nil, sprites.menu.bbtOnline)
 '''
 match_indent = true

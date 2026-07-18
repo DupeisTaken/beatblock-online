@@ -23,7 +23,8 @@ fonts={
 }
 love.graphics.setFont(fonts.digitalDisco)
 mouse={rx=0,ry=0,pressed=nil,disableGameplay=function() end}
-em={clear=function() end}; shuv={pal={},resetPal=function() end,showBadColors=true}
+em={clearCount=0,clear=function() em.clearCount=em.clearCount+1 end}
+shuv={pal={},resetPal=function() end,showBadColors=true}
 sounds={}; te=nil
 local pendingInputs={}
 maininput={pressed=function(_,name) return pendingInputs[name]==true end}
@@ -33,6 +34,7 @@ function Gamestate:new(name)
   local state={name=name}
   function state:setInit(callback) self.init=callback end
   function state:setUpdate(callback) self.updateState=callback end
+  function state:setBgDraw(callback) self.bgDrawState=callback end
   function state:setFgDraw(callback) self.drawState=callback end
   return state
 end
@@ -108,12 +110,16 @@ function BBT.openOfficialSelect() end
 function BBT.openChartSelect() end
 
 local rawSetColor=love.graphics.setColor
+local invalidPaletteColors={}
 love.graphics.setColor=function(r,g,b,a)
   local palette={
     ['1,0,0']={205,205,205},['0,0,1']={255,52,50},['0,1,0']={224,227,0},
     ['1,1,0']={44,255,57},['1,0,1']={0,222,229},['0,1,1']={63,38,255},
   }
-  local mapped=palette[tostring(r)..','..tostring(g)..','..tostring(b)]
+  local key=tostring(r)..','..tostring(g)..','..tostring(b)
+  local mapped=palette[key]
+  if not mapped and key~='1,1,1' and key~='0,0,0' then invalidPaletteColors[key]=true end
+  if a~=nil and a~=1 then invalidPaletteColors[key..',alpha='..tostring(a)]=true end
   if mapped then rawSetColor(mapped[1]/255,mapped[2]/255,mapped[3]/255,a or 1) else rawSetColor(r,g,b,a or 1) end
 end
 
@@ -130,6 +136,7 @@ local scenarios={
   {'connect',function() reset(); BBT.lastLobby=nil; BBT.context.lobbyId='offline' end},
   {'runtime-failure',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError='Runtime did not answer. Repair the installation or open logs for the complete diagnostic details.' end},
   {'host-form',function() reset(); BBT.lastLobby=nil; online:openForm('host') end},
+  {'host-form-validation',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online:submitForm(); assert(online.modal and online.modal.error=='PASSWORD IS REQUIRED') end},
   {'join-form',function() reset(); BBT.lastLobby=nil; online:openForm('join',false) end},
   {'long-error',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError=string.rep('This runtime error is intentionally long and must stay bounded. ',8) end},
   {'host-lobby',function() reset() end},
@@ -165,6 +172,7 @@ local function beginNext()
     if auditFile then auditFile:close() end
     love.event.quit(0); return
   end
+  invalidPaletteColors={}
   scenarios[scenarioIndex][2](); frames=0; capturing=false
 end
 
@@ -174,6 +182,18 @@ function love.load()
   if autorun and love.window.minimize then love.window.minimize() end
   love.graphics.getDimensions=function() return 600,360 end
   qaCanvas=love.graphics.newCanvas(600,360)
+  love.graphics.setFont(fonts.main)
+  online:init()
+  assert(em.clearCount==1,'Online must clear retained native menu entities')
+  assert(love.graphics.getFont()==fonts.digitalDisco,'Online must refresh the native menu font')
+  assert(shuv.showBadColors==false,'Online must enable strict indexed palette rendering')
+  online:leave()
+  assert(love.graphics.getFont()==fonts.digitalDisco,'Leaving Online must restore the native menu font')
+  assert(shuv.showBadColors==true,'Leaving Online must restore full-color menu rendering')
+  online:init({workspace='setlist'})
+  assert(online.workspace=='setlist','Chart selection must restore the Setlist workspace')
+  assert(online.focusId=='nav_setlist','Setlist return must restore workspace focus')
+  online:leave()
   online:init()
   if autorun then
     auditFile=assert(io.open(output..'/layout-audit.txt','wb'))
@@ -194,6 +214,21 @@ function love.update(dt)
     local file=assert(io.open(output..'/'..name..'.png','wb'))
     file:write(encoded:getString()); file:close()
     local issues=BBT.layoutAudit and BBT.layoutAudit.issues or {}
+    for value in pairs(invalidPaletteColors) do issues[#issues+1]='invalid_palette_color:'..value end
+    if name=='connect' then
+      local hostLabels=0
+      local controls={}
+      for _,entry in ipairs(BBT.layoutAudit.text or {}) do
+        if entry.value=='HOST A ROOM' then hostLabels=hostLabels+1 end
+        if entry.y+entry.h>352 then issues[#issues+1]='connect_bottom_safe_area:'..entry.value end
+      end
+      for _,entry in ipairs(BBT.layoutAudit.controls or {}) do controls[entry.id]=true end
+      if hostLabels~=1 then issues[#issues+1]='connect_host_action_count:'..tostring(hostLabels) end
+      for _,id in ipairs({'session_primary','connect_join','connect_spectate','connect_exit'}) do
+        if not controls[id] then issues[#issues+1]='connect_missing_control:'..id end
+      end
+      if controls.connect_host then issues[#issues+1]='connect_duplicate_host_action' end
+    end
     auditFile:write(name..':'..tostring(#issues)..'\n')
     for _,issue in ipairs(issues) do auditFile:write('  '..issue..'\n') end
     beginNext()
@@ -201,6 +236,7 @@ function love.update(dt)
 end
 function love.draw()
   love.graphics.setCanvas(qaCanvas); love.graphics.clear(0,0,0,1)
+  if online.bgDrawState then online:bgDrawState() end
   online:drawState()
   love.graphics.setCanvas(); love.graphics.setColor(1,1,1,1); love.graphics.draw(qaCanvas,0,0)
 end

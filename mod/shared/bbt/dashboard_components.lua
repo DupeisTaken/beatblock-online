@@ -71,17 +71,26 @@ function Components.new(palette)
     end
   end
 
+  -- An opaque focus veil avoids palette-invalid alpha blending and removes
+  -- inactive controls from the visual hierarchy while a modal owns input.
+  function ui:veil()
+    self:color('black')
+    love.graphics.rectangle('fill',0,0,600,360)
+  end
+
   function ui:button(id, x, y, width, height, label, focused, color, enabled)
     enabled = enabled ~= false
-    local fill = enabled and (focused and (self.palette[color or 'cyan']) or self.palette.raised) or self.palette.disabled
+    local fill = enabled and (focused and (self.palette[color or 'cyan']) or self.palette.raised) or self.palette.black
     setc(fill)
     love.graphics.rectangle('fill',x,y,width,height,2,2)
     if focused then
       self:color('white'); love.graphics.rectangle('line',x+.5,y+.5,width-1,height-1,2,2)
+    elseif not enabled then
+      self:color('muted'); love.graphics.rectangle('line',x+.5,y+.5,width-1,height-1,2,2)
     end
     local font = love.graphics.getFont()
     local textY = y + math.floor((height-font:getHeight())/2)
-    self:text(label,x+5,textY,width-10,'center',enabled and 'black' or 'dimBlack',font)
+    self:text(label,x+5,textY,width-10,'center',enabled and 'black' or 'muted',font)
     self.audit.controls[#self.audit.controls+1] = {id=id,x=x,y=y,w=width,h=height,focused=focused}
     if height < 22 then self.audit.issues[#self.audit.issues+1] = 'undersized_control:'..tostring(id) end
   end

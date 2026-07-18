@@ -19,6 +19,20 @@ The Windows build performs these steps:
 
 Generated files are written under `artifacts/`, `release/`, and `mod/releases/`. These directories are ignored by Git.
 
+The checked-in Online menu and Windows installer icons share one deterministic
+source in `scripts/generate-icons.py`. Regenerate them after a design change,
+then verify that no stale binary asset remains:
+
+```powershell
+python scripts/generate-icons.py
+python scripts/generate-icons.py --check
+```
+
+The script requires Pillow. The generated 72 px PNG is copied into both mod
+distributions and embedded in the installer payload. The installer PNG is used
+by the Slint window, while its multi-resolution ICO is linked into the Windows
+executable for Explorer and taskbar rendering.
+
 ## GitHub Actions
 
 `.github/workflows/release.yml` runs on the pinned `windows-2022` hosted image:

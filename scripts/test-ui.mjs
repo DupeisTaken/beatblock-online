@@ -6,7 +6,11 @@ import { basename, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const fixture = resolve(process.env.BBT_UI_FIXTURE ?? 'E:/beatblock-online/.test/ui-harness');
 const baselines = resolve(root, 'tests/ui-baselines');
-const reports = resolve(root, 'reports/ui');
+// A reviewer may have reports/ui open in an image viewer. Allow a fresh
+// destination so verification never needs to close that application or
+// overwrite a file while Windows still has it mapped.
+const reports = resolve(process.env.BBT_UI_REPORTS ?? resolve(root, 'reports/ui'));
+const python = process.env.BBT_UI_PYTHON ?? 'python';
 const update = process.argv.includes('--update');
 const stage = await mkdtemp(resolve(tmpdir(), 'bbt-ui-'));
 const output = resolve(stage, 'captures');
@@ -59,7 +63,7 @@ if (audit.split(/\r?\n/).some((line) => /:\d+$/.test(line) && !line.endsWith(':0
   throw new Error(`Layout audit failed:\n${audit}`);
 }
 const captures = (await readdir(output)).filter((file) => file.endsWith('.png')).sort();
-if (captures.length < 25) throw new Error(`Expected 25 UI scenarios, captured ${captures.length}`);
+if (captures.length < 26) throw new Error(`Expected 26 UI scenarios, captured ${captures.length}`);
 if (update) await mkdir(baselines, { recursive: true });
 
 for (const file of captures) {
@@ -68,7 +72,7 @@ for (const file of captures) {
   const report = resolve(reports, file);
   await cp(actual, report);
   // Nearest-neighbor review artifacts preserve the source 600x360 pixels.
-  await run('python', [
+  await run(python, [
     '-c',
     'from PIL import Image; import sys; im=Image.open(sys.argv[1]); im.resize((1200,720),Image.Resampling.NEAREST).save(sys.argv[2])',
     actual,
@@ -77,7 +81,7 @@ for (const file of captures) {
   if (update) {
     await cp(actual, baseline);
   } else {
-    await run('python', [
+    await run(python, [
       resolve(root, 'scripts/ui-image-compare.py'),
       actual,
       baseline,
