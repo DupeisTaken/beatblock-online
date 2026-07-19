@@ -13,6 +13,56 @@ import {
 
 const root = resolve(import.meta.dirname, '..');
 
+test('release version metadata and generated asset names stay aligned', async () => {
+  const [
+    rootPackageText,
+    protocolPackageText,
+    cargoManifest,
+    cargoLock,
+    modCore,
+    packageScript,
+    modTest,
+    uiHarness,
+    releaseGuide,
+  ] = await Promise.all([
+    readFile(resolve(root, 'package.json'), 'utf8'),
+    readFile(resolve(root, 'protocol/package.json'), 'utf8'),
+    readFile(resolve(root, 'companion/Cargo.toml'), 'utf8'),
+    readFile(resolve(root, 'companion/Cargo.lock'), 'utf8'),
+    readFile(resolve(root, 'mod/shared/bbt/core.lua'), 'utf8'),
+    readFile(resolve(root, 'scripts/package-mods.mjs'), 'utf8'),
+    readFile(resolve(root, 'scripts/test-mod.mjs'), 'utf8'),
+    readFile(resolve(root, 'tests/ui-harness/main.lua'), 'utf8'),
+    readFile(resolve(root, 'docs/releasing.md'), 'utf8'),
+  ]);
+  const rootPackage = JSON.parse(rootPackageText);
+  const protocolPackage = JSON.parse(protocolPackageText);
+  const version = rootPackage.version;
+
+  assert.match(version, /^\d+\.\d+\.\d+-alpha\.\d+$/);
+  assert.equal(protocolPackage.version, version);
+  assert.equal(cargoManifest.match(/^version = "([^"]+)"$/m)?.[1], version);
+  assert.equal(
+    cargoLock.match(
+      /\[\[package\]\]\r?\nname = "beatblock-online-companion"\r?\nversion = "([^"]+)"/,
+    )?.[1],
+    version,
+  );
+  assert.equal(modCore.match(/version = '([^']+)'/)?.[1], version);
+
+  // Build, validation, UI fixtures, and operator docs must all identify the
+  // same prerelease or a local build can silently publish mixed-version files.
+  for (const [label, contents] of [
+    ['mod packager', packageScript],
+    ['mod packaging gate', modTest],
+    ['UI harness', uiHarness],
+    ['release guide', releaseGuide],
+  ]) {
+    assert.ok(contents.includes(version), `${label} does not reference version ${version}`);
+  }
+  assert.ok(releaseGuide.includes(`v${version}`));
+});
+
 function x64PeFixture() {
   const buffer = Buffer.alloc(128);
   buffer.write('MZ', 0, 'ascii');
