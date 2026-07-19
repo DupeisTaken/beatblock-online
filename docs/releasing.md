@@ -13,8 +13,8 @@ The Windows build performs these steps:
 
 1. Build the TypeScript protocol package.
 2. Clone Lovely Injector `v0.9.0`, verify commit `91759da5702618c3b940fbbe8135954414c0ef34`, apply `third-party/lovely-no-console.patch`, and build `version.dll` with the pinned `nightly-2026-07-15` Rust compiler.
-3. Download the official OBS Studio 32.0.4 source and Windows x64 archives, verify their published SHA-256 checksums, generate the `obs.dll` import library, and build the BBT source plugin.
-4. Build the lean Rust runtime, embed the runtime, Lovely, and OBS payloads into the installer, and package both Lua distributions.
+3. Download the official OBS Studio 32.0.4 source and Windows x64 archives, verify their published SHA-256 checksums, generate the `obs.dll` import library, and build the BBT source plugin. The build writes a manifest containing the exact `plugin.c` and DLL SHA-256 digests.
+4. Verify that the OBS build manifest still matches both the reviewed C source and generated DLL, then build the lean Rust runtime, embed the runtime, Lovely, and OBS payloads into the installer, and package both Lua distributions. A direct `node scripts/build-windows.mjs` invocation fails closed and requests `pnpm build:obs` when the ignored native artifact is missing, stale, or modified.
 5. Verify that every native output is an x64 Portable Executable and write `release/SHA256SUMS.txt`.
 
 Generated files are written under `artifacts/`, `release/`, and `mod/releases/`. These directories are ignored by Git.

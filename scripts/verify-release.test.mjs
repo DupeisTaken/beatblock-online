@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
-import { checksumLine, inspectPe, inspectZip, listZipEntries } from './verify-release.mjs';
+import {
+  checksumLine,
+  inspectObsBuildManifest,
+  inspectPe,
+  inspectZip,
+  listZipEntries,
+  sha256Hex,
+} from './verify-release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -117,5 +124,59 @@ test('checksumLine is stable and uses only the asset filename', () => {
   assert.equal(
     checksumLine('nested/asset.bin', Buffer.from('release')),
     'a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829  asset.bin',
+  );
+});
+
+test('OBS build manifest binds the native artifact to the reviewed source', () => {
+  const source = Buffer.from('gs_effect_set_texture_srgb(image, ctx->texture);');
+  const artifact = x64PeFixture();
+  const manifest = {
+    schemaVersion: 1,
+    obsVersion: '32.0.4',
+    sourcePath: 'obs-plugin/src/plugin.c',
+    sourceSha256: sha256Hex(source),
+    artifactSha256: sha256Hex(artifact),
+  };
+
+  assert.deepEqual(inspectObsBuildManifest(manifest, artifact, source), {
+    sourceSha256: manifest.sourceSha256,
+    artifactSha256: manifest.artifactSha256,
+    obsVersion: '32.0.4',
+  });
+  assert.throws(
+    () => inspectObsBuildManifest(manifest, artifact, Buffer.from('changed source')),
+    /stale for the current plugin source/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest(manifest, Buffer.from('changed artifact'), source),
+    /artifact hash does not match/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest({ ...manifest, schemaVersion: 2 }, artifact, source),
+    /manifest is malformed/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest({ ...manifest, obsVersion: '31.1.2' }, artifact, source),
+    /manifest is malformed/,
+  );
+});
+
+test('OBS build and installer stages enforce native source provenance', async () => {
+  const [buildObs, buildWindows] = await Promise.all([
+    readFile(resolve(root, 'scripts/build-obs-plugin.ps1'), 'utf8'),
+    readFile(resolve(root, 'scripts/build-windows.mjs'), 'utf8'),
+  ]);
+  assert.match(buildObs, /ChangeExtension\(\$OutputPath, '\.build\.json'\)/);
+  assert.match(buildObs, /sourceSha256 = \$sourceHash\.ToLowerInvariant\(\)/);
+  assert.match(buildObs, /artifactSha256 = \$artifactHash\.ToLowerInvariant\(\)/);
+
+  const provenanceCheck = buildWindows.indexOf('await verifyObsBuildManifest({');
+  const runtimeBuild = buildWindows.indexOf(
+    "cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockOnlineRuntime'])",
+  );
+  assert.ok(provenanceCheck >= 0, 'installer build must verify OBS provenance');
+  assert.ok(
+    provenanceCheck < runtimeBuild,
+    'stale OBS artifacts must fail before expensive Rust release compilation',
   );
 });

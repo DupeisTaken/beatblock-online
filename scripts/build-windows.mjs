@@ -2,6 +2,7 @@ import { access, copyFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { cargoCommand } from './run-cargo.mjs';
+import { obsBuildManifestPath, verifyObsBuildManifest } from './verify-release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const manifest = resolve(root, 'companion/Cargo.toml');
@@ -37,6 +38,16 @@ for (const [name, path] of [
     throw new Error(`${name} artifact is missing: ${path}. Run pnpm build.`);
   });
 }
+await verifyObsBuildManifest({
+  pluginPath: obsPlugin,
+  sourcePath: resolve(root, 'obs-plugin/src/plugin.c'),
+  manifestPath: obsBuildManifestPath(obsPlugin),
+}).catch((error) => {
+  throw new Error(
+    `Refusing to embed an unverified or stale OBS source. Run pnpm build:obs and retry. ${error.message}`,
+    { cause: error },
+  );
+});
 cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockOnlineRuntime']);
 cargo(
   [

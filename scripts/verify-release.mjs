@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { basename, dirname, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
+const pinnedObsVersion = '32.0.4';
 
 export function inspectPe(buffer, label = 'artifact') {
   if (buffer.length < 64 || buffer[0] !== 0x4d || buffer[1] !== 0x5a) {
@@ -27,8 +28,57 @@ export function inspectPe(buffer, label = 'artifact') {
 }
 
 export function checksumLine(path, buffer) {
-  const digest = createHash('sha256').update(buffer).digest('hex');
+  const digest = sha256Hex(buffer);
   return `${digest}  ${basename(path)}`;
+}
+
+export function sha256Hex(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+export function obsBuildManifestPath(pluginPath) {
+  return resolve(dirname(pluginPath), `${basename(pluginPath, extname(pluginPath))}.build.json`);
+}
+
+export function inspectObsBuildManifest(manifest, pluginBuffer, sourceBuffer) {
+  if (
+    manifest?.schemaVersion !== 1 ||
+    manifest.sourcePath !== 'obs-plugin/src/plugin.c' ||
+    manifest.obsVersion !== pinnedObsVersion ||
+    !/^[0-9a-f]{64}$/.test(manifest.sourceSha256 ?? '') ||
+    !/^[0-9a-f]{64}$/.test(manifest.artifactSha256 ?? '')
+  ) {
+    throw new Error('OBS artifact build manifest is malformed');
+  }
+  const sourceSha256 = sha256Hex(sourceBuffer);
+  if (manifest.sourceSha256 !== sourceSha256) {
+    throw new Error(
+      `OBS artifact is stale for the current plugin source: expected ${sourceSha256}, manifest records ${manifest.sourceSha256}`,
+    );
+  }
+  const artifactSha256 = sha256Hex(pluginBuffer);
+  if (manifest.artifactSha256 !== artifactSha256) {
+    throw new Error(
+      `OBS artifact hash does not match its build manifest: expected ${manifest.artifactSha256}, got ${artifactSha256}`,
+    );
+  }
+  return { sourceSha256, artifactSha256, obsVersion: manifest.obsVersion };
+}
+
+export async function verifyObsBuildManifest({ pluginPath, sourcePath, manifestPath }) {
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`OBS artifact build manifest is missing or invalid: ${manifestPath}`, {
+      cause: error,
+    });
+  }
+  const [pluginBuffer, sourceBuffer] = await Promise.all([
+    readFile(pluginPath),
+    readFile(sourcePath),
+  ]);
+  return inspectObsBuildManifest(manifest, pluginBuffer, sourceBuffer);
 }
 
 export function inspectZip(buffer, label = 'archive') {
@@ -122,9 +172,15 @@ export async function verifyRelease({ pePaths, zipPaths, checksumPaths, checksum
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  const obsPluginPath = resolve(root, 'artifacts/obs/beatblock-online-obs.dll');
+  await verifyObsBuildManifest({
+    pluginPath: obsPluginPath,
+    sourcePath: resolve(root, 'obs-plugin/src/plugin.c'),
+    manifestPath: obsBuildManifestPath(obsPluginPath),
+  });
   const pePaths = [
     resolve(root, 'release/BeatblockOnlineInstaller.exe'),
-    resolve(root, 'artifacts/obs/beatblock-online-obs.dll'),
+    obsPluginPath,
     resolve(root, 'artifacts/lovely/version.dll'),
   ];
   const modDirectory = resolve(root, 'mod/releases');
