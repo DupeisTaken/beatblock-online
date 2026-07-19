@@ -11,8 +11,8 @@ Release/
 x64/
 x86/
 artifacts/
-release/
-releases/
+/release/
+/releases/
 obs-plugin/artifacts/
 mod/releases/
 .tools/

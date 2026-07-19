@@ -15,7 +15,8 @@ Treat these separately from persistent development assets:
 - `E:\beatblock-online\.test\ui-harness` is the intentionally retained, ignored
   LÖVE fixture used by `BBT_UI_FIXTURE`.
 - `tests/ui-baselines` is tracked review evidence and must not be cleaned.
-- `reports/ui`, `artifacts`, `release`, `mod/releases`, `companion/target`, and
+- `reports/ui`, `reports/obs-stream`, `artifacts`, `release`, `releases`,
+  `mod/releases`, `companion/target`, and
   `node_modules` are ignored build or review outputs, not OS-temporary stages.
 - A sibling Git worktree should be removed with `git worktree remove` after its
   branch is merged. If Git has already unregistered it, inspect the directory
