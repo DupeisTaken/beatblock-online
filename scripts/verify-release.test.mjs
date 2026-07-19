@@ -230,3 +230,14 @@ test('OBS build and installer stages enforce native source provenance', async ()
     'stale OBS artifacts must fail before expensive Rust release compilation',
   );
 });
+
+test('installer builds keep one canonical local review copy', async () => {
+  const buildWindows = await readFile(resolve(root, 'scripts/build-windows.mjs'), 'utf8');
+
+  assert.match(buildWindows, /const localReleases = resolve\(root, 'releases'\)/);
+  assert.match(
+    buildWindows,
+    /copyFile\(installer, resolve\(localReleases, 'BeatblockOnlineInstaller\.exe'\)\)/,
+  );
+  assert.doesNotMatch(buildWindows, /BeatblockOnlineInstaller-[^']+\.exe/);
+});

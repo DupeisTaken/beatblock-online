@@ -17,7 +17,7 @@ The Windows build performs these steps:
 4. Verify that the OBS build manifest still matches both the reviewed C source and generated DLL, then build the lean Rust runtime, embed the runtime, Lovely, and OBS payloads into the installer, and package both Lua distributions. A direct `node scripts/build-windows.mjs` invocation fails closed and requests `pnpm build:obs` when the ignored native artifact is missing, stale, or modified.
 5. Verify that every native output is an x64 Portable Executable and write `release/SHA256SUMS.txt`.
 
-Generated files are written under `artifacts/`, `release/`, and `mod/releases/`. These directories are ignored by Git.
+Generated files are written under `artifacts/`, `release/`, `releases/`, and `mod/releases/`. These directories are ignored by Git. `release/` is the GitHub Actions staging directory; `releases/BeatblockOnlineInstaller.exe` is the stable local review copy.
 
 The checked-in Online menu and Windows installer icons share one deterministic
 source in `scripts/generate-icons.py`. Regenerate them after a design change,

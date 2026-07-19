@@ -42,7 +42,7 @@ pnpm build:protocol     Build the cross-platform protocol package
 pnpm build              Reproduce all dependencies and build the Windows release
 ```
 
-`pnpm build` runs on Windows, downloads checksum-pinned OBS inputs, builds the exact pinned Lovely source with the reviewed patch, and writes ignored outputs under `artifacts/`, `release/`, and `mod/releases/`. Development scripts operate on the repository and disposable `.test` copy. Players install and launch through the GUI and Steam.
+`pnpm build` runs on Windows, downloads checksum-pinned OBS inputs, builds the exact pinned Lovely source with the reviewed patch, and writes ignored outputs under `artifacts/`, `release/`, `releases/`, and `mod/releases/`. The canonical local review copy is always `releases/BeatblockOnlineInstaller.exe`. Development scripts operate on the repository and disposable `.test` copy. Players install and launch through the GUI and Steam.
 
 Test runs may create owned directories named `bbt-*` under `%TEMP%`. Successful UI
 runs remove their `bbt-ui-*` stage automatically, but a terminated process can

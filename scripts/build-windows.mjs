@@ -17,6 +17,7 @@ const obsPlugin = resolve(
   process.env.BBT_OBS_PLUGIN_DLL ?? resolve(root, 'artifacts/obs/beatblock-online-obs.dll'),
 );
 const release = resolve(root, 'release');
+const localReleases = resolve(root, 'releases');
 
 function cargo(args, env = {}) {
   const result = spawnSync(cargoCommand(), args, {
@@ -72,8 +73,13 @@ cargo(
 // Keep the staging directory itself stable: Explorer, antivirus scanners, and
 // terminals can hold a Windows directory handle even when the output file is
 // replaceable. Each release artifact is explicitly overwritten below.
-await mkdir(release, { recursive: true });
-await copyFile(installer, resolve(release, 'BeatblockOnlineInstaller.exe'));
+await Promise.all([mkdir(release, { recursive: true }), mkdir(localReleases, { recursive: true })]);
+await Promise.all([
+  copyFile(installer, resolve(release, 'BeatblockOnlineInstaller.exe')),
+  // Keep one predictable, ignored local review copy. Avoid versioned or
+  // task-specific names so users never have to guess which installer to run.
+  copyFile(installer, resolve(localReleases, 'BeatblockOnlineInstaller.exe')),
+]);
 console.log(
-  'Built release/BeatblockOnlineInstaller.exe (self-contained installer + runtime payload).',
+  'Built release/BeatblockOnlineInstaller.exe and releases/BeatblockOnlineInstaller.exe (self-contained installer + runtime payload).',
 );
