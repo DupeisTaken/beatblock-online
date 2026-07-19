@@ -20,67 +20,28 @@ ROOT = Path(__file__).resolve().parents[1]
 ONLINE_PNG = ROOT / "mod" / "shared" / "assets" / "online.png"
 INSTALLER_PNG = ROOT / "companion" / "assets" / "installer.png"
 INSTALLER_ICO = ROOT / "companion" / "assets" / "installer.ico"
+GLOBE_TEMPLATE_SOURCE = ROOT / "scripts" / "assets" / "globe-template.png"
+MENU_GLOBE_TEMPLATE_SOURCE = ROOT / "scripts" / "assets" / "globe-template-menu.png"
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 
-# Native-size trace of the supplied globe template. Keeping the silhouette as a
-# readable one-bit mask preserves its exact four-column, three-band construction
-# without checking in the source image's baked checkerboard background.
-GLOBE_TEMPLATE = """
-......................##########......................
-..................#################...................
-................######################................
-..............##########################..............
-............############.####.############............
-...........############..####...###########...........
-..........#####..#####...####....####.######..........
-........######...####....####.....####..#####.........
-.......######...####.....####.....####...#####........
-.......####.....####.....####......####....####.......
-......####.....####......####......####.....####......
-.....######....####......####.......####...######.....
-....##############.......####.......##############....
-....#################....####....#################....
-...####..###################################..#####...
-...####......#############################.....####...
-..####.......############################.......####..
-..####.......####........####.........####......####..
-.####........###.........####.........####.......####.
-.####........###.........####.........####.......####.
-.####........###.........####.........####........###.
-.###........####.........####..........###........###.
-####........####.........####..........###........####
-####........####.........####..........###........####
-######################################################
-######################################################
-######################################################
-##############################......##################
-####........####.........####..........###........####
-####........####.........####..........###........####
-####........####.........###...........###........####
-####........####.........###...........###........####
-.###........####.........####..........###........###.
-.###........####.........####.........####........###.
-.####........###.........####.........####.......####.
-.####........###.........####.........####.......####.
-..####.......####........####.........####......####..
-..####.......####.##################.####.......####..
-...####......#############################.....####...
-...####..####################################..####...
-....##################...####...##################....
-....##############.......####.......##############....
-.....######....####......####.......####..#######.....
-......####.....####......####.......###.....####......
-......#####.....####.....####......####....#####......
-.......#####....####.....####.....####...######.......
-........######...####....####.....####..######........
-.........######..#####...####....####..######.........
-...........############..####...###########...........
-............############.####..###########............
-..............##########################..............
-................######################................
-..................##################..................
-.....................###########......................
-""".strip().splitlines()
+
+def globe_template_mask(size: int) -> Image.Image:
+    """Load the cleaned supplied globe silhouette at a requested square size."""
+
+    source = Image.open(GLOBE_TEMPLATE_SOURCE).convert("RGBA")
+    alpha = source.getchannel("A")
+    if source.size != (452, 452) or alpha.getbbox() != (0, 0, 452, 452):
+        raise ValueError("Globe template source must remain the cleaned 452x452 silhouette")
+    return alpha.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def menu_globe_template_mask() -> Image.Image:
+    """Load the fixed native-size trace without resampling the approved sprite."""
+
+    mask = Image.open(MENU_GLOBE_TEMPLATE_SOURCE).convert("L")
+    if mask.size != (54, 54) or mask.getbbox() != (0, 0, 54, 54):
+        raise ValueError("Menu globe template must remain the exact 54x54 trace")
+    return mask
 
 
 def draw_online_icon() -> Image.Image:
@@ -94,13 +55,7 @@ def draw_online_icon() -> Image.Image:
     # Stamp the exact supplied silhouette before adding the native white safety
     # edge. The mask is offset two pixels to leave room for that edge.
     globe_mask = Image.new("L", image.size, 0)
-    globe_draw = ImageDraw.Draw(globe_mask)
-    if len(GLOBE_TEMPLATE) != 54 or any(len(row) != 54 for row in GLOBE_TEMPLATE):
-        raise ValueError("Globe template must remain an exact 54x54 mask")
-    for y, row in enumerate(GLOBE_TEMPLATE, start=2):
-        for x, pixel in enumerate(row, start=2):
-            if pixel == "#":
-                globe_draw.point((x, y), fill=255)
+    globe_mask.paste(menu_globe_template_mask(), (2, 2))
     image.paste(white, mask=globe_mask.filter(ImageFilter.MaxFilter(5)))
     image.paste(black, mask=globe_mask)
 
@@ -181,7 +136,7 @@ def validate_online_icon(image: Image.Image) -> None:
 
 
 def draw_installer_icon(size: int = 1024) -> Image.Image:
-    """Draw the colored application mark at a high-resolution working size."""
+    """Draw the colored installer mark from the same globe-and-Cranky system."""
 
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -190,8 +145,12 @@ def draw_installer_icon(size: int = 1024) -> Image.Image:
     def p(value: float) -> int:
         return round(value * unit)
 
-    # The deep circular tile stays distinct against both light and dark Windows
-    # themes, while transparent corners keep the icon from feeling like a box.
+    def odd_px(value: float) -> int:
+        pixels = max(3, p(value))
+        return pixels if pixels % 2 else pixels + 1
+
+    # The deep circular tile stays distinct against light and dark Windows
+    # themes, while transparent corners keep the application mark lightweight.
     draw.ellipse(
         (p(12), p(12), p(244), p(244)),
         fill=(15, 21, 36, 255),
@@ -208,31 +167,98 @@ def draw_installer_icon(size: int = 1024) -> Image.Image:
     white = (244, 248, 252, 255)
     navy = (15, 21, 36, 255)
 
-    # Globe grid mirrors the in-game silhouette, with enough spacing to survive
-    # Windows' 16 px downsample.
-    globe = (p(34), p(27), p(194), p(187))
-    grid_width = max(1, p(8))
-    draw.ellipse(globe, outline=cyan, width=grid_width)
-    draw.ellipse((p(72), p(27), p(156), p(187)), outline=cyan, width=max(1, p(6)))
-    draw.arc((p(34), p(52), p(194), p(129)), 8, 172, fill=cyan, width=max(1, p(6)))
-    draw.arc((p(34), p(87), p(194), p(165)), 188, 352, fill=cyan, width=max(1, p(6)))
-    draw.line(((p(36), p(107)), (p(192), p(107))), fill=cyan, width=max(1, p(6)))
+    # Use the actual supplied globe silhouette rather than rebuilding its grid
+    # from generic ellipses. The cyan mask is the only foreground geometry here.
+    globe_size = p(170)
+    globe_mask = globe_template_mask(globe_size)
+    # Center the globe independently on the 256-unit circular application tile;
+    # Cranky remains an overlapping lower-right badge rather than shifting it.
+    globe_position = (p((256 - 170) / 2), p((256 - 170) / 2))
+    image.paste(cyan, globe_position, globe_mask)
 
-    # A navy clearance ring separates the Beatblock sublabel from the globe.
-    draw.ellipse((p(137), p(133), p(239), p(235)), fill=navy)
-    draw.ellipse((p(155), p(168), p(222), p(235)), fill=white)
-    draw.rectangle((p(184), p(153), p(197), p(172)), fill=white)
-    draw.arc(
-        (p(139), p(131), p(238), p(220)),
-        202,
-        342,
-        fill=white,
-        width=max(1, p(15)),
+    # Match Player.lua's construction at installer resolution: circular Cranky,
+    # a short triangular handle, and a curved annular paddle sector.
+    center = (p(181), p(186))
+    paddle_angle = 34
+    paddle_half_angle = 28
+
+    def point(radius: float, angle: float) -> tuple[int, int]:
+        radians = math.radians(angle)
+        return (
+            round(center[0] + math.cos(radians) * p(radius)),
+            round(center[1] + math.sin(radians) * p(radius)),
+        )
+
+    outer_angles = range(
+        paddle_angle - paddle_half_angle,
+        paddle_angle + paddle_half_angle + 1,
+        3,
     )
-    draw.rectangle((p(176), p(190), p(183), p(216)), fill=navy)
-    draw.rectangle((p(198), p(190), p(205), p(216)), fill=navy)
+    inner_angles = range(
+        paddle_angle + paddle_half_angle,
+        paddle_angle - paddle_half_angle - 1,
+        -3,
+    )
+    paddle = tuple(point(55, angle) for angle in outer_angles) + tuple(
+        point(42, angle) for angle in inner_angles
+    )
+    handle = (
+        point(21, paddle_angle - 14),
+        point(44, paddle_angle - 9),
+        point(44, paddle_angle + 9),
+        point(21, paddle_angle + 14),
+    )
+    body_bounds = (p(152), p(157), p(210), p(215))
+
+    # The navy clearance fuses the three pieces into one badge and prevents the
+    # cyan globe from leaking through their internal white areas.
+    cranky_mask = Image.new("L", image.size, 0)
+    cranky_draw = ImageDraw.Draw(cranky_mask)
+    cranky_draw.polygon(paddle, fill=255)
+    cranky_draw.polygon(handle, fill=255)
+    cranky_draw.ellipse(body_bounds, fill=255)
+    image.paste(navy, mask=cranky_mask.filter(ImageFilter.MaxFilter(odd_px(7))))
+
+    draw.polygon(paddle, fill=white, outline=navy, width=max(1, p(5)))
+    draw.polygon(handle, fill=white, outline=navy, width=max(1, p(4)))
+    draw.ellipse(body_bounds, fill=white, outline=navy, width=max(1, p(5)))
+    draw.line(
+        ((p(173), p(177)), (p(173), p(194))),
+        fill=navy,
+        width=max(1, p(5)),
+    )
+    draw.line(
+        ((p(190), p(177)), (p(190), p(194))),
+        fill=navy,
+        width=max(1, p(5)),
+    )
 
     return image
+
+
+def validate_installer_icon(image: Image.Image) -> None:
+    """Guard the installer mark's template, palette, and mascot landmarks."""
+
+    if image.size != (1024, 1024) or image.mode != "RGBA":
+        raise ValueError("Installer working icon must remain a 1024x1024 RGBA image")
+    pixels = list(image.get_flattened_data())
+    cyan_pixels = sum(pixel == (76, 225, 245, 255) for pixel in pixels)
+    white_pixels = sum(pixel == (244, 248, 252, 255) for pixel in pixels)
+    transparent_pixels = sum(pixel[3] == 0 for pixel in pixels)
+    if cyan_pixels < 150_000 or white_pixels < 15_000:
+        raise ValueError("Installer icon must retain its cyan globe and white Cranky badge")
+    if transparent_pixels < 300_000:
+        raise ValueError("Installer icon needs transparent corners around its circular tile")
+
+    required_pixels = {
+        (512, 512): (76, 225, 245, 255),  # centered exact globe bar
+        (724, 744): (244, 248, 252, 255),  # Cranky body
+        (692, 740): (15, 21, 36, 255),  # Cranky's left eye
+        (876, 864): (244, 248, 252, 255),  # paddle
+        (0, 0): (0, 0, 0, 0),  # transparent shell corner
+    }
+    if any(image.getpixel(point) != expected for point, expected in required_pixels.items()):
+        raise ValueError("Installer icon must retain its globe, Cranky, and paddle landmarks")
 
 
 def png_bytes(image: Image.Image) -> bytes:
@@ -254,6 +280,7 @@ def ico_bytes(image: Image.Image) -> bytes:
 def expected_assets() -> dict[Path, bytes]:
     installer = draw_installer_icon()
     online = draw_online_icon()
+    validate_installer_icon(installer)
     validate_online_icon(online)
     return {
         ONLINE_PNG: png_bytes(online),

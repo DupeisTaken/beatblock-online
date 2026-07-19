@@ -20,8 +20,12 @@ The Windows build performs these steps:
 Generated files are written under `artifacts/`, `release/`, `releases/`, and `mod/releases/`. These directories are ignored by Git. `release/` is the GitHub Actions staging directory; `releases/BeatblockOnlineInstaller.exe` is the stable local review copy.
 
 The checked-in Online menu and Windows installer icons share one deterministic
-source in `scripts/generate-icons.py`. Regenerate them after a design change,
-then verify that no stale binary asset remains:
+generator in `scripts/generate-icons.py`. Their canonical globe silhouette is
+the cleaned, transparent `scripts/assets/globe-template.png`; keep the source
+free of checkerboard pixels. The approved native menu trace is retained
+separately as `scripts/assets/globe-template-menu.png` so high-resolution
+installer changes cannot resample it. Regenerate both icons after a design
+change, then verify that no stale binary asset remains:
 
 ```powershell
 python scripts/generate-icons.py
