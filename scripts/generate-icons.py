@@ -1,17 +1,19 @@
 """Generate the checked-in Beatblock Online icon assets.
 
-The mark follows the project sketch: an internet globe with Beatblock's round
-character icon tucked into the lower-right as a sublabel. The game version uses
-hard pixel edges; the installer version adds color and anti-aliasing.
+The in-game mark pairs a heavy internet globe with Cranky and the gameplay
+paddle. It follows Beatblock's native 72 px menu pipeline: hard pixel edges,
+black forms, white contrast keylines, and a transparent canvas. The installer
+version adds color and anti-aliasing for Windows shell sizes.
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,51 +22,140 @@ INSTALLER_PNG = ROOT / "companion" / "assets" / "installer.png"
 INSTALLER_ICO = ROOT / "companion" / "assets" / "installer.ico"
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 
+# Native-size trace of the supplied globe template. Keeping the silhouette as a
+# readable one-bit mask preserves its exact four-column, three-band construction
+# without checking in the source image's baked checkerboard background.
+GLOBE_TEMPLATE = """
+......................##########......................
+..................#################...................
+................######################................
+..............##########################..............
+............############.####.############............
+...........############..####...###########...........
+..........#####..#####...####....####.######..........
+........######...####....####.....####..#####.........
+.......######...####.....####.....####...#####........
+.......####.....####.....####......####....####.......
+......####.....####......####......####.....####......
+.....######....####......####.......####...######.....
+....##############.......####.......##############....
+....#################....####....#################....
+...####..###################################..#####...
+...####......#############################.....####...
+..####.......############################.......####..
+..####.......####........####.........####......####..
+.####........###.........####.........####.......####.
+.####........###.........####.........####.......####.
+.####........###.........####.........####........###.
+.###........####.........####..........###........###.
+####........####.........####..........###........####
+####........####.........####..........###........####
+######################################################
+######################################################
+######################################################
+##############################......##################
+####........####.........####..........###........####
+####........####.........####..........###........####
+####........####.........###...........###........####
+####........####.........###...........###........####
+.###........####.........####..........###........###.
+.###........####.........####.........####........###.
+.####........###.........####.........####.......####.
+.####........###.........####.........####.......####.
+..####.......####........####.........####......####..
+..####.......####.##################.####.......####..
+...####......#############################.....####...
+...####..####################################..####...
+....##################...####...##################....
+....##############.......####.......##############....
+.....######....####......####.......####..#######.....
+......####.....####......####.......###.....####......
+......#####.....####.....####......####....#####......
+.......#####....####.....####.....####...######.......
+........######...####....####.....####..######........
+.........######..#####...####....####..######.........
+...........############..####...###########...........
+............############.####..###########............
+..............##########################..............
+................######################................
+..................##################..................
+.....................###########......................
+""".strip().splitlines()
+
 
 def draw_online_icon() -> Image.Image:
-    """Draw a 72 px globe with Beatblock's native black/white keyline style."""
+    """Draw the 72 px globe-and-Cranky menu sprite."""
 
     image = Image.new("RGBA", (72, 72), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     black = (0, 0, 0, 255)
     white = (255, 255, 255, 255)
 
-    def keyed_ellipse(bounds: tuple[int, int, int, int], outer: int = 7, inner: int = 3) -> None:
-        draw.ellipse(bounds, outline=black, width=outer)
-        draw.ellipse(bounds, outline=white, width=inner)
+    # Stamp the exact supplied silhouette before adding the native white safety
+    # edge. The mask is offset two pixels to leave room for that edge.
+    globe_mask = Image.new("L", image.size, 0)
+    globe_draw = ImageDraw.Draw(globe_mask)
+    if len(GLOBE_TEMPLATE) != 54 or any(len(row) != 54 for row in GLOBE_TEMPLATE):
+        raise ValueError("Globe template must remain an exact 54x54 mask")
+    for y, row in enumerate(GLOBE_TEMPLATE, start=2):
+        for x, pixel in enumerate(row, start=2):
+            if pixel == "#":
+                globe_draw.point((x, y), fill=255)
+    image.paste(white, mask=globe_mask.filter(ImageFilter.MaxFilter(5)))
+    image.paste(black, mask=globe_mask)
 
-    def keyed_arc(
-        bounds: tuple[int, int, int, int],
-        start: int,
-        end: int,
-        outer: int = 7,
-        inner: int = 3,
-    ) -> None:
-        draw.arc(bounds, start, end, fill=black, width=outer)
-        draw.arc(bounds, start, end, fill=white, width=inner)
+    # Player.lua constructs Cranky from a circular body plus a triangular handle
+    # and an annular paddle. Reusing those same primitives makes the sublabel
+    # immediately recognizable without coupling this static menu image to a
+    # live Player instance.
+    center = (48, 49)
+    body_bounds = (37, 38, 59, 60)
+    paddle_angle = 27
+    paddle_half_angle = 28
+    paddle_inner_radius = 15
+    paddle_outer_radius = 21
 
-    def keyed_line(points: tuple[tuple[int, int], ...], outer: int = 7, inner: int = 3) -> None:
-        draw.line(points, fill=black, width=outer, joint="curve")
-        draw.line(points, fill=white, width=inner, joint="curve")
+    def point(radius: float, angle: float) -> tuple[int, int]:
+        radians = math.radians(angle)
+        return (
+            round(center[0] + math.cos(radians) * radius),
+            round(center[1] + math.sin(radians) * radius),
+        )
 
-    # Native menu art combines white forms with a chunky black edge. Drawing the
-    # keyline first keeps the icon visible over both pale and dark menu frames.
-    globe = (3, 3, 57, 57)
-    keyed_ellipse(globe)
-    keyed_ellipse((17, 3, 43, 57), outer=6, inner=2)
-    keyed_arc((4, 12, 56, 37), 8, 172, outer=6, inner=2)
-    keyed_line(((5, 31), (55, 31)), outer=6, inner=2)
+    outer_angles = range(
+        paddle_angle - paddle_half_angle,
+        paddle_angle + paddle_half_angle + 1,
+        4,
+    )
+    inner_angles = range(
+        paddle_angle + paddle_half_angle,
+        paddle_angle - paddle_half_angle - 1,
+        -4,
+    )
+    paddle = tuple(point(paddle_outer_radius, angle) for angle in outer_angles) + tuple(
+        point(paddle_inner_radius, angle) for angle in inner_angles
+    )
+    handle = (
+        point(7, paddle_angle - 9),
+        point(paddle_inner_radius + 1, paddle_angle - 6),
+        point(paddle_inner_radius + 1, paddle_angle + 6),
+        point(7, paddle_angle + 9),
+    )
 
-    # Clear the overlap before adding a compact version of Beatblock's actual
-    # game icon: round block, two eyes, connector, and the protective halo.
-    draw.ellipse((34, 34, 72, 72), fill=(0, 0, 0, 0))
-    draw.ellipse((40, 47, 68, 72), fill=black)
-    draw.ellipse((44, 50, 64, 70), fill=white)
-    draw.rectangle((50, 41, 58, 51), fill=black)
-    draw.rectangle((52, 43, 56, 50), fill=white)
-    keyed_arc((35, 34, 72, 66), 202, 342, outer=9, inner=4)
-    draw.rectangle((49, 56, 52, 65), fill=black)
-    draw.rectangle((57, 56, 60, 65), fill=black)
+    # A single outside keyline keeps the composed mascot legible against the
+    # menu's alternating pale background and heavy black radial track.
+    cranky_mask = Image.new("L", image.size, 0)
+    cranky_draw = ImageDraw.Draw(cranky_mask)
+    cranky_draw.polygon(paddle, fill=255)
+    cranky_draw.polygon(handle, fill=255)
+    cranky_draw.ellipse(body_bounds, fill=255)
+    image.paste(white, mask=cranky_mask.filter(ImageFilter.MaxFilter(5)))
+
+    draw.polygon(paddle, fill=white, outline=black, width=3)
+    draw.polygon(handle, fill=white, outline=black, width=3)
+    draw.ellipse(body_bounds, fill=white, outline=black, width=3)
+    draw.line(((44, 46), (44, 50)), fill=black, width=2)
+    draw.line(((51, 46), (51, 50)), fill=black, width=2)
     return image
 
 
@@ -77,10 +168,16 @@ def validate_online_icon(image: Image.Image) -> None:
     black_pixels = sum(pixel == (0, 0, 0, 255) for pixel in pixels)
     white_pixels = sum(pixel == (255, 255, 255, 255) for pixel in pixels)
     transparent_pixels = sum(pixel[3] == 0 for pixel in pixels)
-    if black_pixels < 350 or white_pixels < 250:
+    if black_pixels < 650 or white_pixels < 300:
         raise ValueError("Online icon must retain substantial black keylines and white forms")
     if transparent_pixels < 1_500:
         raise ValueError("Online icon needs transparent breathing room around the silhouette")
+
+    # These samples protect the meaning of the sprite, not just its dimensions:
+    # globe core at top-left, Cranky's two eyes, and paddle at bottom-right.
+    required_black_pixels = ((29, 4), (44, 47), (51, 47), (66, 58))
+    if any(image.getpixel(point) != (0, 0, 0, 255) for point in required_black_pixels):
+        raise ValueError("Online icon must retain its globe, Cranky face, and paddle landmarks")
 
 
 def draw_installer_icon(size: int = 1024) -> Image.Image:

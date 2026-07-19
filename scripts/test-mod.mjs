@@ -1,7 +1,79 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { listZipEntries } from './verify-release.mjs';
+
+// Decode the small checked-in RGBA icon with Node built-ins so the packaging
+// gate can enforce contrast without adding an image dependency to CI.
+function decodeRgbaPng(buffer) {
+  if (!buffer.subarray(0, 8).equals(Buffer.from('\x89PNG\r\n\x1a\n', 'binary')))
+    throw new Error('Online menu icon has an invalid PNG signature');
+  let offset = 8;
+  let width;
+  let height;
+  const compressed = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      if (data[8] !== 8 || data[9] !== 6)
+        throw new Error('Online menu icon must use 8-bit RGBA pixels');
+    } else if (type === 'IDAT') {
+      compressed.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += length + 12;
+  }
+  if (!width || !height || compressed.length === 0)
+    throw new Error('Online menu icon is incomplete');
+
+  const source = inflateSync(Buffer.concat(compressed));
+  const stride = width * 4;
+  const pixels = Buffer.alloc(stride * height);
+  const paeth = (left, up, upperLeft) => {
+    const prediction = left + up - upperLeft;
+    const leftDistance = Math.abs(prediction - left);
+    const upDistance = Math.abs(prediction - up);
+    const upperLeftDistance = Math.abs(prediction - upperLeft);
+    return leftDistance <= upDistance && leftDistance <= upperLeftDistance
+      ? left
+      : upDistance <= upperLeftDistance
+        ? up
+        : upperLeft;
+  };
+  let sourceOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = source[sourceOffset++];
+    for (let x = 0; x < stride; x += 1) {
+      const raw = source[sourceOffset++];
+      const target = y * stride + x;
+      const left = x >= 4 ? pixels[target - 4] : 0;
+      const up = y > 0 ? pixels[target - stride] : 0;
+      const upperLeft = x >= 4 && y > 0 ? pixels[target - stride - 4] : 0;
+      const predictor =
+        filter === 0
+          ? 0
+          : filter === 1
+            ? left
+            : filter === 2
+              ? up
+              : filter === 3
+                ? Math.floor((left + up) / 2)
+                : filter === 4
+                  ? paeth(left, up, upperLeft)
+                  : Number.NaN;
+      if (Number.isNaN(predictor))
+        throw new Error(`Online menu icon uses unknown PNG filter ${filter}`);
+      pixels[target] = (raw + predictor) & 0xff;
+    }
+  }
+  return { width, height, pixels };
+}
 
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(resolve(root, path), 'utf8');
@@ -20,12 +92,35 @@ const [core, dashboard, components, online, ipc, renderer, hooks, commands, read
     read('obs-plugin/src/plugin.c'),
   ]);
 const onlineIcon = await readFile(resolve(root, 'mod/shared/assets/online.png'));
-if (
-  onlineIcon.toString('ascii', 1, 4) !== 'PNG' ||
-  onlineIcon.readUInt32BE(16) !== 72 ||
-  onlineIcon.readUInt32BE(20) !== 72
-) {
+const decodedOnlineIcon = decodeRgbaPng(onlineIcon);
+if (decodedOnlineIcon.width !== 72 || decodedOnlineIcon.height !== 72)
   throw new Error('Online menu icon must be a valid 72x72 PNG');
+let blackPixels = 0;
+let whitePixels = 0;
+let transparentPixels = 0;
+const pixelAt = (x, y) => {
+  const offset = (y * decodedOnlineIcon.width + x) * 4;
+  return decodedOnlineIcon.pixels.subarray(offset, offset + 4);
+};
+for (let offset = 0; offset < decodedOnlineIcon.pixels.length; offset += 4) {
+  const red = decodedOnlineIcon.pixels[offset];
+  const green = decodedOnlineIcon.pixels[offset + 1];
+  const blue = decodedOnlineIcon.pixels[offset + 2];
+  const alpha = decodedOnlineIcon.pixels[offset + 3];
+  if (alpha === 0) transparentPixels += 1;
+  else if (red === 0 && green === 0 && blue === 0 && alpha === 255) blackPixels += 1;
+  else if (red === 255 && green === 255 && blue === 255 && alpha === 255) whitePixels += 1;
+}
+if (blackPixels < 650 || whitePixels < 300 || transparentPixels < 1_500)
+  throw new Error('Online menu icon must retain its black/white contrast keyline contract');
+for (const [x, y] of [
+  [29, 4], // globe
+  [44, 47], // left eye
+  [51, 47], // right eye
+  [66, 58], // paddle
+]) {
+  if (!pixelAt(x, y).equals(Buffer.from([0, 0, 0, 255])))
+    throw new Error(`Online menu icon is missing its black landmark at ${x},${y}`);
 }
 const bootstrap = await read('mod/standalone/lovely/bootstrap.toml');
 if (!bootstrap.includes('{{lovely_hack:patch_dir}}'))
@@ -306,6 +401,10 @@ for (const interaction of [
   "pressed('select')",
   'mouse.pressed==1',
   'love.keyboard.setTextInput',
+  "key~='backspace' and key~='delete'",
+  'pcall(utf8.offset,value,-1)',
+  'love.keypressed=self.onlineKeyPressed',
+  'love.keypressed=self.previousKeyPressed',
   'HOST ADDRESS',
 ]) {
   if (!online.includes(interaction))

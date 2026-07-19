@@ -40,7 +40,7 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Settings** controls the gameplay HUD, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**.
 - **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
 
-Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model.
+Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
 
 Returning from chart selection or cancelling it keeps the Setlist workspace
 open, so hosts can add several charts without reopening the tool each time.

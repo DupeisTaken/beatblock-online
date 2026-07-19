@@ -3,6 +3,8 @@
 -- and selected participants survive filters, reordering, and reconnects.
 local Dashboard = require('bbt.dashboard_model')
 local Components = require('bbt.dashboard_components')
+local hasUtf8,utf8 = pcall(require,'utf8')
+if not hasUtf8 then utf8=nil end
 
 local C = {
   black={0,0,0,1}, panel={0,0,0,1}, raised={1,0,0,1},
@@ -652,7 +654,30 @@ local function editText(self,text)
   local modal=self.modal
   if not modal or modal.kind~='form' then return end
   local key=modal.fields[modal.index]
-  if #modal.values[key] < 64 and text:match('[%g ]') then modal.values[key]=modal.values[key]..text end
+  if #modal.values[key] < 64 and text:match('[%g ]') then
+    modal.values[key]=modal.values[key]..text
+    modal.error=nil
+  end
+end
+
+local function removeLastCharacter(value)
+  value=tostring(value or '')
+  if value=='' then return value end
+  -- LÖVE textinput values are UTF-8. Use a codepoint boundary when available
+  -- so Backspace removes one visible character instead of corrupting its bytes.
+  if utf8 and utf8.offset then
+    local ok,index=pcall(utf8.offset,value,-1)
+    if ok and index then return value:sub(1,index-1) end
+  end
+  return value:sub(1,-2)
+end
+
+local function editKey(self,key)
+  local modal=self.modal
+  if not modal or modal.kind~='form' or (key~='backspace' and key~='delete') then return end
+  local field=modal.fields[modal.index]
+  modal.values[field]=removeLastCharacter(modal.values[field])
+  modal.error=nil
 end
 
 return function()
@@ -673,13 +698,25 @@ return function()
     if em and em.clear then em.clear({self.menuMusicManager}) end
     if mouse and mouse.disableGameplay then mouse:disableGameplay() end
     self.previousTextInput=love.textinput
-    self.onlineTextInput=function(text) editText(self,text) end
+    self.onlineTextInput=function(text)
+      if self.modal and self.modal.kind=='form' then editText(self,text)
+      elseif self.previousTextInput then self.previousTextInput(text) end
+    end
     love.textinput=self.onlineTextInput
+    -- Beatblock's native key callback does not edit custom text fields. Chain
+    -- it so engine/ImGui behavior survives while forms gain deletion support.
+    self.previousKeyPressed=love.keypressed
+    self.onlineKeyPressed=function(key,scancode,isRepeat)
+      if self.previousKeyPressed then self.previousKeyPressed(key,scancode,isRepeat) end
+      editKey(self,key)
+    end
+    love.keypressed=self.onlineKeyPressed
     BBT.startOnlineRuntime()
     if not BBT.pendingRequestId then BBT.command('runtime.snapshot_request',{}) end
   end)
   function st:leave()
     if love.textinput==self.onlineTextInput then love.textinput=self.previousTextInput end
+    if love.keypressed==self.onlineKeyPressed then love.keypressed=self.previousKeyPressed end
     if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
     -- Restore the native menu shader before any destination state draws. Some
     -- transitions reuse an already-loaded Menu state, so relying on Menu:init

@@ -109,6 +109,13 @@ function BBT.openInstaller() end
 function BBT.openOfficialSelect() end
 function BBT.openChartSelect() end
 
+local forwardedKey
+local forwardedText
+local nativeKeyPressed=function(key) forwardedKey=key end
+local nativeTextInput=function(text) forwardedText=text end
+love.keypressed=nativeKeyPressed
+love.textinput=nativeTextInput
+
 local rawSetColor=love.graphics.setColor
 local invalidPaletteColors={}
 love.graphics.setColor=function(r,g,b,a)
@@ -187,7 +194,21 @@ function love.load()
   assert(em.clearCount==1,'Online must clear retained native menu entities')
   assert(love.graphics.getFont()==fonts.digitalDisco,'Online must refresh the native menu font')
   assert(shuv.showBadColors==false,'Online must enable strict indexed palette rendering')
+  online:openForm('host')
+  online.modal.values.displayName='Player '..string.char(240,159,142,181)
+  love.keypressed('backspace')
+  assert(online.modal.values.displayName=='Player ','Backspace must remove one complete UTF-8 character')
+  love.keypressed('delete')
+  assert(online.modal.values.displayName=='Player','Delete must remove the final character')
+  love.keypressed('backspace')
+  assert(online.modal.values.displayName=='Playe','Repeated deletion must continue editing the field')
+  assert(forwardedKey=='backspace','Online must preserve Beatblock key callbacks while editing')
+  online.modal=nil
+  love.textinput('native')
+  assert(forwardedText=='native','Online must preserve Beatblock text input outside forms')
   online:leave()
+  assert(love.keypressed==nativeKeyPressed,'Leaving Online must restore Beatblock key callbacks')
+  assert(love.textinput==nativeTextInput,'Leaving Online must restore Beatblock text callbacks')
   assert(love.graphics.getFont()==fonts.digitalDisco,'Leaving Online must restore the native menu font')
   assert(shuv.showBadColors==true,'Leaving Online must restore full-color menu rendering')
   online:init({workspace='setlist'})
