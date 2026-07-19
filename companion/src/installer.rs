@@ -1976,7 +1976,10 @@ fn validate_online_recovery_contract(directory: &Path) -> Result<()> {
         ("bbt/dashboard_components.lua", "font:getHeight()"),
         ("bbt/dashboard_components.lua", "height < 22"),
         ("bbt/renderer.lua", "readbackPending = {false,false}"),
+        ("bbt/renderer.lua", "dpiscale=1"),
         ("bbt/renderer.lua", "Renderer.frames.pointer + 32"),
+        ("bbt/renderer.lua", "capturePlayerView"),
+        ("bbt/renderer.lua", "beginGameplayOnly"),
     ];
     for (relative, marker) in contracts {
         let source = std::fs::read_to_string(directory.join(relative))

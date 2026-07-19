@@ -68,6 +68,10 @@ local function reportError(message)
 end
 
 function Renderer.shutdown()
+  -- A draw failure can terminate the child between the pre/post draw hooks.
+  -- Restore chart state before releasing resources in case Beatblock's normal
+  -- error path attempts one final draw.
+  if Renderer.endGameplayOnly then Renderer.endGameplayOnly() end
   unmapFile(Renderer.inputs)
   unmapFile(Renderer.frames)
   -- Drop pending GPU readbacks and canvases when initialization fails. Normal
@@ -114,9 +118,14 @@ function Renderer.init()
     return failInitialization('renderer shared-memory files could not be mapped')
   end
   -- Two canvases keep one GPU readback from forcing an avoidable 60 Hz drop.
+  -- Shared-memory dimensions are physical pixels, so never inherit Windows'
+  -- per-monitor DPI scale (for example 1280x720 becoming a 1600x900 readback).
   local canvasOk, first, second = pcall(function()
-    return love.graphics.newCanvas(Renderer.width, Renderer.height, {format='rgba8', readable=true}),
-      love.graphics.newCanvas(Renderer.width, Renderer.height, {format='rgba8', readable=true})
+    return love.graphics.newCanvas(Renderer.width, Renderer.height, {
+      format='rgba8', readable=true, dpiscale=1,
+    }), love.graphics.newCanvas(Renderer.width, Renderer.height, {
+      format='rgba8', readable=true, dpiscale=1,
+    })
   end)
   if not canvasOk or not first or not second then
     return failInitialization('renderer canvases could not be allocated')
@@ -254,7 +263,85 @@ function Renderer.tapInputs()
     Renderer.tapMask == 0 and Renderer.previousTapMask ~= 0
 end
 
-local function drawSource(source)
+-- OBS is a competition view, not a second copy of the chart's decorative
+-- artwork. Keep notes, the player, hit feedback, HUD, and screen-space VFX,
+-- while temporarily hiding scenery only inside the isolated renderer child.
+local gameplayEntityNames = {
+  player=true, block=true, bounce=true, extratap=true, hold=true,
+  mine=true, minehold=true, side=true, trace=true, tapeffect=true,
+  hitparticle=true, missparticle=true, sideparticle=true, mineexplosion=true,
+}
+
+local function className(entity)
+  local class = entity and entity.class
+  local value = type(class) == 'table' and class.name or class
+  return string.lower(tostring(value or ''))
+end
+
+local function isGameplayEntity(entity, game)
+  if not entity then return false end
+  if game and entity == game.p then return true end
+  if type(entity.isInstanceOf) == 'function' then
+    if Player and entity:isInstanceOf(Player) then return true end
+    if Block and entity:isInstanceOf(Block) then return true end
+  end
+  return gameplayEntityNames[className(entity)] == true
+end
+
+function Renderer.beginGameplayOnly(game)
+  if not Renderer.active or Renderer.backgroundState then return end
+  game = game or cs
+  if not game then return end
+  local vfx = game.vfx
+  local state = {
+    game=game,
+    bgColor=game.bgColor,
+    bg=game.bg,
+    drawVideoBG=game.drawVideoBG,
+    entities={},
+    vfx=vfx,
+    bgNoise=vfx and vfx.bgNoise,
+    bgNoiseOld=vfx and vfx.bgNoise_OLD and vfx.bgNoise_OLD.enable,
+  }
+  Renderer.backgroundState = state
+  game.bgColor = 0
+  game.bg = nil
+  game.drawVideoBG = false
+  if vfx then
+    vfx.bgNoise = 0
+    if vfx.bgNoise_OLD then vfx.bgNoise_OLD.enable = false end
+  end
+  local entityList = rawget(_G, 'entities')
+  if type(entityList) == 'table' then
+    for _, entity in ipairs(entityList) do
+      if not isGameplayEntity(entity, game) then
+        state.entities[#state.entities + 1] = {entity=entity, skipRender=entity.skipRender}
+        entity.skipRender = true
+      end
+    end
+  end
+end
+
+function Renderer.endGameplayOnly()
+  local state = Renderer.backgroundState
+  if not state then return end
+  Renderer.backgroundState = nil
+  local game = state.game
+  if game then
+    game.bgColor = state.bgColor
+    game.bg = state.bg
+    game.drawVideoBG = state.drawVideoBG
+  end
+  if state.vfx then
+    state.vfx.bgNoise = state.bgNoise
+    if state.vfx.bgNoise_OLD then state.vfx.bgNoise_OLD.enable = state.bgNoiseOld end
+  end
+  for _, saved in ipairs(state.entities) do
+    saved.entity.skipRender = saved.skipRender
+  end
+end
+
+local function drawSource(source, finalShader)
   if not source or not source.getDimensions then error('renderer capture source is unavailable') end
   local sourceWidth, sourceHeight = source:getDimensions()
   if not sourceWidth or sourceWidth <= 0 or not sourceHeight or sourceHeight <= 0 then
@@ -266,7 +353,7 @@ local function drawSource(source)
     -- Reset it inside the output canvas so shader, transform, blend, or tint
     -- state cannot turn a valid gameplay canvas into a black OBS frame.
     love.graphics.origin()
-    love.graphics.setShader()
+    love.graphics.setShader(finalShader)
     love.graphics.setBlendMode('alpha', 'alphamultiply')
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.clear(0, 0, 0, 1)
@@ -338,7 +425,7 @@ local function finishReadbacks()
   end
 end
 
-function Renderer.capture(cleanSource, fullSource)
+function Renderer.capture(cleanSource, shadedSource, finalShader)
   if not Renderer.active or not Renderer.frames then return end
   local now = love.timer.getTime()
   -- LÖVE 12 returns a GraphicsReadback object; it does not accept a callback.
@@ -360,13 +447,13 @@ function Renderer.capture(cleanSource, fullSource)
     return
   end
   local output=Renderer.outputs[readbackSlot]
-  -- Clean mode is the real uncomposited gameplay canvas. Full mode includes
-  -- Beatblock's shader/composition pass and the online race HUD. The previous
-  -- synthetic clean renderer referenced cs.notes/cs.taps/cs.mines fields that
-  -- Game never owns, so a healthy stream contained little more than a circle.
-  local source = Renderer.mode == 'full' and fullSource or cleanSource
+  -- Clean mode is the real uncomposited gameplay canvas. Full mode receives
+  -- shuv.canvasShaded after Beatblock has applied its palette/accessibility
+  -- shader and every in-state HUD layer. Capturing raw shuv.canvas exposed its
+  -- red palette-index artwork as a full-screen mask instead of the player view.
+  local source = Renderer.mode == 'full' and shadedSource or cleanSource
   output:renderTo(function()
-    drawSource(source)
+    drawSource(source, Renderer.mode == 'full' and finalShader or nil)
   end)
   Renderer.captureSequence = Renderer.captureSequence + 1
   local ticket=Renderer.captureSequence
@@ -387,11 +474,26 @@ function Renderer.capture(cleanSource, fullSource)
   end
 end
 
-function Renderer.captureSafe(cleanSource, fullSource)
+function Renderer.captureSafe(cleanSource, shadedSource, finalShader)
   if Renderer.captureError then return end
-  local success, message = xpcall(function() Renderer.capture(cleanSource, fullSource) end, debug.traceback)
+  local success, message = xpcall(function()
+    Renderer.capture(cleanSource, shadedSource, finalShader)
+  end, debug.traceback)
   if success then return end
   reportError('renderer capture failed:\n' .. tostring(message))
+end
+
+function Renderer.capturePlayerView(cleanSource, shadedSource)
+  -- shuv.finish applies chromatic aberration only while drawing its shaded
+  -- canvas to the window. Reapply that final screen-space shader to the OBS
+  -- output so Full mode follows the player's view instead of stopping one
+  -- post-processing pass early.
+  local finalShader=nil
+  local chromatic=cs and cs.vfx and cs.vfx.chromaticAberration
+  if Renderer.mode=='full' and chromatic and chromatic.enabled and shaders then
+    finalShader=shaders.chromaticAberration
+  end
+  Renderer.captureSafe(cleanSource, shadedSource, finalShader)
 end
 
 return Renderer

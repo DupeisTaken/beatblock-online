@@ -17,7 +17,12 @@ recover without recreating the OBS source.
 
 The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
 
-Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode captures the chart's final shaders, chart-controlled HUD, and online race HUD; optional Clean mode captures Beatblock's raw gameplay canvas before that final composition. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
+Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. The OBS competition view removes chart scenery, background images/video, and background noise while retaining the player, notes, hit feedback, chart-controlled HUD, online race HUD, palette/accessibility conversion, and screen-space effects. Backdrop suppression is scoped to the isolated renderer child and restored after every Game draw, so the host player's window is unchanged. Capturing occurs after the remaining gamestate composition, preventing raw palette-index artwork from appearing as a color mask. Optional Clean mode captures the same foreground-only gameplay canvas before final shading. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
+
+Renderer output canvases explicitly use a `1.0` DPI scale. OBS dimensions are
+physical pixels; allowing Windows display scaling to inflate a nominal
+1280×720 canvas would make readbacks fail their exact-size guard and leave OBS
+showing a stale or blank frame.
 
 Assign and configure every stream before starting the synchronized countdown. The runtime rejects renderer reconfiguration during countdown or gameplay because a new child would not have observed the chart's earlier timed VFX events and could not reconstruct the original composition exactly. An active stream can still be stopped during a race.
 

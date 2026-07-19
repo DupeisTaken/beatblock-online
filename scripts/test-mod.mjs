@@ -159,6 +159,7 @@ for (const contract of [
   [renderer, 'readbackPending = {false,false}'],
   [renderer, 'readbackRequests = {nil,nil}'],
   [renderer, 'readbackTickets = {0,0}'],
+  [renderer, 'dpiscale=1'],
   [renderer, 'function Renderer.shutdown()'],
   [renderer, 'local success, request = pcall(love.graphics.readbackTextureAsync, output)'],
   [renderer, 'cLevel = chart'],
@@ -169,9 +170,11 @@ for (const contract of [
   [renderer, 'sdfunc.save = function() end'],
   [renderer, 'Renderer.originalErrorHandler = love.errorhandler'],
   [renderer, "reportError('renderer crashed:\\n'"],
-  [renderer, 'function Renderer.captureSafe(cleanSource, fullSource)'],
-  [renderer, "local source = Renderer.mode == 'full' and fullSource or cleanSource"],
+  [renderer, 'function Renderer.captureSafe(cleanSource, shadedSource, finalShader)'],
+  [renderer, 'function Renderer.capturePlayerView(cleanSource, shadedSource)'],
+  [renderer, "local source = Renderer.mode == 'full' and shadedSource or cleanSource"],
   [renderer, "love.graphics.push('all')"],
+  [renderer, 'love.graphics.setShader(finalShader)'],
   [renderer, "love.graphics.setBlendMode('alpha', 'alphamultiply')"],
   [renderer, 'love.graphics.pop()'],
   [
@@ -183,6 +186,9 @@ for (const contract of [
   [renderer, 'Renderer.frames.pointer + 32'],
   [renderer, 'function Renderer.applyState(advanceMotion)'],
   [renderer, 'function Renderer.afterGameUpdate()'],
+  [renderer, 'function Renderer.beginGameplayOnly(game)'],
+  [renderer, 'function Renderer.endGameplayOnly()'],
+  [renderer, "local entityList = rawget(_G, 'entities')"],
   [renderer, 'player.circleX = math.cos(radians) * radius'],
   [renderer, 'math.abs(sourceBeat - Renderer.beat) > .05'],
   [online, "workspace=options.workspace or 'room'"],
@@ -222,13 +228,20 @@ if (
   !obsPlugin.includes('gs_effect_set_texture_srgb(image, ctx->texture)')
 )
   throw new Error('OBS custom-draw source does not bind its frame texture to the base effect');
-if (!hooks.includes('BBTRenderer.captureSafe(self.canv, shuv.canvas)'))
-  throw new Error('Renderer capture hook does not receive both raw and composited gameplay');
+const playerViewCapture = 'BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded)';
+if (!hooks.includes(playerViewCapture))
+  throw new Error('Renderer capture hook does not receive raw and final shaded gameplay');
+if (!hooks.includes('pattern = "cs:draw()"'))
+  throw new Error('Renderer capture does not run after the complete gamestate composition');
 if (
-  hooks.indexOf('BBTRenderer.captureSafe(self.canv, shuv.canvas)') <
-  hooks.indexOf('if BBT then BBT.drawRaceHud() end')
+  !hooks.includes('BBTRenderer.beginGameplayOnly(self)') ||
+  !hooks.includes('BBTRenderer.endGameplayOnly()')
 )
-  throw new Error('Renderer capture runs before Beatblock finishes its visible composition');
+  throw new Error('Renderer does not bracket Game drawing with backdrop suppression');
+if (hooks.includes('BBTRenderer.captureSafe(self.canv, shuv.canvas)'))
+  throw new Error('Renderer still exposes Beatblock palette-index colors as the Full stream');
+if (!renderer.includes('chromatic and chromatic.enabled'))
+  throw new Error('Renderer Full mode omits Beatblock final chromatic-aberration pass');
 if (renderer.includes('cs and cs.notes') || renderer.includes('local function drawClean()'))
   throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))
@@ -247,8 +260,8 @@ if (
 )
   throw new Error('Broadcast workspace reads lifecycle state without a local room snapshot');
 const captureBody = renderer.slice(
-  renderer.indexOf('function Renderer.capture(cleanSource, fullSource)'),
-  renderer.indexOf('function Renderer.captureSafe(cleanSource, fullSource)'),
+  renderer.indexOf('function Renderer.capture(cleanSource, shadedSource, finalShader)'),
+  renderer.indexOf('function Renderer.captureSafe(cleanSource, shadedSource, finalShader)'),
 );
 if (captureBody.includes('Renderer.update()'))
   throw new Error('Renderer capture consumes input after gameplay simulation has already run');

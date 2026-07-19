@@ -34,6 +34,7 @@ if (sourceOnly) {
 // Patch acceptance is intentionally tied to the isolated `.test` game copy;
 // release validation must never inspect or launch the user's Steam install.
 const reference = resolve(root, '.test/Beatblock/packed');
+const gameExecutable = resolve(root, '.test/Beatblock/Beatblock.exe');
 const blocks = hooks.match(/\[\[patches\]\][\s\S]*?(?=\[\[patches\]\]|$)/g) ?? [];
 let sourceValidated = 0;
 for (const block of blocks) {
@@ -42,12 +43,22 @@ for (const block of blocks) {
   if (!targetMatch || !patternMatch) continue;
   const target = JSON.parse(targetMatch[1]);
   const pattern = JSON.parse(patternMatch[1]);
-  if (!target.startsWith('states/')) continue;
-  const source = execFileSync(
-    'tar',
-    ['-xOf', resolve(reference, 'states.zip'), target.slice('states/'.length)],
-    { encoding: 'utf8' },
-  );
+  // Beatblock's fused executable carries main.lua while state sources live in
+  // the packed state archive. Validate both so a post-shuv capture hook cannot
+  // silently drift to an invalid main-loop signature.
+  let source;
+  if (target === 'main.lua') {
+    source = execFileSync('tar', ['-xOf', gameExecutable, target], { encoding: 'utf8' });
+  } else if (target.startsWith('states/')) {
+    source = execFileSync(
+      'tar',
+      ['-xOf', resolve(reference, 'states.zip'), target.slice('states/'.length)],
+      { encoding: 'utf8' },
+    );
+  } else {
+    continue;
+  }
+  source = source.replace(/\r\n/g, '\n');
   if (!source.includes(pattern))
     throw new Error(
       `Lovely signature is absent from the pinned game source: ${target} :: ${pattern}`,

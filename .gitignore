@@ -63,6 +63,7 @@ mod/releases/
 companion-data/
 exports/
 reports/ui/
+reports/obs-stream/
 .dev-mods/
 __pycache__/
 *.py[cod]
