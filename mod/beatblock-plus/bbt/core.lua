@@ -761,7 +761,11 @@ function BBT.update(dt)
       if ok2 and down2 then tapMask = tapMask + 2 end
     end
     local flags = 0
-    if cs and cs.level and not cs.results then flags = flags + 1 end
+    -- Loading a chart creates cs.level while Beatblock is still start-pending
+    -- and paused. Publishing that as "playing" lets a delayed renderer start
+    -- before the participant's real synchronized first frame.
+    local renderPlaying = inGame and not cs.startPending and not cs.paused
+    if renderPlaying then flags = flags + 1 end
     if cs and cs.paused then flags = flags + 2 end
     BBT.send('render.sample', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, tapMask = tapMask, flags = flags })
   end

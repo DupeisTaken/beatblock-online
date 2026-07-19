@@ -6,6 +6,7 @@
   },
   "patchPatterns": [
     "st:setUpdate(function(self,dt)",
+    "self.gm:update(dt)",
     "self:pauseGame()",
     "function st:restartLevel()",
     "function st:quitLevel()",
@@ -13,6 +14,7 @@
     "if self.pauseTimer <= 0 then",
     "love.graphics.setCanvas(self.canv)",
     "self.gm:endOnTopShader()",
+    "if pq ~= \"\" and not self.startPending then",
     "function st:playLevel(filename, variant)",
     "self.options:addOption('retry',function()",
     "self.mainMenu:addOption('credits',function()"

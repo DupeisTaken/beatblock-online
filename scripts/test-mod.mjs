@@ -155,6 +155,7 @@ for (const contract of [
   [core, 'local function chartPreloadReady(levelData, soundData)'],
   [core, 'previous.menuMusicManager:stop()'],
   [core, 'local renderInterval = inGame and 1 / 60 or 1 / 5'],
+  [core, 'local renderPlaying = inGame and not cs.startPending and not cs.paused'],
   [renderer, 'readbackPending = {false,false}'],
   [renderer, 'readbackRequests = {nil,nil}'],
   [renderer, 'readbackTickets = {0,0}'],
@@ -180,6 +181,10 @@ for (const contract of [
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
+  [renderer, 'function Renderer.applyState(advanceMotion)'],
+  [renderer, 'function Renderer.afterGameUpdate()'],
+  [renderer, 'player.circleX = math.cos(radians) * radius'],
+  [renderer, 'math.abs(sourceBeat - Renderer.beat) > .05'],
   [online, "workspace=options.workspace or 'room'"],
   [online, "BBT.command('room.commentator_set'"],
   [online, "BBT.command('broadcast.mirror_set'"],
@@ -228,6 +233,18 @@ if (renderer.includes('cs and cs.notes') || renderer.includes('local function dr
   throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))
   throw new Error('Renderer hold can block Beatblock before chart preloading completes');
+const nativeGameUpdate = hooks.indexOf('pattern = "self.gm:update(dt)"');
+const remotePostUpdate = hooks.indexOf('BBTRenderer.afterGameUpdate()');
+if (nativeGameUpdate < 0 || remotePostUpdate < nativeGameUpdate)
+  throw new Error('Renderer does not restore the delayed beat and paddle after native input');
+const captureBody = renderer.slice(
+  renderer.indexOf('function Renderer.capture(cleanSource, fullSource)'),
+  renderer.indexOf('function Renderer.captureSafe(cleanSource, fullSource)'),
+);
+if (captureBody.includes('Renderer.update()'))
+  throw new Error('Renderer capture consumes input after gameplay simulation has already run');
+if (!online.includes("mode='full'"))
+  throw new Error('Broadcast assignment does not default to the chart-faithful full composition');
 const officialSelect = core.slice(
   core.indexOf('function BBT.openOfficialSelect(mode)'),
   core.indexOf('local function returnFromChartSelector'),

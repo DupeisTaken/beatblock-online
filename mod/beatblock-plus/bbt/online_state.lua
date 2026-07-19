@@ -408,7 +408,7 @@ end
 
 local function rendererSlot(id)
   for _,slot in ipairs(BBT.renderers or {}) do if slot.id==id then return slot end end
-  return {id=id,active=false,featured=id=='A',mode='clean',width=1280,height=720,fps=60,delayMs=500}
+  return {id=id,active=false,featured=id=='A',mode='full',width=1280,height=720,fps=60,delayMs=500}
 end
 
 local function planSlot(id)
@@ -426,6 +426,7 @@ local function drawBroadcast(self)
     return
   end
   local target=selected(self)
+  local rendererEditable=room.lifecycle~='playing' and room.lifecycle~='countdown'
   ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
   ui:text(target and ('CANDIDATE: '..target.displayName) or 'CANDIDATE: SELECT A PLAYER',306,105,270,'right','muted')
   for index,id in ipairs(STREAMS) do
@@ -442,12 +443,12 @@ local function drawBroadcast(self)
       button(self,'broadcast_assign_'..id,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
         if slot.active then BBT.command('renderer.stop',{slot=id})
         elseif target and target.role~='spectator' then
-          BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode='clean',width=1280,height=720,fps=60,delayMs=500,featured=slot.featured})
+          BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode='full',width=1280,height=720,fps=60,delayMs=500,featured=slot.featured})
         end
-      end,slot.active and 'yellow' or 'cyan',slot.active or (target and target.role~='spectator'))
+      end,slot.active and 'yellow' or 'cyan',slot.active or (rendererEditable and target and target.role~='spectator'))
       button(self,'broadcast_feature_'..id,x+68,196,57,25,'FEATURE',function()
         BBT.command('renderer.configure',{slot=id,participantId=slot.participantId,participantName=slot.participantName,mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,delayMs=slot.delayMs,featured=true})
-      end,'green',slot.active and not slot.featured)
+      end,'green',rendererEditable and slot.active and not slot.featured)
     end
   end
   if authority=='commentator' then
@@ -473,7 +474,7 @@ local function drawBroadcast(self)
       self.modal={kind='details',title='RENDERER DETAILS',message=detail,returnFocus=self.focusId}
     end,'white')
   elseif self.broadcastAdvanced and authority=='host' then
-    ui:text('MODE CLEAN  /  1280x720  /  60 FPS  /  500 MS  /  FEATURED AUDIO ONLY',24,276,552,'left','muted')
+    ui:text('MODE FULL  /  1280x720  /  60 FPS  /  500 MS  /  FEATURED AUDIO ONLY',24,276,552,'left','muted')
   else
     ui:text('Featured video, text exports, and audio follow the same delayed clock.',24,276,552,'left','muted')
   end

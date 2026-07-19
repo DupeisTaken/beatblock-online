@@ -98,21 +98,26 @@ fn read_committed_frame(path: &Path) -> Result<Option<(u64, u32, u32, Vec<u8>)>>
     Ok(Some((sequence, width, height, pixels)))
 }
 
-fn push_playing_sample(manager: &RendererManager, started: &Instant) {
+fn push_playing_sample(manager: &RendererManager, started: &Instant) -> f32 {
     let now_us = unix_ms() * 1_000;
+    // Tutorial begins at beat -8 and reaches its Play Song event at beat 0
+    // using 150 BPM. Driving that real pre-roll prevents the probe itself from
+    // collapsing sixteen beats of chart/VFX events into its first frame.
+    let beat = -8.0 + started.elapsed().as_secs_f32() * 2.5;
     manager.push_sample(
         "physical-probe",
         RenderSample {
             session_id: 1,
             sequence: started.elapsed().as_millis() as u32 + 1,
             run_time_us: now_us,
-            beat: 8.0 + started.elapsed().as_secs_f32(),
+            beat,
             paddle_angle: 45.0,
             tap_mask: 0,
             flags: 1,
         },
     );
-    manager.write_aligned_inputs(now_us + 250_000);
+    manager.write_aligned_inputs(now_us);
+    beat
 }
 
 fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
@@ -162,6 +167,11 @@ fn main() -> Result<()> {
     let root = env::var_os("BBT_PROBE_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir().join("beatblock-online-renderer-probe"));
+    let capture_beat = env::var("BBT_PROBE_CAPTURE_BEAT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && (-8.0..=256.0).contains(value))
+        .unwrap_or(1.0);
     std::fs::create_dir_all(&root)?;
 
     let manager = RendererManager::new(root.clone())?;
@@ -189,9 +199,11 @@ fn main() -> Result<()> {
 
     let started = Instant::now();
     let frame = loop {
-        push_playing_sample(&manager, &started);
-        if let Some(frame) = read_committed_frame(&manager.frame_path("A"))? {
-            break frame;
+        let beat = push_playing_sample(&manager, &started);
+        if beat >= capture_beat {
+            if let Some(frame) = read_committed_frame(&manager.frame_path("A"))? {
+                break frame;
+            }
         }
         if let Ok(error) = std::fs::read_to_string(manager.error_path("A")) {
             bail!("renderer reported: {error}");

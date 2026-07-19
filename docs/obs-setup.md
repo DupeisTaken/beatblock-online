@@ -17,7 +17,9 @@ recover without recreating the OBS source.
 
 The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
 
-Default renderer settings are 1280x720 at 60 fps with a 500 ms buffer. Delay is clamped to 250-1500 ms. Clean mode captures Beatblock's real raw gameplay canvas before the final shader/HUD composition; full mode captures the composited game view and online race HUD. Both modes preserve the source aspect ratio. Renderer children preload the chart, remain held until the selected player's delayed `playing` sample arrives, and then apply that sample's beat, paddle, and taps before each game update. The dashboard reports `LIVE`, startup/error state, and actual frame-ring drops rather than treating assignment as proof of video.
+Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode captures the chart's final shaders, chart-controlled HUD, and online race HUD; optional Clean mode captures Beatblock's raw gameplay canvas before that final composition. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
+
+Assign and configure every stream before starting the synchronized countdown. The runtime rejects renderer reconfiguration during countdown or gameplay because a new child would not have observed the chart's earlier timed VFX events and could not reconstruct the original composition exactly. An active stream can still be stopped during a race.
 
 Renderer processes receive their stream configuration through environment
 variables, not command-line flags, because Lovely parses the game's command line
@@ -35,11 +37,14 @@ Developers can validate the raw producer without opening OBS by pointing the
 physical probe at an isolated Beatblock test build. Run it once with
 `BBT_PROBE_MODE=clean` and once with `BBT_PROBE_MODE=full`; it rejects torn,
 transparent, uniformly black, or spatially empty frames and writes a BMP for
-visual review:
+visual review. The probe follows Tutorial's real pre-roll; set
+`BBT_PROBE_CAPTURE_BEAT` to inspect a later composed frame without skipping the
+intervening chart events:
 
 ```powershell
 $env:BBT_PROBE_GAME = 'C:\path\to\Beatblock.exe'
-$env:BBT_PROBE_MODE = 'clean'
+$env:BBT_PROBE_MODE = 'full'
+$env:BBT_PROBE_CAPTURE_BEAT = '8'
 cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 ```
 

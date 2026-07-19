@@ -258,7 +258,6 @@ impl RendererManager {
             .rev()
             .find(|state| state.updated_at_ms <= target)
             .cloned()
-            .or_else(|| buffer.front().cloned())
     }
 
     pub fn frame_path(&self, slot_id: &str) -> PathBuf {
@@ -295,7 +294,6 @@ impl RendererManager {
                 .iter()
                 .rev()
                 .find(|sample| sample.run_time_us <= target)
-                .or_else(|| buffer.front())
             else {
                 continue;
             };
@@ -655,6 +653,7 @@ mod tests {
     fn enforces_stream_limits_and_creates_frame_contract() {
         let root = std::env::temp_dir().join(format!("bbt-renderer-{}", rand::random::<u64>()));
         let manager = RendererManager::new(root.clone()).unwrap();
+        assert_eq!(manager.slot("A").unwrap().mode, RendererMode::Full);
         let slot = manager
             .configure(
                 "A",
@@ -942,6 +941,93 @@ mod tests {
         assert_eq!(sample.beat, 10.25);
         assert_eq!(sample.paddle_angle, 21.0);
         assert_eq!(sample.tap_mask, 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn aligned_input_waits_until_the_configured_delay_has_elapsed() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-preroll-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(500),
+                    featured: None,
+                },
+            )
+            .unwrap();
+        manager.render_samples.lock().unwrap().insert(
+            "player-1".into(),
+            VecDeque::from([RenderSample {
+                session_id: 0,
+                sequence: 7,
+                run_time_us: 1_000_000,
+                beat: -8.0,
+                paddle_angle: 135.0,
+                tap_mask: 0,
+                flags: 1,
+            }]),
+        );
+
+        manager.write_aligned_inputs(1_499_999);
+        assert!(
+            std::fs::read(manager.state_path("A"))
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0),
+            "the first frame must not bypass the configured spectator delay"
+        );
+
+        manager.write_aligned_inputs(1_500_000);
+        let sample =
+            RenderSample::decode(&std::fs::read(manager.state_path("A")).unwrap()).unwrap();
+        assert_eq!(sample.sequence, 7);
+        assert_eq!(sample.paddle_angle, 135.0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn featured_exports_wait_for_the_same_delay_as_video() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-exports-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: None,
+                    height: None,
+                    fps: None,
+                    delay_ms: Some(500),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        manager.player_states.lock().unwrap().insert(
+            "player-1".into(),
+            VecDeque::from([GameplayState {
+                updated_at_ms: 1_000,
+                player_name: "Delayed player".into(),
+                ..GameplayState::default()
+            }]),
+        );
+
+        assert!(manager.aligned_featured_state(1_499).is_none());
+        assert_eq!(
+            manager.aligned_featured_state(1_500).unwrap().player_name,
+            "Delayed player"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

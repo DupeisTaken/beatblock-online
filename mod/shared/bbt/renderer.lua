@@ -8,7 +8,8 @@ local Renderer = {
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0, previousTapMask = 0,
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
-  playing = false, droppedFrames = 0, nextFrameAt = nil,
+  playing = false, hasInput = false, droppedFrames = 0, nextFrameAt = nil,
+  previousAngle = nil, motionSequence = 0,
 }
 Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
@@ -177,20 +178,75 @@ end
 function Renderer.update()
   if not Renderer.active or not Renderer.inputs then return end
   local sequence = tonumber(ffi.cast('uint32_t*', Renderer.inputs.pointer + 8)[0])
-  if sequence == Renderer.lastInputSequence then return end
+  if sequence == 0 or sequence == Renderer.lastInputSequence then return end
+  local beat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 20)[0])
+  local angle = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 24)[0])
+  if beat ~= beat or angle ~= angle or beat == math.huge or beat == -math.huge
+    or angle == math.huge or angle == -math.huge then return end
+  local flags = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 30)[0])
   Renderer.lastInputSequence = sequence
   Renderer.previousTapMask = Renderer.tapMask
   Renderer.tapMask = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 28)[0])
-  Renderer.beat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 20)[0])
-  Renderer.angle = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 24)[0])
-  local flags = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 30)[0])
+  Renderer.beat = beat
+  Renderer.previousAngle = Renderer.angle
+  Renderer.angle = angle % 360
   Renderer.playing = flags % 2 == 1
-  if cs then cs.cBeat = Renderer.beat end
-  if cs and cs.p then cs.p.angle = Renderer.angle; cs.p.anglePrevFrame = Renderer.angle end
+  Renderer.hasInput = true
+  Renderer.applyState(false)
+end
+
+-- Beatblock's hidden window still runs its native mouse/controller update,
+-- which otherwise replaces the remote paddle with a vector toward (0, 0).
+-- Apply once before simulation for event timing and once after it for the
+-- exact draw state, including the circle-snap coordinates used next frame.
+function Renderer.applyState(advanceMotion)
+  if not Renderer.hasInput or not cs then return end
+  -- The featured child owns delayed audio. Correct only material drift so the
+  -- song clock, chart events, and published frame share one timeline without
+  -- seeking the track for harmless sub-frame jitter.
+  if not advanceMotion and cs.source and cs.source.getBeat and cs.source.setBeat then
+    local readOk, sourceBeat = pcall(cs.source.getBeat, cs.source)
+    if readOk and type(sourceBeat) == 'number' and sourceBeat == sourceBeat
+      and math.abs(sourceBeat - Renderer.beat) > .05 then
+      pcall(cs.source.setBeat, cs.source, Renderer.beat)
+    end
+  end
+  cs.cBeat = Renderer.beat
+  local player = cs.p
+  if not player then return end
+  local angle = Renderer.angle
+  local newMotion = Renderer.motionSequence ~= Renderer.lastInputSequence
+  local previous = newMotion and (Renderer.previousAngle or angle) or angle
+  player.anglePrevFrame = previous
+  -- On a new sample, leave the player at the previous remote angle before
+  -- GameManager:update. The reconstructed mouse vector below then advances
+  -- Beatblock through the same native paddle transition during simulation.
+  player.angle = advanceMotion and angle or previous
+  if advanceMotion and newMotion then
+    local delta = helpers and helpers.angdelta and helpers.angdelta(previous, angle) or 0
+    player.angleDelta = delta
+    Renderer.motionSequence = Renderer.lastInputSequence
+  end
+  local radius = tonumber(player.radius) or 0
+  if radius > 0 then
+    local radians = math.rad(angle - 90)
+    player.circleX = math.cos(radians) * radius
+    player.circleY = math.sin(radians) * radius
+    player.snapX, player.snapY = player.circleX, player.circleY
+    if mouse then
+      mouse.rx = (player.x or 0) + player.circleX
+      mouse.ry = (player.y or 0) + player.circleY
+      mouse.dx, mouse.dy = 0, 0
+    end
+  end
+end
+
+function Renderer.afterGameUpdate()
+  Renderer.applyState(true)
 end
 
 function Renderer.shouldHold()
-  return Renderer.active and not Renderer.playing
+  return Renderer.active and (not Renderer.hasInput or not Renderer.playing)
 end
 
 function Renderer.tapInputs()
@@ -303,7 +359,6 @@ function Renderer.capture(cleanSource, fullSource)
     ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
     return
   end
-  Renderer.update()
   local output=Renderer.outputs[readbackSlot]
   -- Clean mode is the real uncomposited gameplay canvas. Full mode includes
   -- Beatblock's shader/composition pass and the online race HUD. The previous

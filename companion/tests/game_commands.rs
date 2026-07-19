@@ -3,7 +3,7 @@ use beatblock_online_companion::{
     game_commands,
     model::{
         AdmissionMode, ChartLock, ChartTransferMode, CompanionConfig, Envelope, ParticipantRole,
-        RendererRequest,
+        RendererRequest, RoomLifecycle,
     },
     room::RoomEngine,
 };
@@ -461,5 +461,34 @@ async fn renderer_rejects_spectators_as_video_targets() {
         .to_string();
 
     assert!(error.contains("active players"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn renderer_reconfiguration_is_rejected_after_the_countdown_begins() {
+    let root = temporary("renderer-active-race");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+    let host = app.room.read().await.snapshot.host_session_id.clone();
+    app.room.write().await.snapshot.lifecycle = RoomLifecycle::Playing;
+
+    let error = app
+        .configure_renderer(
+            "A",
+            RendererRequest {
+                participant_id: Some(host),
+                participant_name: Some("Host".into()),
+                mode: None,
+                width: None,
+                height: None,
+                fps: None,
+                delay_ms: None,
+                featured: None,
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("before the synchronized start"));
     let _ = std::fs::remove_dir_all(root);
 }

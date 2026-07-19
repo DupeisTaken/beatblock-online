@@ -1491,6 +1491,16 @@ impl AppState {
         request: RendererRequest,
     ) -> Result<crate::model::RendererSlot> {
         self.require_host()?;
+        // A fresh Beatblock child can reproduce the chart exactly only when it
+        // observes the pre-roll and every timed VFX event. Starting or
+        // reconfiguring one after the synchronized countdown has begun would
+        // collapse earlier eases into a single frame.
+        if matches!(
+            self.room.read().await.snapshot.lifecycle,
+            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
+        ) {
+            anyhow::bail!("configure renderer slots before the synchronized start");
+        }
         let previous_featured = self
             .renderer
             .slots()

@@ -57,6 +57,18 @@ match_indent = true
 [[patches]]
 [patches.pattern]
 target = "states/Game.lua"
+# Native hidden-window input runs inside GameManager:update. Reapply the
+# delayed remote beat and paddle afterward so capture sees the authoritative
+# sample rather than the hidden mouse position or local audio clock.
+pattern = "self.gm:update(dt)"
+position = "after"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.afterGameUpdate() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "states/Game.lua"
 pattern = "self:pauseGame()"
 position = "before"
 payload = "if BBT then BBT.onPause() end"
@@ -117,11 +129,11 @@ times = 1
 [[patches]]
 [patches.pattern]
 target = "states/Game.lua"
-# Capture after Beatblock has composited the gameplay canvas and shaders into
-# shuv.canvas. Clean mode receives the raw gameplay canvas; full mode receives
-# the final composition. Capturing at the earlier setCanvas call produced a
-# sparse synthetic image before the visible game frame existed.
-pattern = "if self.vfx.onTopUI then"
+# Capture after Beatblock has composited the gameplay canvas, chart shaders,
+# chart-controlled HUD, and Online HUD into shuv.canvas. Renderer holds do not
+# enter the native pause flow, so this remains the unobscured delayed gameplay.
+# Clean mode still receives the raw gameplay canvas.
+pattern = "if pq ~= \"\" and not self.startPending then"
 position = "before"
 payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.captureSafe(self.canv, shuv.canvas) end"
 match_indent = true
