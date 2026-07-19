@@ -237,6 +237,15 @@ const nativeGameUpdate = hooks.indexOf('pattern = "self.gm:update(dt)"');
 const remotePostUpdate = hooks.indexOf('BBTRenderer.afterGameUpdate()');
 if (nativeGameUpdate < 0 || remotePostUpdate < nativeGameUpdate)
   throw new Error('Renderer does not restore the delayed beat and paddle after native input');
+const broadcastBody = online.slice(
+  online.indexOf('local function drawBroadcast(self)'),
+  online.indexOf('local function drawHistory(self)'),
+);
+if (
+  !broadcastBody.includes('local room=currentRoom()') ||
+  !broadcastBody.includes("local rendererEditable=room and room.lifecycle~='playing'")
+)
+  throw new Error('Broadcast workspace reads lifecycle state without a local room snapshot');
 const captureBody = renderer.slice(
   renderer.indexOf('function Renderer.capture(cleanSource, fullSource)'),
   renderer.indexOf('function Renderer.captureSafe(cleanSource, fullSource)'),

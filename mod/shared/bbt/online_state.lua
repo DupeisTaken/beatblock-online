@@ -425,8 +425,12 @@ local function drawBroadcast(self)
     ui:wrapped('Ordinary Spectators can follow the room and rankings. A host may grant Commentator access from the participant inspector.',95,151,410,5,'muted')
     return
   end
+  -- Broadcast lifecycle controls use the same normalized room snapshot as
+  -- every other workspace. Keeping it local avoids an accidental lookup of a
+  -- nonexistent global when hosts or commentators open the OBS menu.
+  local room=currentRoom()
   local target=selected(self)
-  local rendererEditable=room.lifecycle~='playing' and room.lifecycle~='countdown'
+  local rendererEditable=room and room.lifecycle~='playing' and room.lifecycle~='countdown'
   ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
   ui:text(target and ('CANDIDATE: '..target.displayName) or 'CANDIDATE: SELECT A PLAYER',306,105,270,'right','muted')
   for index,id in ipairs(STREAMS) do
