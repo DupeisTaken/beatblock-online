@@ -77,8 +77,9 @@ Before assigning slots, keep the host game and OBS below 80% CPU and GPU utiliza
 
 1. Open the installer Components tab. **OBS plugin — Installed** must say **Installed and hash verified**.
 2. Restart OBS completely after installation.
-3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS sources registered` and `beatblock-online-obs.dll`.
-4. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
+3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS player stream source registered` and `beatblock-online-obs.dll`.
+4. If the source is present but remains black while the runtime reports published frames, close OBS and use **Repair Required Components**. This replaces an older plugin DLL before OBS can load it again.
+5. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
 
 ## Text capture
 
@@ -103,7 +104,7 @@ Add a normal OBS Text source and enable **Read from file**. Featured files use t
 
 ## Rebuild the reviewed plugin artifact
 
-Run `pnpm build:obs` on Windows with Visual Studio C++ Build Tools. The script downloads the official OBS 32.0.4 source and portable x64 archives, verifies both published SHA-256 checksums, generates an import library from the pinned `obs.dll`, and writes the generated plugin under `artifacts/obs`. Pass `-ObsDirectory` directly to `scripts/build-obs-plugin.ps1` only when intentionally testing against a locally installed OBS build.
+Run `pnpm build:obs` on Windows with Visual Studio C++ Build Tools. The script downloads the official OBS 32.0.4 source and portable x64 archives, verifies both published SHA-256 checksums, generates an import library from the pinned `obs.dll`, and writes the generated plugin plus its source/artifact digest manifest under `artifacts/obs`. Pass `-ObsDirectory` directly to `scripts/build-obs-plugin.ps1` only when intentionally testing against a locally installed OBS build.
 
 `pnpm build` also rebuilds the pinned Lovely injector, embeds both native dependencies into the installer, validates the generated files, and writes SHA-256 checksums. GitHub Actions uses the same command for manual artifacts and tagged releases; see [the release workflow](releasing.md).
 
