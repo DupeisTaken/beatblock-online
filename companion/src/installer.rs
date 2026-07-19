@@ -907,25 +907,29 @@ impl Installer {
             .as_ref()
             .and_then(|m| m.lovely_original_sha256.clone());
         let mut lovely_rollback = None;
-        if !LOVELY_PAYLOAD.is_empty() {
-            let bundled_matches = file_matches(&lovely_target, LOVELY_PAYLOAD);
-            if lovely_target.is_file()
-                && lovely_backup.as_ref().is_none_or(|p| !p.is_file())
-                && !bundled_matches
-            {
-                let backup = self
-                    .data_dir
-                    .join("backups")
-                    .join(backup_name_for(&game_directory));
-                if let Some(parent) = backup.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(&lovely_target, &backup)?;
-                lovely_original_sha256 = sha256_file(&backup).ok();
-                lovely_backup = Some(backup);
-            } else if !lovely_target.is_file() && lovely_backup.is_none() {
-                lovely_owned = true;
+        let bundled_matches =
+            !LOVELY_PAYLOAD.is_empty() && file_matches(&lovely_target, LOVELY_PAYLOAD);
+        // Preserve a recoverable copy of every pre-existing third-party
+        // injector, including source-only validation builds that intentionally
+        // run before the bundled release payload has been assembled.
+        if lovely_target.is_file()
+            && lovely_backup.as_ref().is_none_or(|p| !p.is_file())
+            && !bundled_matches
+        {
+            let backup = self
+                .data_dir
+                .join("backups")
+                .join(backup_name_for(&game_directory));
+            if let Some(parent) = backup.parent() {
+                std::fs::create_dir_all(parent)?;
             }
+            std::fs::copy(&lovely_target, &backup)?;
+            lovely_original_sha256 = sha256_file(&backup).ok();
+            lovely_backup = Some(backup);
+        } else if !lovely_target.is_file() && lovely_backup.is_none() {
+            lovely_owned = true;
+        }
+        if !LOVELY_PAYLOAD.is_empty() {
             // A compatible third-party Lovely build may already be approved by
             // Windows Application Control. Preserve it unless an earlier
             // manifest proves this installer owns the file and must repair it.
