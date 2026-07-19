@@ -117,5 +117,24 @@ if ($LASTEXITCODE -ne 0) { throw 'OBS plugin compilation failed.' }
 $built = Join-Path $build 'beatblock-online-obs.dll'
 New-Item -ItemType Directory -Force (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $built -Destination $OutputPath -Force
+$artifactHash = Get-Sha256Hex -LiteralPath $OutputPath
+$sourceHash = Get-Sha256Hex -LiteralPath $pluginSource
+$manifestPath = [System.IO.Path]::ChangeExtension($OutputPath, '.build.json')
+# The installer builder consumes this manifest to prove that an ignored DLL
+# was produced from the current reviewed C source, not left over from an older
+# checkout. Write UTF-8 without a BOM so PowerShell 5 and Node agree on JSON.
+$manifest = [ordered]@{
+    schemaVersion = 1
+    obsVersion = $ObsVersion
+    sourcePath = 'obs-plugin/src/plugin.c'
+    sourceSha256 = $sourceHash.ToLowerInvariant()
+    artifactSha256 = $artifactHash.ToLowerInvariant()
+} | ConvertTo-Json
+[System.IO.File]::WriteAllText(
+    $manifestPath,
+    $manifest + [Environment]::NewLine,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 Write-Host "Built $OutputPath"
-Write-Host "SHA-256 $(Get-Sha256Hex -LiteralPath $OutputPath)"
+Write-Host "SHA-256 $artifactHash"
+Write-Host "Recorded source provenance in $manifestPath"

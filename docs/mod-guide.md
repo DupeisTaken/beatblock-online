@@ -4,6 +4,20 @@ Opening **Online** lazily starts the hidden runtime. The interface always uses B
 
 The header identifies the runtime and protocol. Beneath it, the pinned session strip shows the current room/chart, verification context, and exactly one next action: host, select chart, locate chart, ready, start, wait, advance set, or view results. Button labels use measured font metrics and every interactive control is at least 22 logical pixels high.
 
+Online resets Beatblock's fixed menu palette when it opens. Muted text uses the
+palette's neutral-gray source index, and modals use an opaque black focus veil
+instead of translucent colors; arbitrary RGB or alpha colors are invalid under
+Beatblock's palette shader and can appear purple. Leaving Online restores the
+native full-color menu shader before the destination state draws, including
+transitions that reuse an already-loaded Menu state. Online also clears the
+native radial-menu entities before opening Song Select and reapplies
+Beatblock's menu font on entry, draw, and exit so neither icon art nor stale
+font metrics can leak across states.
+
+Before joining a room, **Host a Room** appears only as the session strip's next
+action. The Connect workspace separates **Player** and **Spectator** choices,
+explains their scoring behavior, and keeps Exit Online visually secondary.
+
 ## Room workspace
 
 The roster has **All**, **Players**, **Spectators**, and **Pending** filters. Selection is stored by `sessionId`, so sorting, reconnects, filter changes, and workspace changes cannot silently target a different person. The participant inspector remains visible beside the roster and contains role, connection, chart, run state, and only the actions permitted to the local user.
@@ -26,7 +40,10 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Settings** controls the gameplay HUD, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**.
 - **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
 
-Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model.
+Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
+
+Returning from chart selection or cancelling it keeps the Setlist workspace
+open, so hosts can add several charts without reopening the tool each time.
 
 ## Chart matching and host fallback
 
@@ -48,6 +65,11 @@ Long renderer failures are bounded in the workspace. **Details** opens the full 
 
 ## Screenshot verification
 
-`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 25 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
+`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 26 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
+
+If a review image is open and Windows locks it, set `BBT_UI_REPORTS` to a fresh
+workspace-relative report directory; the baselines and comparison thresholds
+remain unchanged. `BBT_UI_PYTHON` may point to a local Python runtime that
+provides Pillow when the default `python` command does not.
 
 The gate compares approved files under `tests/ui-baselines` at threshold `0.1` and fails above `0.05%` changed pixels. It also fails on out-of-canvas text and controls below 22 logical pixels. Baselines change only through `pnpm test:ui:update` followed by human review.

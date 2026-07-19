@@ -29,7 +29,13 @@ pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
         "lovely/bootstrap.toml",
         include_bytes!("../../mod/standalone/lovely/bootstrap.toml").as_slice(),
     ))) {
-        std::fs::write(directory.join(relative), bytes)?;
+        let target = directory.join(relative);
+        // The shared inventory can grow beyond the pre-created bbt/lovely
+        // folders (for example assets). Always materialize its full layout.
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, bytes)?;
     }
     Ok(profile)
 }

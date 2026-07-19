@@ -2,9 +2,66 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
-import { checksumLine, inspectPe, inspectZip, listZipEntries } from './verify-release.mjs';
+import {
+  checksumLine,
+  inspectObsBuildManifest,
+  inspectPe,
+  inspectZip,
+  listZipEntries,
+  sha256Hex,
+} from './verify-release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
+
+test('release version metadata and generated asset names stay aligned', async () => {
+  const [
+    rootPackageText,
+    protocolPackageText,
+    cargoManifest,
+    cargoLock,
+    modCore,
+    packageScript,
+    modTest,
+    uiHarness,
+    releaseGuide,
+  ] = await Promise.all([
+    readFile(resolve(root, 'package.json'), 'utf8'),
+    readFile(resolve(root, 'protocol/package.json'), 'utf8'),
+    readFile(resolve(root, 'companion/Cargo.toml'), 'utf8'),
+    readFile(resolve(root, 'companion/Cargo.lock'), 'utf8'),
+    readFile(resolve(root, 'mod/shared/bbt/core.lua'), 'utf8'),
+    readFile(resolve(root, 'scripts/package-mods.mjs'), 'utf8'),
+    readFile(resolve(root, 'scripts/test-mod.mjs'), 'utf8'),
+    readFile(resolve(root, 'tests/ui-harness/main.lua'), 'utf8'),
+    readFile(resolve(root, 'docs/releasing.md'), 'utf8'),
+  ]);
+  const rootPackage = JSON.parse(rootPackageText);
+  const protocolPackage = JSON.parse(protocolPackageText);
+  const version = rootPackage.version;
+
+  assert.match(version, /^\d+\.\d+\.\d+-alpha\.\d+$/);
+  assert.equal(protocolPackage.version, version);
+  assert.equal(cargoManifest.match(/^version = "([^"]+)"$/m)?.[1], version);
+  assert.equal(
+    cargoLock.match(
+      /\[\[package\]\]\r?\nname = "beatblock-online-companion"\r?\nversion = "([^"]+)"/,
+    )?.[1],
+    version,
+  );
+  assert.equal(modCore.match(/version = '([^']+)'/)?.[1], version);
+
+  // Build, validation, UI fixtures, and operator docs must all identify the
+  // same prerelease or a local build can silently publish mixed-version files.
+  for (const [label, contents] of [
+    ['mod packager', packageScript],
+    ['mod packaging gate', modTest],
+    ['UI harness', uiHarness],
+    ['release guide', releaseGuide],
+  ]) {
+    assert.ok(contents.includes(version), `${label} does not reference version ${version}`);
+  }
+  assert.ok(releaseGuide.includes(`v${version}`));
+});
 
 function x64PeFixture() {
   const buffer = Buffer.alloc(128);
@@ -118,4 +175,69 @@ test('checksumLine is stable and uses only the asset filename', () => {
     checksumLine('nested/asset.bin', Buffer.from('release')),
     'a4d451ec23463726f72c43d64c710968f6b602cd653b4de8adee1b556240a829  asset.bin',
   );
+});
+
+test('OBS build manifest binds the native artifact to the reviewed source', () => {
+  const source = Buffer.from('gs_effect_set_texture_srgb(image, ctx->texture);');
+  const artifact = x64PeFixture();
+  const manifest = {
+    schemaVersion: 1,
+    obsVersion: '32.0.4',
+    sourcePath: 'obs-plugin/src/plugin.c',
+    sourceSha256: sha256Hex(source),
+    artifactSha256: sha256Hex(artifact),
+  };
+
+  assert.deepEqual(inspectObsBuildManifest(manifest, artifact, source), {
+    sourceSha256: manifest.sourceSha256,
+    artifactSha256: manifest.artifactSha256,
+    obsVersion: '32.0.4',
+  });
+  assert.throws(
+    () => inspectObsBuildManifest(manifest, artifact, Buffer.from('changed source')),
+    /stale for the current plugin source/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest(manifest, Buffer.from('changed artifact'), source),
+    /artifact hash does not match/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest({ ...manifest, schemaVersion: 2 }, artifact, source),
+    /manifest is malformed/,
+  );
+  assert.throws(
+    () => inspectObsBuildManifest({ ...manifest, obsVersion: '31.1.2' }, artifact, source),
+    /manifest is malformed/,
+  );
+});
+
+test('OBS build and installer stages enforce native source provenance', async () => {
+  const [buildObs, buildWindows] = await Promise.all([
+    readFile(resolve(root, 'scripts/build-obs-plugin.ps1'), 'utf8'),
+    readFile(resolve(root, 'scripts/build-windows.mjs'), 'utf8'),
+  ]);
+  assert.match(buildObs, /ChangeExtension\(\$OutputPath, '\.build\.json'\)/);
+  assert.match(buildObs, /sourceSha256 = \$sourceHash\.ToLowerInvariant\(\)/);
+  assert.match(buildObs, /artifactSha256 = \$artifactHash\.ToLowerInvariant\(\)/);
+
+  const provenanceCheck = buildWindows.indexOf('await verifyObsBuildManifest({');
+  const runtimeBuild = buildWindows.indexOf(
+    "cargo(['build', '--manifest-path', manifest, '--release', '--bin', 'BeatblockOnlineRuntime'])",
+  );
+  assert.ok(provenanceCheck >= 0, 'installer build must verify OBS provenance');
+  assert.ok(
+    provenanceCheck < runtimeBuild,
+    'stale OBS artifacts must fail before expensive Rust release compilation',
+  );
+});
+
+test('installer builds keep one canonical local review copy', async () => {
+  const buildWindows = await readFile(resolve(root, 'scripts/build-windows.mjs'), 'utf8');
+
+  assert.match(buildWindows, /const localReleases = resolve\(root, 'releases'\)/);
+  assert.match(
+    buildWindows,
+    /copyFile\(installer, resolve\(localReleases, 'BeatblockOnlineInstaller\.exe'\)\)/,
+  );
+  assert.doesNotMatch(buildWindows, /BeatblockOnlineInstaller-[^']+\.exe/);
 });

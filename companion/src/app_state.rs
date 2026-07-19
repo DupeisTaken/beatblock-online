@@ -246,7 +246,7 @@ impl AppState {
                 lobby: Arc::new(RwLock::new(lobby)),
                 config: Arc::new(RwLock::new(config)),
                 client: Arc::new(RwLock::new(json!({
-                    "clientVersion":"0.3.0-alpha.2",
+                    "clientVersion":"0.3.0-alpha.3",
                     "gameBuildHash":"unknown",
                     "distribution":"standalone",
                     "mods":[]

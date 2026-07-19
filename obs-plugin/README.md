@@ -9,8 +9,8 @@ cmake -S obs-plugin -B obs-plugin/build -Dlibobs_DIR=<obs-sdk>/cmake
 cmake --build obs-plugin/build --config Release
 ```
 
-For the pinned Windows release artifact, run `pnpm build:obs`. The repository script verifies the official OBS 32.0.4 source checksum and links against the export table of the locally installed OBS runtime.
+For the pinned Windows release artifact, run `pnpm build:obs`. The repository script verifies the official OBS 32.0.4 source and runtime checksums and links against the export table of that pinned `obs.dll`.
 
-`scripts/build-windows.mjs` embeds the reviewed artifact from `artifacts/obs-32.0.4`. A development build can override it with `BBT_OBS_PLUGIN_DLL`. The installer rejects empty, non-PE, or incorrectly exported payloads before touching OBS and installs valid files under `%ProgramData%\obs-studio\plugins\beatblock-online-obs`.
+`scripts/build-windows.mjs` embeds the reviewed artifact from `artifacts/obs`. The plugin build records the current `plugin.c` and DLL SHA-256 digests beside the artifact; the installer build refuses to embed a missing, modified, or stale artifact. A development build can override the DLL with `BBT_OBS_PLUGIN_DLL` when its matching `.build.json` manifest is present. The installer rejects empty, non-PE, or incorrectly exported payloads before touching OBS and installs valid files under `%ProgramData%\obs-studio\plugins\beatblock-online-obs`.
 
 Video frame ingestion reads the hidden runtime's versioned frame rings under `%LOCALAPPDATA%\BeatblockOnline\BeatblockOnline\data\render-streams`. Audio is deliberately left to OBS Application Audio Capture until process-specific capture and a song-only fallback can be certified.

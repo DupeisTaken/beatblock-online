@@ -37,6 +37,7 @@ slint::slint! {
 
     export component InstallerWindow inherits Window {
         title: "Beatblock Online Installer";
+        icon: @image-url("../assets/installer.png");
         width: 820px;
         height: 690px;
         background: #edf1f4;
@@ -60,6 +61,7 @@ slint::slint! {
         in-out property<string> log-text: "Beatblock Online installer started.\n";
         in-out property<bool> install-obs: false;
         in-out property<bool> obs-available: false;
+        in-out property<bool> obs-running: false;
         in-out property<bool> firewall-public: false;
         in-out property<bool> remove-user-data: false;
         in-out property<bool> allow-unknown-build: false;
@@ -158,7 +160,15 @@ slint::slint! {
                             }
                             VerticalLayout { spacing: 5px;
                                 Text { text: "Optional integration"; color: #46515b; font-size: 12px; }
-                                CheckBox { enabled: !root.busy && root.obs-available; text: root.obs-available ? "Install OBS 32 source (restart OBS)" : "OBS source unavailable in this build"; checked <=> root.install-obs; }
+                                CheckBox {
+                                    enabled: !root.busy && root.obs-available && !root.obs-running;
+                                    text: !root.obs-available
+                                        ? "OBS source unavailable in this build"
+                                        : root.obs-running
+                                            ? "Close OBS to update its source"
+                                            : "Install/update OBS source";
+                                    checked <=> root.install-obs;
+                                }
                             }
                         }
                         Rectangle {
@@ -515,8 +525,10 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
     let installer = Arc::new(Installer::new(data_dir.clone()));
     let status = installer.detect();
+    let obs_running = installer.obs_running();
     window.set_obs_available(installer.obs_plugin_available());
-    window.set_install_obs(status.obs_plugin_present);
+    window.set_obs_running(obs_running);
+    window.set_install_obs(status.obs_plugin_present && !obs_running);
     if let Some((distribution, firewall_public)) = installer.installed_options() {
         window.set_install_method(match distribution {
             Distribution::Standalone => 1,
@@ -677,6 +689,14 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
         let installer = installer.clone();
         window.on_refresh(move || {
             if let Some(window) = weak.upgrade() {
+                let obs_running = installer.obs_running();
+                window.set_obs_available(installer.obs_plugin_available());
+                window.set_obs_running(obs_running);
+                if obs_running {
+                    // Keep the core installation available while OBS owns the
+                    // optional plugin DLLs; the user can refresh after closing it.
+                    window.set_install_obs(false);
+                }
                 refresh_selected(&window, &installer);
             }
         });

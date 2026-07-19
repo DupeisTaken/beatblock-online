@@ -9,8 +9,10 @@ const distributions = ['standalone', 'beatblock-plus'];
 for (const name of distributions) {
   const target = resolve(root, `mod/${name}`);
   await rm(resolve(target, 'bbt'), { recursive: true, force: true });
+  await rm(resolve(target, 'assets'), { recursive: true, force: true });
   await mkdir(resolve(target, 'lovely'), { recursive: true });
   await cp(resolve(shared, 'bbt'), resolve(target, 'bbt'), { recursive: true });
+  await cp(resolve(shared, 'assets'), resolve(target, 'assets'), { recursive: true });
   await cp(resolve(shared, 'lovely/hooks.toml'), resolve(target, 'lovely/hooks.toml'));
 }
 
@@ -23,7 +25,7 @@ for (const name of distributions) {
   const stagedMod = resolve(stage, 'BeatblockOnline');
   await mkdir(stage, { recursive: true });
   await cp(target, stagedMod, { recursive: true });
-  const archive = resolve(releases, `beatblock-online-${name}-0.3.0-alpha.2.zip`);
+  const archive = resolve(releases, `beatblock-online-${name}-0.3.0-alpha.3.zip`);
   const result =
     process.platform === 'win32'
       ? spawnSync(
