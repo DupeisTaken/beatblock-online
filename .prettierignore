@@ -20,7 +20,9 @@ mod/releases/
 .pytest_cache/
 .ruff_cache/
 .test/
+.runtime-test/
 .reference/
+.worktrees/
 companion-data/
 exports/
 reports/ui/

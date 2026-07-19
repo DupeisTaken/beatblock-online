@@ -3,10 +3,15 @@
 -- and selected participants survive filters, reordering, and reconnects.
 local Dashboard = require('bbt.dashboard_model')
 local Components = require('bbt.dashboard_components')
+local hasUtf8,utf8 = pcall(require,'utf8')
+if not hasUtf8 then utf8=nil end
 
 local C = {
   black={0,0,0,1}, panel={0,0,0,1}, raised={1,0,0,1},
-  white={1,1,1,1}, muted={1,1,1,.68}, disabled={1,1,1,.48}, dimBlack={0,0,0,.55},
+  -- Beatblock's shader accepts only its eight exact source colors. Source red
+  -- maps to the menu's neutral gray slot; arbitrary RGB or alpha becomes the
+  -- purple "bad color" pattern after the state transition disables bypass.
+  white={1,1,1,1}, muted={1,0,0,1},
   red={0,0,1,1}, yellow={0,1,0,1}, green={1,1,0,1}, cyan={1,0,1,1}, blue={0,1,1,1},
 }
 local ui = Components.new(C)
@@ -48,6 +53,23 @@ local function bounded(value,limit)
   value=tostring(value or '')
   if #value<=limit then return value end
   return value:sub(1,limit-3)..'...'
+end
+
+local function applyBeatblockPalette(showBadColors)
+  if not shuv then return end
+  shuv.resetPal()
+  shuv.pal[2]={r=205,g=205,b=205}; shuv.pal[3]={r=255,g=52,b=50}
+  shuv.pal[4]={r=224,g=227,b=0}; shuv.pal[5]={r=44,g=255,b=57}
+  shuv.pal[6]={r=0,g=222,b=229}; shuv.pal[7]={r=63,g=38,b=255}
+  -- Online draws exclusively with the eight source colors, while Beatblock's
+  -- illustrated menus require non-indexed colors to pass through unchanged.
+  shuv.showBadColors=showBadColors
+end
+
+local function applyBeatblockMenuFont()
+  if love and love.graphics and fonts and fonts.digitalDisco then
+    love.graphics.setFont(fonts.digitalDisco)
+  end
 end
 
 local function leaveToMenu(self)
@@ -120,10 +142,18 @@ local function submitForm(self)
   local modal=self.modal
   if not modal or modal.kind~='form' then return end
   local values=modal.values
+  local function missing(value) return tostring(value or ''):match('^%s*$')~=nil end
+  local port=tonumber(values.port)
+  if missing(values.displayName) then modal.error='DISPLAY NAME IS REQUIRED'; return end
+  if modal.mode=='host' and missing(values.name) then modal.error='ROOM NAME IS REQUIRED'; return end
+  if modal.mode~='host' and missing(values.address) then modal.error='HOST ADDRESS IS REQUIRED'; return end
+  if not port or port<1 or port>65535 or port%1~=0 then modal.error='UDP PORT MUST BE 1-65535'; return end
+  if missing(values.password) then modal.error='PASSWORD IS REQUIRED'; return end
+  modal.error=nil
   if modal.mode=='host' then
     BBT.command('room.host_request',{
       displayName=values.displayName,name=values.name,password=values.password,
-      port=tonumber(values.port) or 32145,hostApproval=true,allowChartTransfers=true,
+      port=port,hostApproval=true,allowChartTransfers=true,
     })
   else
     BBT.command('room.join_request',{
@@ -321,16 +351,27 @@ end
 
 local function drawConnect(self)
   ui:panel(12,78,576,225,'CONNECT')
-  ui:text('PLAY TOGETHER, WITHOUT LOSING THE BEAT.',30,106,540,'center','cyan')
-  ui:wrapped('Create a direct-IP room, or join an existing room as a competing Player or a non-competing Spectator.',104,130,392,3,'muted')
-  button(self,'connect_host',104,177,188,32,'HOST A ROOM',function() openForm(self,'host') end,'green',BBT.companionConnected)
-  button(self,'connect_join',308,177,188,32,'JOIN AS PLAYER',function() openForm(self,'join',false) end,'cyan',BBT.companionConnected)
-  button(self,'connect_spectate',104,219,188,28,'JOIN AS SPECTATOR',function() openForm(self,'join',true) end,'white',BBT.companionConnected)
-  button(self,'connect_exit',308,219,188,28,'EXIT ONLINE',function()
+  ui:text('CHOOSE HOW YOU JOIN',24,108,552,'center','cyan')
+  ui:wrapped('Create a direct-IP room from the session action above, or join an existing room below.',50,129,500,2,'muted')
+
+  ui:text('PLAYER',32,161,250,'left','white')
+  ui:wrapped('Compete, verify the locked chart, then ready up.',32,178,250,2,'muted')
+  ui:text('SPECTATOR',318,161,250,'left','white')
+  ui:wrapped('Watch rankings without scoring. Commentator is host-granted.',318,178,250,2,'muted')
+
+  button(self,'connect_join',32,211,250,32,'JOIN AS PLAYER',function() openForm(self,'join',false) end,'cyan',BBT.companionConnected)
+  button(self,'connect_spectate',318,211,250,32,'JOIN AS SPECTATOR',function() openForm(self,'join',true) end,'white',BBT.companionConnected)
+  button(self,'connect_exit',418,256,150,27,'EXIT ONLINE',function()
     openConfirm(self,'EXIT ONLINE','Stop the Online runtime and return to the main menu?','EXIT',function() BBT.exitOnline(); leaveToMenu(self) end)
   end,'red')
-  if not BBT.companionConnected then
-    ui:wrapped(bounded(BBT.lastError or BBT.runtimeLaunchStatus or 'The local runtime is unavailable.',180),104,258,392,2,'red')
+  local problem=BBT.lastError
+  if not problem and not BBT.companionConnected then
+    problem=BBT.runtimeLaunchStatus or 'The local runtime is unavailable.'
+  end
+  if problem then
+    ui:wrapped(bounded(problem,180),32,255,368,3,'red')
+  else
+    ui:text('HOSTING? USE THE SESSION ACTION ABOVE.',32,263,368,'left','muted')
   end
 end
 
@@ -511,16 +552,16 @@ local function drawNavigation(self)
   local width=math.floor((576-gap*(#visible-1))/#visible)
   local x=12
   for _,workspace in ipairs(visible) do
-    chip(self,'nav_'..workspace.id,x,310,width,workspace.label,self.workspace==workspace.id,function() setWorkspace(self,workspace.id) end,'cyan')
+    chip(self,'nav_'..workspace.id,x,306,width,workspace.label,self.workspace==workspace.id,function() setWorkspace(self,workspace.id) end,'cyan')
     x=x+width+gap
   end
   local hint=self.modal and 'ESC: CLOSE  /  ENTER: SELECT' or 'ARROWS: NAVIGATE  /  ENTER: SELECT  /  ESC: BACK'
-  ui:text(hint,12,340,576,'center','muted')
+  ui:text(hint,12,333,576,'center','muted')
 end
 
 local function drawModal(self)
   if not self.modal then return end
-  ui:color('black',.78); love.graphics.rectangle('fill',0,0,600,360)
+  ui:veil()
   local modal=self.modal
   if modal.kind=='form' then
     ui:panel(118,60,364,240,modal.title)
@@ -533,6 +574,7 @@ local function drawModal(self)
     end
     button(self,'form_submit',261,252,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
     button(self,'form_cancel',366,252,98,27,'CANCEL',function() closeModal(self) end,'white')
+    if modal.error then ui:text(modal.error,136,282,328,'center','red') end
   else
     ui:panel(126,99,348,162,modal.title)
     ui:wrapped(modal.message,146,133,308,5,modal.kind=='details' and 'red' or 'white')
@@ -546,6 +588,9 @@ local function drawModal(self)
 end
 
 local function draw(self)
+  -- Native states share one global LÖVE font. Reassert Online's font every
+  -- frame so a popup or selector transition cannot leave stale metrics behind.
+  applyBeatblockMenuFont()
   ui:begin(); self.controls={}
   header(self)
   if self.workspace=='setlist' then drawSetlist(self)
@@ -609,30 +654,85 @@ local function editText(self,text)
   local modal=self.modal
   if not modal or modal.kind~='form' then return end
   local key=modal.fields[modal.index]
-  if #modal.values[key] < 64 and text:match('[%g ]') then modal.values[key]=modal.values[key]..text end
+  if #modal.values[key] < 64 and text:match('[%g ]') then
+    modal.values[key]=modal.values[key]..text
+    modal.error=nil
+  end
+end
+
+local function removeLastCharacter(value)
+  value=tostring(value or '')
+  if value=='' then return value end
+  -- LÖVE textinput values are UTF-8. Use a codepoint boundary when available
+  -- so Backspace removes one visible character instead of corrupting its bytes.
+  if utf8 and utf8.offset then
+    local ok,index=pcall(utf8.offset,value,-1)
+    if ok and index then return value:sub(1,index-1) end
+  end
+  return value:sub(1,-2)
+end
+
+local function editKey(self,key)
+  local modal=self.modal
+  if not modal or modal.kind~='form' or (key~='backspace' and key~='delete') then return end
+  local field=modal.fields[modal.index]
+  modal.values[field]=removeLastCharacter(modal.values[field])
+  modal.error=nil
 end
 
 return function()
   local st=Gamestate:new('Online')
   function st:openForm(mode,spectator) openForm(self,mode,spectator) end
-  st:setInit(function(self)
-    self.workspace='room'; self.rosterFilter='all'; self.selectedSessionId=nil
-    self.focusId='session_primary'; self.controls={}; self.broadcastAdvanced=false; self.modal=nil
+  function st:submitForm() submitForm(self) end
+  st:setInit(function(self,options)
+    options=options or {}
+    applyBeatblockPalette(false)
+    applyBeatblockMenuFont()
+    self.workspace=options.workspace or 'room'; self.rosterFilter='all'; self.selectedSessionId=nil
+    self.focusId=self.workspace=='room' and 'session_primary' or 'nav_'..self.workspace
+    self.controls={}; self.broadcastAdvanced=false; self.modal=nil
+    -- Online is a complete state, not a menu modal. Suppress the entity
+    -- manager retained from Menu and clear those entities before Song Select
+    -- can inherit them on the next transition.
+    self.holdEntityDraw=true
+    if em and em.clear then em.clear({self.menuMusicManager}) end
+    if mouse and mouse.disableGameplay then mouse:disableGameplay() end
     self.previousTextInput=love.textinput
-    self.onlineTextInput=function(text) editText(self,text) end
+    self.onlineTextInput=function(text)
+      if self.modal and self.modal.kind=='form' then editText(self,text)
+      elseif self.previousTextInput then self.previousTextInput(text) end
+    end
     love.textinput=self.onlineTextInput
+    -- Beatblock's native key callback does not edit custom text fields. Chain
+    -- it so engine/ImGui behavior survives while forms gain deletion support.
+    self.previousKeyPressed=love.keypressed
+    self.onlineKeyPressed=function(key,scancode,isRepeat)
+      if self.previousKeyPressed then self.previousKeyPressed(key,scancode,isRepeat) end
+      editKey(self,key)
+    end
+    love.keypressed=self.onlineKeyPressed
     BBT.startOnlineRuntime()
     if not BBT.pendingRequestId then BBT.command('runtime.snapshot_request',{}) end
   end)
   function st:leave()
     if love.textinput==self.onlineTextInput then love.textinput=self.previousTextInput end
+    if love.keypressed==self.onlineKeyPressed then love.keypressed=self.previousKeyPressed end
     if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
+    -- Restore the native menu shader before any destination state draws. Some
+    -- transitions reuse an already-loaded Menu state, so relying on Menu:init
+    -- alone leaves its full-color artwork rendered as the bad-color pattern.
+    applyBeatblockPalette(true)
+    applyBeatblockMenuFont()
   end
   st:setUpdate(function(self,dt)
     if self.menuMusicManager then self.menuMusicManager:update(dt) end
     BBT.update(dt)
     if BBT.maybeLaunchScheduledChart() then return end
     update(self)
+  end)
+  st:setBgDraw(function(self)
+    ui:color('black')
+    love.graphics.rectangle('fill',0,0,project.res.x,project.res.y)
   end)
   st:setFgDraw(function(self) draw(self); ui:color('white') end)
   return st

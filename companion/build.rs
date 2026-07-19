@@ -1,9 +1,16 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     if cfg!(windows) && env::var_os("CARGO_FEATURE_INSTALLER_UI").is_some() {
-        let manifest =
-            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("installer.manifest");
+        let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let manifest = manifest_dir.join("installer.manifest");
+        let icon = manifest_dir.join("assets/installer.ico");
+        let resource_script = manifest_dir.join("installer.rc");
+        let resource = compile_windows_resource(&manifest_dir, &resource_script);
         // Explicit asInvoker metadata disables Windows' filename-based installer
         // elevation heuristic; protected writes request elevation only on demand.
         println!("cargo:rustc-link-arg-bin=BeatblockOnlineInstaller=/MANIFEST:EMBED");
@@ -11,7 +18,13 @@ fn main() {
             "cargo:rustc-link-arg-bin=BeatblockOnlineInstaller=/MANIFESTINPUT:{}",
             manifest.display()
         );
+        println!(
+            "cargo:rustc-link-arg-bin=BeatblockOnlineInstaller={}",
+            resource.display()
+        );
         println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rerun-if-changed={}", resource_script.display());
+        println!("cargo:rerun-if-changed={}", icon.display());
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("lovely-version.dll");
     let explicit = env::var_os("BBT_LOVELY_DLL").map(PathBuf::from);
@@ -87,4 +100,51 @@ fn main() {
         );
     }
     println!("cargo:rerun-if-env-changed=BBT_RUNTIME_EXE");
+}
+
+/// Compile the installer icon without adding a build dependency. Windows SDK's
+/// resource compiler is present beside the MSVC linker on supported build hosts.
+fn compile_windows_resource(manifest_dir: &Path, script: &Path) -> PathBuf {
+    let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("installer-icon.res");
+    let compiler = find_resource_compiler().unwrap_or_else(|| {
+        panic!("Windows SDK resource compiler rc.exe was not found; install Windows Build Tools")
+    });
+    let status = Command::new(&compiler)
+        .current_dir(manifest_dir)
+        .args(["/nologo", "/fo"])
+        .arg(&output)
+        .arg(script)
+        .status()
+        .unwrap_or_else(|error| panic!("run {}: {error}", compiler.display()));
+    assert!(status.success(), "rc.exe failed to compile installer.rc");
+    output
+}
+
+fn find_resource_compiler() -> Option<PathBuf> {
+    if let Some(explicit) = env::var_os("RC").map(PathBuf::from) {
+        if explicit.is_file() {
+            return Some(explicit);
+        }
+    }
+    if let Some(sdk_bin) = env::var_os("WindowsSdkVerBinPath").map(PathBuf::from) {
+        let candidate = sdk_bin.join("x64/rc.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let kits = env::var_os("ProgramFiles(x86)")
+        .map(PathBuf::from)?
+        .join("Windows Kits/10/bin");
+    let mut versions = fs::read_dir(kits)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions
+        .into_iter()
+        .rev()
+        .map(|path| path.join("x64/rc.exe"))
+        .find(|path| path.is_file())
 }

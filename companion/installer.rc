@@ -1,0 +1,2 @@
+// The same branded mark is embedded in Explorer and the Windows taskbar.
+1 ICON "assets\\installer.ico"

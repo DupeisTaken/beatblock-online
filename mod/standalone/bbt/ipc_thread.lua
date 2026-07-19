@@ -2,7 +2,8 @@
 local outbound = love.thread.getChannel('bbt_outbound')
 local inbound = love.thread.getChannel('bbt_inbound')
 local control = love.thread.getChannel('bbt_ipc_control')
-inbound:push('{"version":2,"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":"worker source entered"}}')
+local PROTOCOL_VERSION = 3
+inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":"worker source entered"}}')
 require('love.timer')
 local transport, remainder = nil, ''
 local modPath = love.thread.getChannel('bbt_mod_path'):demand()
@@ -30,16 +31,16 @@ if ffiOk then ffi.cdef[[
 ]] end
 
 local function runtimeError(message)
-  inbound:push('{"version":2,"type":"runtime.error","sequence":0,"runTimeUs":0,"payload":{"message":' .. string.format('%q', message) .. '}}')
+  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.error","sequence":0,"runTimeUs":0,"payload":{"message":' .. string.format('%q', message) .. '}}')
 end
 
 local function runtimeStatus(phase)
-  inbound:push('{"version":2,"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":' .. string.format('%q', phase) .. '}}')
+  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":' .. string.format('%q', phase) .. '}}')
 end
 
 local function runtimeDisconnected(detail)
   local message=detail or 'The runtime disconnected before the Online action completed. Reconnecting; please retry.'
-  inbound:push('{"version":2,"type":"runtime.disconnected","sequence":0,"runTimeUs":0,"payload":{"phase":"runtime disconnected; reconnecting","message":'..string.format('%q',message)..'}}')
+  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.disconnected","sequence":0,"runTimeUs":0,"payload":{"phase":"runtime disconnected; reconnecting","message":'..string.format('%q',message)..'}}')
 end
 
 local function launchRuntimeHidden()

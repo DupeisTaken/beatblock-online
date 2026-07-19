@@ -35,6 +35,12 @@ pub struct InstallManifest {
     pub installed_files: Vec<PathBuf>,
     pub lovely_owned: bool,
     pub lovely_backup: Option<PathBuf>,
+    /// Isolated game copies need a persistent Steam app id when launched
+    /// directly from Explorer. Steam-managed copies obtain it from Steam.
+    #[serde(default)]
+    pub steam_app_id_owned: bool,
+    #[serde(default)]
+    pub steam_app_id_backup: Option<PathBuf>,
     #[serde(default)]
     pub runtime_path: Option<PathBuf>,
     #[serde(default)]
@@ -68,6 +74,7 @@ struct ObsInstallTransaction {
     plugin_rollback: FileRollback,
     locale_rollback: FileRollback,
     marker_rollback: FileRollback,
+    legacy_rollbacks: Vec<FileRollback>,
 }
 
 impl ObsInstallTransaction {
@@ -75,6 +82,9 @@ impl ObsInstallTransaction {
         self.plugin_rollback.commit();
         self.locale_rollback.commit();
         self.marker_rollback.commit();
+        for rollback in &mut self.legacy_rollbacks {
+            rollback.commit();
+        }
         self.plugin
     }
 }
@@ -289,6 +299,10 @@ impl Installer {
         let lovely_present = lovely_path.is_file();
         let lovely_matches =
             !LOVELY_PAYLOAD.is_empty() && file_matches(&lovely_path, LOVELY_PAYLOAD);
+        let lovely_compatible = is_lovely_injector(&lovely_path);
+        let steam_managed = self.is_steam_managed_game_directory(selected);
+        let app_id_path = selected.join("steam_appid.txt");
+        let direct_launch_ready = steam_managed || file_matches(&app_id_path, b"3045200\n");
         let runtime_present = manifest
             .as_ref()
             .and_then(|m| m.runtime_path.as_ref())
@@ -305,8 +319,13 @@ impl Installer {
                     && lovely_path.is_file()
                     && sha256_file(p).ok() == sha256_file(&lovely_path).ok()
             });
-        let required_ready =
-            valid && managed_here && adapter_ok && shared_ok && lovely_present && runtime_present;
+        let required_ready = valid
+            && managed_here
+            && adapter_ok
+            && shared_ok
+            && lovely_compatible
+            && runtime_present
+            && direct_launch_ready;
         let repair_required = managed_here && !required_ready;
         let state = if !valid {
             "INVALID TARGET"
@@ -368,7 +387,7 @@ impl Installer {
         ));
         let lovely_state = if !lovely_present {
             ComponentState::Missing
-        } else if lovely_matches {
+        } else if lovely_matches || lovely_compatible {
             if backup_warning {
                 ComponentState::Attention
             } else {
@@ -386,16 +405,45 @@ impl Installer {
                 "Attention"
             } else if lovely_matches {
                 "Installed"
+            } else if lovely_compatible {
+                "Compatible"
             } else {
-                "Existing"
+                "Invalid"
             },
             "Yes",
             if backup_warning {
                 "Legacy backup matches injector; backup preserved"
             } else if lovely_matches {
                 "Bundled no-console build"
+            } else if lovely_compatible {
+                "Existing compatible Lovely build will be preserved"
             } else {
-                "Existing Lovely build will be preserved"
+                "Existing file is not a compatible Lovely injector"
+            },
+        ));
+        components.push(component(
+            "Direct launch",
+            if direct_launch_ready {
+                ComponentState::Ready
+            } else if managed_here {
+                ComponentState::Broken
+            } else {
+                ComponentState::NotInstalled
+            },
+            if steam_managed {
+                "Steam managed"
+            } else if direct_launch_ready {
+                "Ready"
+            } else {
+                "Not configured"
+            },
+            "Automatic",
+            if steam_managed {
+                "Steam supplies app id 3045200"
+            } else if direct_launch_ready {
+                "Beatblock.exe can be opened directly"
+            } else {
+                "Installer will add reversible isolated-copy launch support"
             },
         ));
         components.push(component(
@@ -713,10 +761,15 @@ impl Installer {
             bail!("Standalone Lovely was selected, but BeatblockPlus 2.x is installed; choose the BeatblockPlus adapter to avoid loading both BBT adapters");
         }
         let mod_directory = mods_directory.join("BeatblockOnline");
+        let legacy_mod_directory = mods_directory.join("BeatblockTogether");
         let stage_directory =
             mods_directory.join(format!(".BeatblockOnline.stage-{}", uuid::Uuid::new_v4()));
         let rollback_directory = mods_directory.join(format!(
             ".BeatblockOnline.rollback-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let legacy_rollback_directory = mods_directory.join(format!(
+            ".BeatblockTogether.rollback-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(stage_directory.join("bbt"))?;
@@ -820,6 +873,17 @@ impl Installer {
         ));
         let mut mod_rollback =
             DirectoryRollback::activate(&stage_directory, &mod_directory, &rollback_directory)?;
+        // Retired alpha installers used a second Lovely mod with the same hook
+        // priority. Leaving it in place starts the stale runtime nondeterministically,
+        // so quarantine only a positively identified installer-owned copy.
+        let mut legacy_mod_rollback = if is_managed_legacy_mod(&legacy_mod_directory) {
+            Some(DirectoryRemovalRollback::quarantine(
+                &legacy_mod_directory,
+                &legacy_rollback_directory,
+            )?)
+        } else {
+            None
+        };
         // Convert staged paths to the final destination before they are stored.
         for path in &mut installed_files {
             if let Ok(relative) = path.strip_prefix(&stage_directory) {
@@ -844,9 +908,10 @@ impl Installer {
             .and_then(|m| m.lovely_original_sha256.clone());
         let mut lovely_rollback = None;
         if !LOVELY_PAYLOAD.is_empty() {
+            let bundled_matches = file_matches(&lovely_target, LOVELY_PAYLOAD);
             if lovely_target.is_file()
                 && lovely_backup.as_ref().is_none_or(|p| !p.is_file())
-                && !file_matches(&lovely_target, LOVELY_PAYLOAD)
+                && !bundled_matches
             {
                 let backup = self
                     .data_dir
@@ -861,10 +926,69 @@ impl Installer {
             } else if !lovely_target.is_file() && lovely_backup.is_none() {
                 lovely_owned = true;
             }
-            lovely_rollback = Some(FileRollback::replace(&lovely_target, LOVELY_PAYLOAD)?);
-            installed_files.push(lovely_target.clone());
+            // A compatible third-party Lovely build may already be approved by
+            // Windows Application Control. Preserve it unless an earlier
+            // manifest proves this installer owns the file and must repair it.
+            let preserve_existing = lovely_target.is_file()
+                && !bundled_matches
+                && !lovely_owned
+                && is_lovely_injector(&lovely_target);
+            if preserve_existing {
+                progress(OperationProgress::step(
+                    OperationKind::Install,
+                    "lovely",
+                    66,
+                    "Keeping the existing compatible Lovely injector",
+                ));
+            } else {
+                lovely_rollback = Some(FileRollback::replace(&lovely_target, LOVELY_PAYLOAD)?);
+                installed_files.push(lovely_target.clone());
+            }
         } else if !lovely_target.is_file() {
             bail!("the release is missing its bundled no-console Lovely payload");
+        }
+
+        let app_id_target = game_directory.join("steam_appid.txt");
+        let steam_managed = self.is_steam_managed_game_directory(&game_directory);
+        let mut steam_app_id_owned = previous.as_ref().is_some_and(|m| m.steam_app_id_owned);
+        let mut steam_app_id_backup = previous
+            .as_ref()
+            .and_then(|m| m.steam_app_id_backup.clone());
+        let mut app_id_rollback = None;
+        if steam_managed {
+            // Never introduce a local app-id override into a Steam library.
+            if steam_app_id_owned {
+                app_id_rollback = Some(
+                    if let Some(backup) = steam_app_id_backup.as_ref().filter(|path| path.is_file())
+                    {
+                        FileRollback::replace(&app_id_target, &std::fs::read(backup)?)?
+                    } else {
+                        FileRollback::remove(&app_id_target)?
+                    },
+                );
+            }
+            steam_app_id_owned = false;
+            steam_app_id_backup = None;
+        } else if !file_matches(&app_id_target, b"3045200\n") {
+            if app_id_target.is_file()
+                && !steam_app_id_owned
+                && steam_app_id_backup
+                    .as_ref()
+                    .is_none_or(|path| !path.is_file())
+            {
+                let backup = self
+                    .data_dir
+                    .join("backups")
+                    .join(app_id_backup_name_for(&game_directory));
+                if let Some(parent) = backup.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&app_id_target, &backup)?;
+                steam_app_id_backup = Some(backup);
+            }
+            app_id_rollback = Some(FileRollback::replace(&app_id_target, b"3045200\n")?);
+            steam_app_id_owned = true;
+            installed_files.push(app_id_target.clone());
         }
 
         let maintenance_installer = self.data_dir.join("installer/BeatblockOnlineInstaller.exe");
@@ -922,6 +1046,8 @@ impl Installer {
             installed_files,
             lovely_owned,
             lovely_backup,
+            steam_app_id_owned,
+            steam_app_id_backup,
             runtime_path: Some(runtime_path.clone()),
             maintenance_installer: Some(maintenance_installer),
             firewall_installed,
@@ -934,30 +1060,47 @@ impl Installer {
         }
         validate_staged_payload(&mod_directory, distribution)?;
         if !file_matches(&runtime_path, RUNTIME_PAYLOAD)
-            || !file_matches(&lovely_target, LOVELY_PAYLOAD)
+            || !is_lovely_injector(&lovely_target)
+            || (!steam_managed && !file_matches(&app_id_target, b"3045200\n"))
         {
-            bail!("post-install verification failed: runtime or Lovely hash differs from the bundled payload");
+            bail!("post-install verification failed: runtime, Lovely, or direct-launch support is invalid");
         }
         // A move restores the former target only after the new target passes
         // every check. Keep a rollback guard until the new manifest is durable.
-        let mut previous_target_rollback = None;
+        let mut previous_target_rollbacks = Vec::new();
         if let Some(old) = managed_manifest
             .as_ref()
             .filter(|old| old.game_directory != game_directory)
         {
             let old_lovely = old.game_directory.join("version.dll");
             if let Some(backup) = old.lovely_backup.as_ref().filter(|path| path.is_file()) {
-                previous_target_rollback =
-                    Some(FileRollback::replace(&old_lovely, &std::fs::read(backup)?)?);
+                previous_target_rollbacks
+                    .push(FileRollback::replace(&old_lovely, &std::fs::read(backup)?)?);
             } else if old.lovely_owned
                 && old_lovely.is_file()
                 && !other_lovely_mods(&old.mods_directory)
             {
-                previous_target_rollback = Some(FileRollback::remove(&old_lovely)?);
+                previous_target_rollbacks.push(FileRollback::remove(&old_lovely)?);
+            }
+            if old.steam_app_id_owned {
+                let old_app_id = old.game_directory.join("steam_appid.txt");
+                if let Some(backup) = old
+                    .steam_app_id_backup
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                {
+                    previous_target_rollbacks
+                        .push(FileRollback::replace(&old_app_id, &std::fs::read(backup)?)?);
+                } else {
+                    previous_target_rollbacks.push(FileRollback::remove(&old_app_id)?);
+                }
             }
         }
         self.save_manifest(&manifest)?;
         mod_rollback.commit()?;
+        if let Some(rollback) = legacy_mod_rollback.as_mut() {
+            rollback.commit();
+        }
         runtime_rollback.commit();
         for rollback in &mut previous_runtime_rollbacks {
             rollback.commit();
@@ -965,10 +1108,13 @@ impl Installer {
         if let Some(rollback) = lovely_rollback.as_mut() {
             rollback.commit();
         }
+        if let Some(rollback) = app_id_rollback.as_mut() {
+            rollback.commit();
+        }
         if let Some(rollback) = maintenance_rollback.as_mut() {
             rollback.commit();
         }
-        if let Some(rollback) = previous_target_rollback.as_mut() {
+        for rollback in &mut previous_target_rollbacks {
             rollback.commit();
         }
         progress(OperationProgress::complete(
@@ -1074,6 +1220,14 @@ impl Installer {
         } else if manifest.lovely_owned && lovely.is_file() {
             std::fs::remove_file(lovely)?;
         }
+        let app_id = manifest.game_directory.join("steam_appid.txt");
+        if let Some(backup) = manifest.steam_app_id_backup.as_ref() {
+            if backup.is_file() {
+                std::fs::copy(backup, app_id)?;
+            }
+        } else if manifest.steam_app_id_owned && app_id.is_file() {
+            std::fs::remove_file(app_id)?;
+        }
         progress(OperationProgress::complete(
             OperationKind::Restore,
             "Game files were restored",
@@ -1123,6 +1277,9 @@ impl Installer {
             bail!("this installer build does not contain the OBS plugin payload");
         }
         validate_obs_payload(OBS_PLUGIN_PAYLOAD)?;
+        if obs_is_running() {
+            bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
+        }
         let obs = detect_obs_directory().context("OBS Studio 32 x64 was not detected")?;
         let program_data = std::env::var_os("ProgramData")
             .map(PathBuf::from)
@@ -1165,11 +1322,25 @@ impl Installer {
         if !file_matches(&plugin, OBS_PLUGIN_PAYLOAD) || !file_matches(&locale, locale_payload) {
             bail!("OBS source post-install hash verification failed");
         }
+        // Alpha releases used the former product name as a separate OBS
+        // module. Loading both modules retains duplicate source factories, so
+        // remove only those two known installer-owned files transactionally.
+        let legacy_root = program_data.join("obs-studio/plugins/beatblock-together-obs");
+        let mut legacy_rollbacks = Vec::new();
+        for legacy in [
+            legacy_root.join("bin/64bit/beatblock-together-obs.dll"),
+            legacy_root.join("data/locale/en-US.ini"),
+        ] {
+            if legacy.is_file() {
+                legacy_rollbacks.push(FileRollback::remove(&legacy)?);
+            }
+        }
         Ok(ObsInstallTransaction {
             plugin,
             plugin_rollback,
             locale_rollback,
             marker_rollback,
+            legacy_rollbacks,
         })
     }
 
@@ -1177,6 +1348,12 @@ impl Installer {
         !OBS_PLUGIN_PAYLOAD.is_empty()
             && validate_obs_payload(OBS_PLUGIN_PAYLOAD).is_ok()
             && detect_obs_directory().is_some()
+    }
+
+    /// Reports whether OBS currently owns its plugin DLLs so the installer UI
+    /// can defer only that optional component instead of blocking core setup.
+    pub fn obs_running(&self) -> bool {
+        obs_is_running()
     }
 
     fn obs_plugin_ready(&self) -> bool {
@@ -1333,7 +1510,7 @@ impl Installer {
             std::fs::remove_dir_all(mod_directory)?;
         }
         let lovely = manifest.game_directory.join("version.dll");
-        if let Some(backup) = manifest.lovely_backup {
+        if let Some(backup) = manifest.lovely_backup.as_ref() {
             progress(OperationProgress::step(
                 OperationKind::Uninstall,
                 "lovely",
@@ -1348,6 +1525,14 @@ impl Installer {
             && !other_lovely_mods(&manifest.mods_directory)
         {
             std::fs::remove_file(lovely)?;
+        }
+        let app_id = manifest.game_directory.join("steam_appid.txt");
+        if let Some(backup) = manifest.steam_app_id_backup.as_ref() {
+            if backup.is_file() {
+                std::fs::copy(backup, app_id)?;
+            }
+        } else if manifest.steam_app_id_owned && app_id.is_file() {
+            std::fs::remove_file(app_id)?;
         }
         let manifest_path = self.manifest_path();
         if manifest_path.is_file() {
@@ -1497,13 +1682,11 @@ impl Installer {
         let mut last = None;
         let mut last_event = None;
         loop {
-            if let Ok(bytes) = std::fs::read(status_path) {
-                if let Ok(event) = serde_json::from_slice::<OperationProgress>(&bytes) {
-                    if last != Some((event.percent, event.phase.clone())) {
-                        last = Some((event.percent, event.phase.clone()));
-                        last_event = Some(event.clone());
-                        progress(event);
-                    }
+            if let Some(event) = read_operation_progress(status_path) {
+                if last != Some((event.percent, event.phase.clone())) {
+                    last = Some((event.percent, event.phase.clone()));
+                    last_event = Some(event.clone());
+                    progress(event);
                 }
             }
             let wait = unsafe { WaitForSingleObject(info.hProcess, 200) };
@@ -1523,20 +1706,36 @@ impl Installer {
         unsafe {
             CloseHandle(info.hProcess);
         }
+        // The helper can write its terminal status and exit between the final
+        // polling read and WaitForSingleObject. Always perform one post-exit
+        // read so the UI reports the real failure instead of only exit code 1.
+        if let Some(event) = read_operation_progress(status_path) {
+            if last != Some((event.percent, event.phase.clone())) {
+                last_event = Some(event.clone());
+                progress(event);
+            }
+        }
         if let Some(error) = exit_code_error {
-            let _ = std::fs::remove_file(status_path);
-            bail!("reading the administrator helper result failed: {error}");
+            bail!(
+                "reading the administrator helper result failed: {error}; helper status: {}",
+                status_path.display()
+            );
         }
         if code != 0 {
             let detail = last_event
                 .as_ref()
                 .filter(|event| event.terminal && event.severity == Severity::Error)
                 .map(|event| event.message.as_str());
-            let _ = std::fs::remove_file(status_path);
             if let Some(detail) = detail {
-                bail!("{detail}");
+                bail!(
+                    "{detail} (administrator helper status: {})",
+                    status_path.display()
+                );
             }
-            bail!("administrator helper failed with exit code {code}");
+            bail!(
+                "administrator helper failed with exit code {code} and did not publish a terminal error; helper status: {}",
+                status_path.display()
+            );
         }
         let _ = std::fs::remove_file(status_path);
         Ok(())
@@ -1591,32 +1790,15 @@ impl Installer {
                 return Some(path);
             }
         }
-        let mut libraries = Vec::new();
-        if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
-            libraries.push(PathBuf::from(program_files).join("Steam"));
-        }
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            libraries.push(PathBuf::from(program_files).join("Steam"));
-        }
-        let mut roots = libraries.clone();
-        for steam in libraries {
-            let vdf = steam.join("steamapps/libraryfolders.vdf");
-            if let Ok(content) = std::fs::read_to_string(vdf) {
-                for line in content.lines() {
-                    if !line.contains("\"path\"") {
-                        continue;
-                    }
-                    let values = line.split('"').collect::<Vec<_>>();
-                    if values.len() >= 4 {
-                        roots.push(PathBuf::from(values[3].replace("\\\\", "\\")));
-                    }
-                }
-            }
-        }
-        roots
+        steam_game_directories()
             .into_iter()
-            .map(|root| root.join("steamapps/common/Beatblock"))
             .find(|path| validate_game_directory(path).is_ok())
+    }
+
+    fn is_steam_managed_game_directory(&self, selected: &Path) -> bool {
+        steam_game_directories()
+            .iter()
+            .any(|candidate| paths_equal(candidate, selected))
     }
 
     fn manifest_path(&self) -> PathBuf {
@@ -1640,6 +1822,48 @@ impl Installer {
         atomic_write(&self.manifest_path(), &serde_json::to_vec_pretty(manifest)?)?;
         Ok(())
     }
+}
+
+fn steam_game_directories() -> Vec<PathBuf> {
+    let mut libraries = Vec::new();
+    if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
+        libraries.push(PathBuf::from(program_files).join("Steam"));
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        libraries.push(PathBuf::from(program_files).join("Steam"));
+    }
+    let mut roots = libraries.clone();
+    for steam in libraries {
+        let vdf = steam.join("steamapps/libraryfolders.vdf");
+        if let Ok(content) = std::fs::read_to_string(vdf) {
+            for line in content.lines() {
+                if !line.contains("\"path\"") {
+                    continue;
+                }
+                let values = line.split('"').collect::<Vec<_>>();
+                if values.len() >= 4 {
+                    roots.push(PathBuf::from(values[3].replace("\\\\", "\\")));
+                }
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.join("steamapps/common/Beatblock"))
+        .collect()
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    fn normalized(path: &Path) -> String {
+        std::fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_owned())
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .trim_end_matches(['\\', '/'])
+            .replace('/', r"\")
+            .to_ascii_lowercase()
+    }
+    normalized(left) == normalized(right)
 }
 
 fn component(
@@ -1687,6 +1911,26 @@ fn file_matches(path: &Path, expected: &[u8]) -> bool {
     std::fs::read(path)
         .ok()
         .is_some_and(|bytes| Sha256::digest(&bytes)[..] == Sha256::digest(expected)[..])
+}
+
+/// Avoid replacing a working injector just because it was built or signed
+/// differently. The PE header and embedded crate identity distinguish Lovely
+/// from an arbitrary DLL while keeping compatibility independent of one hash.
+fn is_lovely_injector(path: &Path) -> bool {
+    const MAX_INJECTOR_SIZE: u64 = 64 * 1024 * 1024;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() < 2 || metadata.len() > MAX_INJECTOR_SIZE {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    bytes.starts_with(b"MZ")
+        && bytes
+            .windows(b"lovely-injector".len())
+            .any(|window| window == b"lovely-injector")
 }
 
 fn validate_staged_payload(directory: &Path, distribution: Distribution) -> Result<()> {
@@ -1813,6 +2057,11 @@ fn backup_name_for(game_directory: &Path) -> String {
     let hash = hex::encode(Sha256::digest(game_directory.to_string_lossy().as_bytes()));
     format!("version-{}.before-bbt.dll", &hash[..12])
 }
+
+fn app_id_backup_name_for(game_directory: &Path) -> String {
+    let hash = hex::encode(Sha256::digest(game_directory.to_string_lossy().as_bytes()));
+    format!("steam-appid-{}.before-bbt.txt", &hash[..12])
+}
 impl Drop for FileRollback {
     fn drop(&mut self) {
         if self.committed {
@@ -1870,6 +2119,48 @@ impl Drop for DirectoryRollback {
     }
 }
 
+/// Temporarily removes an installer-owned legacy mod from Lovely's scan path.
+/// The old directory is restored automatically unless the replacement install
+/// reaches its durable commit point.
+struct DirectoryRemovalRollback {
+    target: PathBuf,
+    backup: PathBuf,
+    committed: bool,
+}
+impl DirectoryRemovalRollback {
+    fn quarantine(target: &Path, backup: &Path) -> Result<Self> {
+        std::fs::rename(target, backup).context("quarantine the retired BeatblockTogether mod")?;
+        Ok(Self {
+            target: target.to_owned(),
+            backup: backup.to_owned(),
+            committed: false,
+        })
+    }
+
+    fn commit(&mut self) {
+        // Once the current manifest and mod are durable, never put the retired
+        // hook back into Lovely's scan path. A locked backup is harmless and a
+        // later installer run can remove it.
+        self.committed = true;
+        let _ = std::fs::remove_dir_all(&self.backup);
+    }
+}
+impl Drop for DirectoryRemovalRollback {
+    fn drop(&mut self) {
+        if !self.committed && self.backup.exists() {
+            let _ = std::fs::rename(&self.backup, &self.target);
+        }
+    }
+}
+
+fn is_managed_legacy_mod(directory: &Path) -> bool {
+    let readme = std::fs::read_to_string(directory.join("README.txt")).unwrap_or_default();
+    readme.contains(
+        "Beatblock Together standalone Lovely package. Installed by BeatblockTogetherInstaller.exe.",
+    ) && directory.join("bbt/core.lua").is_file()
+        && directory.join("lovely/bootstrap.toml").is_file()
+}
+
 fn newest_file_since(directory: &Path, started: std::time::SystemTime) -> Option<PathBuf> {
     std::fs::read_dir(directory)
         .ok()?
@@ -1904,9 +2195,60 @@ pub fn write_operation_status(path: &Path, event: &OperationProgress) -> Result<
     atomic_write(path, &serde_json::to_vec(event)?)
 }
 
+fn read_operation_progress(path: &Path) -> Option<OperationProgress> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 #[cfg(windows)]
 fn quote_windows(path: &Path) -> String {
     format!("\"{}\"", path.display())
+}
+
+#[cfg(windows)]
+fn obs_is_running() -> bool {
+    process_is_running("obs64.exe")
+}
+
+#[cfg(windows)]
+fn process_is_running(executable_name: &str) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = false;
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(entry.szExeFile.len());
+        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case(executable_name) {
+            found = true;
+            break;
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    found
+}
+
+#[cfg(not(windows))]
+fn obs_is_running() -> bool {
+    false
 }
 
 fn detect_obs_directory() -> Option<PathBuf> {
@@ -2102,6 +2444,20 @@ mod tests {
         }
     }
 
+    fn fake_managed_legacy_mod(mods: &Path) -> PathBuf {
+        let legacy = mods.join("BeatblockTogether");
+        std::fs::create_dir_all(legacy.join("bbt")).unwrap();
+        std::fs::create_dir_all(legacy.join("lovely")).unwrap();
+        std::fs::write(
+            legacy.join("README.txt"),
+            b"Beatblock Together standalone Lovely package. Installed by BeatblockTogetherInstaller.exe.\n",
+        )
+        .unwrap();
+        std::fs::write(legacy.join("bbt/core.lua"), b"legacy runtime bootstrap").unwrap();
+        std::fs::write(legacy.join("lovely/bootstrap.toml"), b"[manifest]\n").unwrap();
+        legacy
+    }
+
     fn install_isolated(
         installer: &Installer,
         game: &Path,
@@ -2198,6 +2554,8 @@ mod tests {
                 installed_files: vec![],
                 lovely_owned: true,
                 lovely_backup: None,
+                steam_app_id_owned: false,
+                steam_app_id_backup: None,
                 runtime_path: Some(runtime),
                 maintenance_installer: None,
                 firewall_installed: false,
@@ -2233,6 +2591,8 @@ mod tests {
                 installed_files: vec![],
                 lovely_owned: true,
                 lovely_backup: None,
+                steam_app_id_owned: false,
+                steam_app_id_backup: None,
                 runtime_path: None,
                 maintenance_installer: None,
                 firewall_installed: false,
@@ -2273,6 +2633,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_mod_detection_requires_the_installer_marker_and_expected_payload() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-legacy-detection-{}", rand::random::<u64>()));
+        let legacy = root.join("BeatblockTogether");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("README.txt"), b"user-created folder").unwrap();
+        assert!(!is_managed_legacy_mod(&legacy));
+        fake_managed_legacy_mod(&root);
+        assert!(is_managed_legacy_mod(&legacy));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn full_standalone_install_repair_restore_and_uninstall_round_trip() {
         let root =
             std::env::temp_dir().join(format!("bbt-full-roundtrip-{}", rand::random::<u64>()));
@@ -2286,6 +2659,7 @@ mod tests {
         let legacy_runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
         std::fs::create_dir_all(legacy_runtime.parent().unwrap()).unwrap();
         std::fs::write(&legacy_runtime, b"legacy runtime").unwrap();
+        let legacy_mod = fake_managed_legacy_mod(&mods);
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
 
         let rejected = installer.install_with_progress_platform(
@@ -2299,6 +2673,7 @@ mod tests {
         assert!(rejected.unwrap_err().to_string().contains("not certified"));
         assert!(!mods.join("BeatblockOnline").exists());
         assert!(legacy_runtime.is_file());
+        assert!(legacy_mod.is_dir());
 
         let mut progress = Vec::new();
         let manifest = install_isolated(
@@ -2311,6 +2686,7 @@ mod tests {
         assert_eq!(manifest.distribution, Distribution::Standalone);
         assert!(!manifest.firewall_installed);
         assert!(!legacy_runtime.exists());
+        assert!(!legacy_mod.exists());
         assert!(data.join("runtime").join(RUNTIME_FILE_NAME).is_file());
         assert!(mods
             .join("BeatblockOnline/bbt/dashboard_model.lua")
@@ -2321,6 +2697,11 @@ mod tests {
         assert!(installed_core.contains("runtime.disconnected"));
         assert!(mods.join("BeatblockOnline/lovely/bootstrap.toml").is_file());
         assert!(file_matches(&game.join("version.dll"), LOVELY_PAYLOAD));
+        assert_eq!(
+            std::fs::read(game.join("steam_appid.txt")).unwrap(),
+            b"3045200\n"
+        );
+        assert!(manifest.steam_app_id_owned);
         let backup = manifest.lovely_backup.as_ref().unwrap();
         assert_eq!(std::fs::read(backup).unwrap(), b"existing Lovely");
         assert!(progress
@@ -2375,6 +2756,7 @@ mod tests {
 
         installer.restore_with_progress(|_| {}).unwrap();
         assert!(!mods.join("BeatblockOnline").exists());
+        assert!(!game.join("steam_appid.txt").exists());
         assert_eq!(
             std::fs::read(game.join("version.dll")).unwrap(),
             b"existing Lovely"
@@ -2391,6 +2773,7 @@ mod tests {
             .uninstall_with_progress_platform(false, false, |_| {})
             .unwrap();
         assert!(!mods.join("BeatblockOnline").exists());
+        assert!(!game.join("steam_appid.txt").exists());
         assert_eq!(
             std::fs::read(game.join("version.dll")).unwrap(),
             b"existing Lovely"
@@ -2414,6 +2797,7 @@ mod tests {
         std::fs::create_dir_all(game.join("version.dll")).unwrap();
         std::fs::create_dir_all(mods.join("BeatblockOnline")).unwrap();
         std::fs::write(mods.join("BeatblockOnline/previous.txt"), b"previous mod").unwrap();
+        let legacy_mod = fake_managed_legacy_mod(&mods);
         let runtime = data.join("runtime").join(LEGACY_RUNTIME_FILE_NAME);
         std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
         std::fs::write(&runtime, b"previous runtime").unwrap();
@@ -2427,6 +2811,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(std::fs::read(&runtime).unwrap(), b"previous runtime");
+        assert!(legacy_mod.is_dir());
         assert_eq!(
             std::fs::read(mods.join("BeatblockOnline/previous.txt")).unwrap(),
             b"previous mod"
@@ -2466,6 +2851,7 @@ mod tests {
         )
         .unwrap();
         assert!(old_game.join("version.dll").is_file());
+        assert!(old_game.join("steam_appid.txt").is_file());
         install_isolated(
             &installer,
             &new_game,
@@ -2474,7 +2860,9 @@ mod tests {
         )
         .unwrap();
         assert!(!old_game.join("version.dll").exists());
+        assert!(!old_game.join("steam_appid.txt").exists());
         assert!(new_game.join("version.dll").is_file());
+        assert!(new_game.join("steam_appid.txt").is_file());
         assert_eq!(
             installer.load_manifest().unwrap().unwrap().game_directory,
             new_game
@@ -2507,6 +2895,54 @@ mod tests {
     }
 
     #[test]
+    fn compatible_existing_lovely_is_preserved_and_direct_launch_is_managed() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-compatible-lovely-{}", rand::random::<u64>()));
+        let game = root.join("game");
+        let data = root.join("data");
+        let mods = root.join("mods");
+        fake_game(&game);
+        let mut compatible = b"MZ".to_vec();
+        compatible.extend_from_slice(b"third-party signed lovely-injector fixture");
+        std::fs::write(game.join("version.dll"), &compatible).unwrap();
+        std::fs::write(game.join("steam_appid.txt"), b"999\n").unwrap();
+        let installer = Installer::with_mods_directory(data, mods);
+
+        let manifest = install_isolated(
+            &installer,
+            &game,
+            Some(Distribution::Standalone),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(game.join("version.dll")).unwrap(), compatible);
+        assert!(!manifest.lovely_owned);
+        assert!(manifest
+            .lovely_backup
+            .as_ref()
+            .is_some_and(|path| path.is_file()));
+        assert!(manifest.steam_app_id_owned);
+        assert!(manifest
+            .steam_app_id_backup
+            .as_ref()
+            .is_some_and(|path| path.is_file()));
+        assert_eq!(
+            std::fs::read(game.join("steam_appid.txt")).unwrap(),
+            b"3045200\n"
+        );
+        installer
+            .uninstall_with_progress_platform(false, false, |_| {})
+            .unwrap();
+        assert_eq!(std::fs::read(game.join("version.dll")).unwrap(), compatible);
+        assert_eq!(
+            std::fs::read(game.join("steam_appid.txt")).unwrap(),
+            b"999\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn uninstall_preserves_data_unless_explicitly_requested() {
         let root = std::env::temp_dir().join(format!("bbt-uninstall-{}", rand::random::<u64>()));
         let data = root.join("data");
@@ -2525,6 +2961,8 @@ mod tests {
             installed_files: Vec::new(),
             lovely_owned: false,
             lovely_backup: None,
+            steam_app_id_owned: false,
+            steam_app_id_backup: None,
             runtime_path: None,
             maintenance_installer: None,
             firewall_installed: false,
@@ -2553,6 +2991,8 @@ mod tests {
             installed_files: vec![],
             lovely_owned: false,
             lovely_backup: None,
+            steam_app_id_owned: false,
+            steam_app_id_backup: None,
             runtime_path: None,
             maintenance_installer: None,
             firewall_installed: false,
@@ -2621,6 +3061,35 @@ mod tests {
             .windows(2)
             .all(|pair| pair[0].percent <= pair[1].percent));
         assert_eq!(events.drain(..).filter(|event| event.terminal).count(), 1);
+    }
+
+    #[test]
+    fn elevated_status_reader_observes_a_terminal_error_written_at_process_exit() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-elevated-status-{}", rand::random::<u64>()));
+        let status = root.join("operation.json");
+        let event = OperationProgress {
+            operation: OperationKind::Install,
+            phase: "failed".into(),
+            percent: 100,
+            message: "specific elevated helper failure".into(),
+            severity: Severity::Error,
+            terminal: true,
+        };
+        write_operation_status(&status, &event).unwrap();
+        let observed = read_operation_progress(&status).unwrap();
+        assert!(observed.terminal);
+        assert_eq!(observed.severity, Severity::Error);
+        assert_eq!(observed.message, event.message);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn running_process_detection_finds_the_current_test_executable() {
+        let executable = std::env::current_exe().unwrap();
+        let name = executable.file_name().unwrap().to_string_lossy();
+        assert!(process_is_running(&name));
     }
 
     #[cfg(windows)]
@@ -2741,12 +3210,25 @@ mod tests {
         let (plugin, _) = obs_program_data_paths(&program_data);
         std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
         std::fs::write(&plugin, b"previous plugin").unwrap();
+        let legacy = program_data
+            .join("obs-studio/plugins/beatblock-together-obs/bin/64bit/beatblock-together-obs.dll");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, b"previous legacy plugin").unwrap();
 
         let transaction = installer.stage_obs_plugin_into(obs, &program_data).unwrap();
         assert!(file_matches(&plugin, OBS_PLUGIN_PAYLOAD));
+        assert!(!legacy.exists());
         drop(transaction);
         assert_eq!(std::fs::read(&plugin).unwrap(), b"previous plugin");
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"previous legacy plugin");
         assert!(!data.join("obs-install.json").exists());
+
+        installer
+            .install_obs_plugin_into(root.join("obs-studio"), &program_data)
+            .unwrap();
+        assert!(file_matches(&plugin, OBS_PLUGIN_PAYLOAD));
+        assert!(!legacy.exists());
+        assert!(data.join("obs-install.json").is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 

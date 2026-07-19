@@ -3,6 +3,10 @@
 
 pub const SHARED_MOD_PAYLOAD: &[(&str, &[u8])] = &[
     (
+        "assets/online.png",
+        include_bytes!("../../mod/shared/assets/online.png"),
+    ),
+    (
         "bbt/core.lua",
         include_bytes!("../../mod/shared/bbt/core.lua"),
     ),
@@ -31,3 +35,19 @@ pub const SHARED_MOD_PAYLOAD: &[(&str, &[u8])] = &[
         include_bytes!("../../mod/shared/lovely/hooks.toml"),
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::SHARED_MOD_PAYLOAD;
+
+    #[test]
+    fn online_icon_is_embedded_at_native_menu_size() {
+        let (_, icon) = SHARED_MOD_PAYLOAD
+            .iter()
+            .find(|(path, _)| *path == "assets/online.png")
+            .expect("online icon missing from installer payload");
+        assert_eq!(&icon[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(u32::from_be_bytes(icon[16..20].try_into().unwrap()), 72);
+        assert_eq!(u32::from_be_bytes(icon[20..24].try_into().unwrap()), 72);
+    }
+}
