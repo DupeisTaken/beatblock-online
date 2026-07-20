@@ -10,11 +10,11 @@ jobs:
   typescript:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
@@ -25,6 +25,7 @@ jobs:
       - run: pnpm test:release-workflow
       - run: pnpm build:protocol
       - run: pnpm generate:protocol
+      - run: git diff --exit-code -- protocol/schemas/v3/protocol.json
       - run: pnpm package:mods
       - run: pnpm test:patch-validation
       # The full mod gate remains local because it validates signatures against
@@ -34,11 +35,14 @@ jobs:
   companion:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: companion
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit
+        working-directory: companion
       - run: powershell -NoProfile -File scripts/test-release-utils.ps1
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
       # These five gates require either the user's isolated game fixture or the
@@ -53,5 +57,6 @@ jobs:
           --skip verified_obs_component_does_not_report_a_stale_failure
       - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
-      - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path companion/Cargo.toml --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path companion/Cargo.toml --features installer-ui --bin BeatblockOnlineInstaller -- -D warnings
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1

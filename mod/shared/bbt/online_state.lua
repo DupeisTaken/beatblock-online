@@ -52,7 +52,15 @@ end
 local function bounded(value,limit)
   value=tostring(value or '')
   if #value<=limit then return value end
-  return value:sub(1,limit-3)..'...'
+  local finalByte=math.max(0,limit-3)
+  -- Do not split a multibyte name or diagnostic at the byte budget. LÖVE's
+  -- text renderer rejects malformed UTF-8 instead of displaying a replacement.
+  while finalByte>0 do
+    local nextByte=value:byte(finalByte+1)
+    if not nextByte or nextByte<128 or nextByte>=192 then break end
+    finalByte=finalByte-1
+  end
+  return value:sub(1,finalByte)..'...'
 end
 
 local function applyBeatblockPalette(showBadColors)
@@ -87,11 +95,9 @@ local function register(self,id,x,y,w,h,run)
 end
 
 local function button(self,id,x,y,w,h,label,run,color,enabled)
-  -- Disabled controls remain visible and focusable for discoverability, but
-  -- cannot be activated by keyboard, mouse, or controller.
-  local action=run
-  if enabled==false then action=nil end
-  local focused=register(self,id,x,y,w,h,action)
+  -- Disabled controls are presentation only: keep them out of focus, hit
+  -- testing, and callback dispatch rather than relying on server rejection.
+  local focused=enabled~=false and register(self,id,x,y,w,h,run) or false
   ui:button(id,x,y,w,h,label,focused,color,enabled)
 end
 

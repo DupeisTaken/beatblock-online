@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { format, resolveConfig } from 'prettier';
 import {
   ChartFingerprintSchema,
   ChartTransferOfferSchema,
@@ -35,5 +36,11 @@ const schema = {
     ChartTransferOffer: ChartTransferOfferSchema,
   },
 };
-await writeFile(resolve(output, 'protocol.json'), `${JSON.stringify(schema, null, 2)}\n`);
+const outputPath = resolve(output, 'protocol.json');
+const prettierConfig = (await resolveConfig(outputPath)) ?? {};
+const serialized = await format(JSON.stringify(schema), {
+  ...prettierConfig,
+  parser: 'json',
+});
+await writeFile(outputPath, serialized);
 console.log('Generated protocol/schemas/v3/protocol.json');

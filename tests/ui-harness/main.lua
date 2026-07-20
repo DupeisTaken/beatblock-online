@@ -197,10 +197,12 @@ end
 
 function love.load()
   love.window.setTitle('Beatblock Online UI QA')
-  love.window.setMode(600,360,{resizable=false,vsync=0})
+  -- CI and developer machines may run at 100-150% display scaling. The QA
+  -- artifact is the fixed logical game canvas, never a monitor-scaled texture.
+  love.window.setMode(600,360,{resizable=false,vsync=0,highdpi=false})
   if autorun and love.window.minimize then love.window.minimize() end
   love.graphics.getDimensions=function() return 600,360 end
-  qaCanvas=love.graphics.newCanvas(600,360)
+  qaCanvas=love.graphics.newCanvas(600,360,{dpiscale=1})
   love.graphics.setFont(fonts.main)
   online:init()
   assert(em.clearCount==1,'Online must clear retained native menu entities')
@@ -259,7 +261,8 @@ function love.load()
   assert(exportCommand.payload.mode=='full' and exportCommand.payload.width==1920 and exportCommand.payload.height==1080,'Advanced export must preserve mode and resolution')
   assert(exportCommand.payload.fps==30 and exportCommand.payload.delayMs==1000,'Advanced export must preserve FPS and delay')
   roomFixture.lifecycle='playing'
-  assert(findControl('broadcast_apply').run==nil,'Advanced export Apply must lock during an active race')
+  local lockedApply=findControl('broadcast_apply')
+  assert(not lockedApply or lockedApply.run==nil,'Advanced export Apply must lock during an active race')
 
   reset(); roomFixture.lifecycle='results'
   activate('session_primary')
@@ -270,6 +273,31 @@ function love.load()
   roomFixture.lifecycle='results'
   online:init()
   assert(online.workspace=='setlist','A host returning from native Results must land on Setlist')
+  -- Disabled actions must not enter the focus/click dispatch table. A
+  -- non-host still sees the host's Setlist controls for context.
+  BBT.context.sessionId='player-2'
+  online.workspace='setlist'
+  online:drawState()
+  for _,control in ipairs(online.controls) do
+    assert(control.id~='setlist_official','disabled Setlist action remained interactive')
+    assert(control.id~='setlist_custom','disabled Setlist action remained interactive')
+  end
+  -- Allowed Unicode names can exceed a byte-based label budget. Opening a
+  -- destructive confirmation must preserve valid UTF-8.
+  BBT.context.sessionId='host-1'
+  local originalName=participants[3].displayName
+  participants[3].displayName=string.rep(string.char(231,149,140),11)
+  online.workspace='room'; online.selectedSessionId=participants[3].sessionId
+  online:drawState()
+  for _,control in ipairs(online.controls) do
+    if control.id=='participant_remove' then control.run(); break end
+  end
+  local utf8=require('utf8')
+  assert(online.modal and utf8.len(online.modal.message),
+    'bounded participant confirmation contains malformed UTF-8')
+  participants[3].displayName=originalName
+  online.modal=nil
+  online:init()
   if autorun then
     auditFile=assert(io.open(output..'/layout-audit.txt','wb'))
     beginNext()

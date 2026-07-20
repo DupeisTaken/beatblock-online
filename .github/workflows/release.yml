@@ -17,31 +17,39 @@ jobs:
   build:
     runs-on: windows-2022
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - run: node scripts/verify-release-tag.mjs
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.12.1
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: nightly-2026-07-15
       # Lovely uses its explicit pinned `+nightly-2026-07-15` selector. Keep
       # companion formatting, tests, and Clippy on the supported stable toolchain.
       - run: rustup default stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: companion
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit
+        working-directory: companion
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm --filter @bbt/protocol test
       - run: pnpm test:release-workflow
+      - run: pnpm generate:protocol
+      - run: git diff --exit-code -- protocol/schemas/v3/protocol.json
       - run: pnpm test:patch-validation
       # GitHub-hosted release builds validate the distributable source tree.
       # Full signature acceptance remains a local, fixture-backed gate.
@@ -54,9 +62,18 @@ jobs:
       - run: cargo test --manifest-path companion/Cargo.toml --lib --bins -- --skip detector_accepts_isolated_test_game_shape
       - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release
-      - run: cargo clippy --manifest-path companion/Cargo.toml -- -D warnings
+      - run: cargo clippy --manifest-path companion/Cargo.toml --all-targets -- -D warnings
+      - run: cargo clippy --manifest-path companion/Cargo.toml --features installer-ui --bin BeatblockOnlineInstaller -- -D warnings
       - run: powershell -NoProfile -File scripts/test-install-mod.ps1
-      - uses: actions/upload-artifact@v7
+      - name: Attest release artifact provenance
+        uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
+        with:
+          subject-path: |
+            release/BeatblockOnlineInstaller.exe
+            release/SHA256SUMS.txt
+            artifacts/obs/beatblock-online-obs.dll
+            mod/releases/*.zip
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: beatblock-online-${{ github.ref_name }}
           if-no-files-found: error
@@ -66,22 +83,34 @@ jobs:
             release/SHA256SUMS.txt
             artifacts/obs/beatblock-online-obs.dll
             mod/releases/*.zip
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: beatblock-online-${{ github.ref_name }}
+          path: release-assets
       - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = @(
-            'release/BeatblockOnlineInstaller.exe'
-            'release/SHA256SUMS.txt'
-            'artifacts/obs/beatblock-online-obs.dll'
+          cd release-assets
+          mapfile -t zip_assets < <(find mod/releases -maxdepth 1 -type f -name '*.zip' -print)
+          arguments=(
+            release create "$GITHUB_REF_NAME"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --generate-notes
+            release/BeatblockOnlineInstaller.exe
+            release/SHA256SUMS.txt
+            artifacts/obs/beatblock-online-obs.dll
+            "${zip_assets[@]}"
           )
-          $assets += Get-ChildItem 'mod/releases/*.zip' | ForEach-Object { $_.FullName }
-          $arguments = @(
-            'release', 'create', $env:GITHUB_REF_NAME
-            '--verify-tag'
-            '--generate-notes'
-          ) + $assets
-          if ($env:GITHUB_REF_NAME -match '-') { $arguments += '--prerelease' }
-          gh @arguments
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then arguments+=(--prerelease); fi
+          gh "${arguments[@]}"

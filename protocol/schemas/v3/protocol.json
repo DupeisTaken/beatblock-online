@@ -8,32 +8,12 @@
       "type": "object",
       "required": ["version", "type", "sequence", "runTimeUs", "payload"],
       "properties": {
-        "version": {
-          "const": 3,
-          "type": "number"
-        },
-        "type": {
-          "minLength": 1,
-          "maxLength": 80,
-          "type": "string"
-        },
-        "sequence": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "runTimeUs": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "runId": {
-          "maxLength": 80,
-          "type": "string"
-        },
-        "requestId": {
-          "minLength": 1,
-          "maxLength": 80,
-          "type": "string"
-        },
+        "version": { "const": 3, "type": "number" },
+        "type": { "minLength": 1, "maxLength": 80, "type": "string" },
+        "sequence": { "minimum": 0, "type": "integer" },
+        "runTimeUs": { "minimum": 0, "type": "integer" },
+        "runId": { "maxLength": 80, "type": "string" },
+        "requestId": { "minLength": 1, "maxLength": 80, "type": "string" },
         "payload": {}
       }
     },
@@ -51,39 +31,14 @@
         "mineHits"
       ],
       "properties": {
-        "hits": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "misses": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "barelies": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "combo": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "maxCombo": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "currentMaxHits": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "maxHits": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "mineHits": {
-          "minimum": 0,
-          "default": 0,
-          "type": "integer"
-        }
+        "hits": { "minimum": 0, "type": "integer" },
+        "misses": { "minimum": 0, "type": "integer" },
+        "barelies": { "minimum": 0, "type": "integer" },
+        "combo": { "minimum": 0, "type": "integer" },
+        "maxCombo": { "minimum": 0, "type": "integer" },
+        "currentMaxHits": { "minimum": 0, "type": "integer" },
+        "maxHits": { "minimum": 0, "type": "integer" },
+        "mineHits": { "minimum": 0, "default": 0, "type": "integer" }
       }
     },
     "ChartFingerprint": {
@@ -98,41 +53,16 @@
         "transferMode"
       ],
       "properties": {
-        "hash": {
-          "pattern": "^[a-f0-9]{64}$",
-          "type": "string"
-        },
-        "packageName": {
-          "minLength": 1,
-          "maxLength": 256,
-          "type": "string"
-        },
-        "songName": {
-          "minLength": 1,
-          "maxLength": 256,
-          "type": "string"
-        },
-        "variant": {
-          "maxLength": 128,
-          "type": "string"
-        },
-        "expectedMaxHits": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "official": {
-          "type": "boolean"
-        },
+        "hash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+        "packageName": { "minLength": 1, "maxLength": 256, "type": "string" },
+        "songName": { "minLength": 1, "maxLength": 256, "type": "string" },
+        "variant": { "maxLength": 128, "type": "string" },
+        "expectedMaxHits": { "minimum": 1, "type": "integer" },
+        "official": { "type": "boolean" },
         "transferMode": {
           "anyOf": [
-            {
-              "const": "verify_only",
-              "type": "string"
-            },
-            {
-              "const": "host_transfer",
-              "type": "string"
-            }
+            { "const": "verify_only", "type": "string" },
+            { "const": "host_transfer", "type": "string" }
           ]
         }
       }
@@ -142,21 +72,10 @@
       "type": "object",
       "required": ["rate", "pauseAllowed", "retryAllowed", "forceStart"],
       "properties": {
-        "rate": {
-          "const": 1,
-          "type": "number"
-        },
-        "pauseAllowed": {
-          "const": false,
-          "type": "boolean"
-        },
-        "retryAllowed": {
-          "const": false,
-          "type": "boolean"
-        },
-        "forceStart": {
-          "type": "boolean"
-        }
+        "rate": { "const": 1, "type": "number" },
+        "pauseAllowed": { "const": false, "type": "boolean" },
+        "retryAllowed": { "const": false, "type": "boolean" },
+        "forceStart": { "type": "boolean" }
       }
     },
     "PlayerSnapshot": {
@@ -177,61 +96,23 @@
         "commentatorAccess"
       ],
       "properties": {
-        "sessionId": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "displayName": {
-          "minLength": 1,
-          "maxLength": 48,
-          "type": "string"
-        },
+        "sessionId": { "minLength": 1, "type": "string" },
+        "displayName": { "minLength": 1, "maxLength": 48, "type": "string" },
         "role": {
           "anyOf": [
-            {
-              "const": "player",
-              "type": "string"
-            },
-            {
-              "const": "spectator",
-              "type": "string"
-            },
-            {
-              "const": "host",
-              "type": "string"
-            }
+            { "const": "player", "type": "string" },
+            { "const": "spectator", "type": "string" },
+            { "const": "host", "type": "string" }
           ]
         },
-        "admitted": {
-          "type": "boolean"
-        },
-        "connected": {
-          "type": "boolean"
-        },
-        "ready": {
-          "type": "boolean"
-        },
-        "verified": {
-          "type": "boolean"
-        },
-        "rank": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "progress": {
-          "minimum": 0,
-          "maximum": 1,
-          "type": "number"
-        },
-        "accuracy": {
-          "minimum": 0,
-          "maximum": 100,
-          "type": "number"
-        },
-        "setTotal": {
-          "minimum": 0,
-          "type": "number"
-        },
+        "admitted": { "type": "boolean" },
+        "connected": { "type": "boolean" },
+        "ready": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "rank": { "minimum": 1, "type": "integer" },
+        "progress": { "minimum": 0, "maximum": 1, "type": "number" },
+        "accuracy": { "minimum": 0, "maximum": 100, "type": "number" },
+        "setTotal": { "minimum": 0, "type": "number" },
         "totals": {
           "additionalProperties": false,
           "type": "object",
@@ -246,69 +127,26 @@
             "mineHits"
           ],
           "properties": {
-            "hits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "misses": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "barelies": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "combo": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "maxCombo": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "currentMaxHits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "maxHits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "mineHits": {
-              "minimum": 0,
-              "default": 0,
-              "type": "integer"
-            }
+            "hits": { "minimum": 0, "type": "integer" },
+            "misses": { "minimum": 0, "type": "integer" },
+            "barelies": { "minimum": 0, "type": "integer" },
+            "combo": { "minimum": 0, "type": "integer" },
+            "maxCombo": { "minimum": 0, "type": "integer" },
+            "currentMaxHits": { "minimum": 0, "type": "integer" },
+            "maxHits": { "minimum": 0, "type": "integer" },
+            "mineHits": { "minimum": 0, "default": 0, "type": "integer" }
           }
         },
         "validity": {
           "anyOf": [
-            {
-              "const": "pending",
-              "type": "string"
-            },
-            {
-              "const": "valid",
-              "type": "string"
-            },
-            {
-              "const": "invalid",
-              "type": "string"
-            },
-            {
-              "const": "dnf",
-              "type": "string"
-            }
+            { "const": "pending", "type": "string" },
+            { "const": "valid", "type": "string" },
+            { "const": "invalid", "type": "string" },
+            { "const": "dnf", "type": "string" }
           ]
         },
-        "invalidReason": {
-          "maxLength": 512,
-          "type": "string"
-        },
-        "commentatorAccess": {
-          "default": false,
-          "type": "boolean"
-        }
+        "invalidReason": { "maxLength": 512, "type": "string" },
+        "commentatorAccess": { "default": false, "type": "boolean" }
       }
     },
     "LobbySnapshot": {
@@ -328,71 +166,28 @@
         "updatedAtMs"
       ],
       "properties": {
-        "id": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "name": {
-          "minLength": 1,
-          "maxLength": 80,
-          "type": "string"
-        },
-        "hostSessionId": {
-          "minLength": 1,
-          "type": "string"
-        },
+        "id": { "minLength": 1, "type": "string" },
+        "name": { "minLength": 1, "maxLength": 80, "type": "string" },
+        "hostSessionId": { "minLength": 1, "type": "string" },
         "lifecycle": {
           "anyOf": [
-            {
-              "const": "forming",
-              "type": "string"
-            },
-            {
-              "const": "chart_locked",
-              "type": "string"
-            },
-            {
-              "const": "ready",
-              "type": "string"
-            },
-            {
-              "const": "countdown",
-              "type": "string"
-            },
-            {
-              "const": "playing",
-              "type": "string"
-            },
-            {
-              "const": "results",
-              "type": "string"
-            },
-            {
-              "const": "set_complete",
-              "type": "string"
-            },
-            {
-              "const": "closed",
-              "type": "string"
-            }
+            { "const": "forming", "type": "string" },
+            { "const": "chart_locked", "type": "string" },
+            { "const": "ready", "type": "string" },
+            { "const": "countdown", "type": "string" },
+            { "const": "playing", "type": "string" },
+            { "const": "results", "type": "string" },
+            { "const": "set_complete", "type": "string" },
+            { "const": "closed", "type": "string" }
           ]
         },
         "admissionMode": {
           "anyOf": [
-            {
-              "const": "password_only",
-              "type": "string"
-            },
-            {
-              "const": "host_approval",
-              "type": "string"
-            }
+            { "const": "password_only", "type": "string" },
+            { "const": "host_approval", "type": "string" }
           ]
         },
-        "allowChartTransfers": {
-          "default": true,
-          "type": "boolean"
-        },
+        "allowChartTransfers": { "default": true, "type": "boolean" },
         "chart": {
           "type": "object",
           "required": [
@@ -405,47 +200,22 @@
             "transferMode"
           ],
           "properties": {
-            "hash": {
-              "pattern": "^[a-f0-9]{64}$",
-              "type": "string"
-            },
-            "packageName": {
-              "minLength": 1,
-              "maxLength": 256,
-              "type": "string"
-            },
-            "songName": {
-              "minLength": 1,
-              "maxLength": 256,
-              "type": "string"
-            },
-            "variant": {
-              "maxLength": 128,
-              "type": "string"
-            },
-            "expectedMaxHits": {
-              "minimum": 1,
-              "type": "integer"
-            },
-            "official": {
-              "type": "boolean"
-            },
+            "hash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+            "packageName": { "minLength": 1, "maxLength": 256, "type": "string" },
+            "songName": { "minLength": 1, "maxLength": 256, "type": "string" },
+            "variant": { "maxLength": 128, "type": "string" },
+            "expectedMaxHits": { "minimum": 1, "type": "integer" },
+            "official": { "type": "boolean" },
             "transferMode": {
               "anyOf": [
-                {
-                  "const": "verify_only",
-                  "type": "string"
-                },
-                {
-                  "const": "host_transfer",
-                  "type": "string"
-                }
+                { "const": "verify_only", "type": "string" },
+                { "const": "host_transfer", "type": "string" }
               ]
             }
           }
         },
         "participants": {
-          "maxItems": 49,
+          "maxItems": 48,
           "type": "array",
           "items": {
             "type": "object",
@@ -465,61 +235,23 @@
               "commentatorAccess"
             ],
             "properties": {
-              "sessionId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "displayName": {
-                "minLength": 1,
-                "maxLength": 48,
-                "type": "string"
-              },
+              "sessionId": { "minLength": 1, "type": "string" },
+              "displayName": { "minLength": 1, "maxLength": 48, "type": "string" },
               "role": {
                 "anyOf": [
-                  {
-                    "const": "player",
-                    "type": "string"
-                  },
-                  {
-                    "const": "spectator",
-                    "type": "string"
-                  },
-                  {
-                    "const": "host",
-                    "type": "string"
-                  }
+                  { "const": "player", "type": "string" },
+                  { "const": "spectator", "type": "string" },
+                  { "const": "host", "type": "string" }
                 ]
               },
-              "admitted": {
-                "type": "boolean"
-              },
-              "connected": {
-                "type": "boolean"
-              },
-              "ready": {
-                "type": "boolean"
-              },
-              "verified": {
-                "type": "boolean"
-              },
-              "rank": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "progress": {
-                "minimum": 0,
-                "maximum": 1,
-                "type": "number"
-              },
-              "accuracy": {
-                "minimum": 0,
-                "maximum": 100,
-                "type": "number"
-              },
-              "setTotal": {
-                "minimum": 0,
-                "type": "number"
-              },
+              "admitted": { "type": "boolean" },
+              "connected": { "type": "boolean" },
+              "ready": { "type": "boolean" },
+              "verified": { "type": "boolean" },
+              "rank": { "minimum": 1, "type": "integer" },
+              "progress": { "minimum": 0, "maximum": 1, "type": "number" },
+              "accuracy": { "minimum": 0, "maximum": 100, "type": "number" },
+              "setTotal": { "minimum": 0, "type": "number" },
               "totals": {
                 "additionalProperties": false,
                 "type": "object",
@@ -534,88 +266,38 @@
                   "mineHits"
                 ],
                 "properties": {
-                  "hits": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "misses": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "barelies": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "combo": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxCombo": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "currentMaxHits": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxHits": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "mineHits": {
-                    "minimum": 0,
-                    "default": 0,
-                    "type": "integer"
-                  }
+                  "hits": { "minimum": 0, "type": "integer" },
+                  "misses": { "minimum": 0, "type": "integer" },
+                  "barelies": { "minimum": 0, "type": "integer" },
+                  "combo": { "minimum": 0, "type": "integer" },
+                  "maxCombo": { "minimum": 0, "type": "integer" },
+                  "currentMaxHits": { "minimum": 0, "type": "integer" },
+                  "maxHits": { "minimum": 0, "type": "integer" },
+                  "mineHits": { "minimum": 0, "default": 0, "type": "integer" }
                 }
               },
               "validity": {
                 "anyOf": [
-                  {
-                    "const": "pending",
-                    "type": "string"
-                  },
-                  {
-                    "const": "valid",
-                    "type": "string"
-                  },
-                  {
-                    "const": "invalid",
-                    "type": "string"
-                  },
-                  {
-                    "const": "dnf",
-                    "type": "string"
-                  }
+                  { "const": "pending", "type": "string" },
+                  { "const": "valid", "type": "string" },
+                  { "const": "invalid", "type": "string" },
+                  { "const": "dnf", "type": "string" }
                 ]
               },
-              "invalidReason": {
-                "maxLength": 512,
-                "type": "string"
-              },
-              "commentatorAccess": {
-                "default": false,
-                "type": "boolean"
-              }
+              "invalidReason": { "maxLength": 512, "type": "string" },
+              "commentatorAccess": { "default": false, "type": "boolean" }
             }
           }
         },
-        "scheduledStartTimeMs": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "forceStart": {
-          "type": "boolean"
-        },
+        "scheduledStartTimeMs": { "minimum": 0, "type": "integer" },
+        "forceStart": { "type": "boolean" },
         "setlist": {
           "type": "array",
           "items": {
             "type": "object",
             "required": ["id", "chart", "completed"],
             "properties": {
-              "id": {
-                "type": "string"
-              },
+              "id": { "type": "string" },
               "chart": {
                 "type": "object",
                 "required": [
@@ -628,91 +310,39 @@
                   "transferMode"
                 ],
                 "properties": {
-                  "hash": {
-                    "pattern": "^[a-f0-9]{64}$",
-                    "type": "string"
-                  },
-                  "packageName": {
-                    "minLength": 1,
-                    "maxLength": 256,
-                    "type": "string"
-                  },
-                  "songName": {
-                    "minLength": 1,
-                    "maxLength": 256,
-                    "type": "string"
-                  },
-                  "variant": {
-                    "maxLength": 128,
-                    "type": "string"
-                  },
-                  "expectedMaxHits": {
-                    "minimum": 1,
-                    "type": "integer"
-                  },
-                  "official": {
-                    "type": "boolean"
-                  },
+                  "hash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "packageName": { "minLength": 1, "maxLength": 256, "type": "string" },
+                  "songName": { "minLength": 1, "maxLength": 256, "type": "string" },
+                  "variant": { "maxLength": 128, "type": "string" },
+                  "expectedMaxHits": { "minimum": 1, "type": "integer" },
+                  "official": { "type": "boolean" },
                   "transferMode": {
                     "anyOf": [
-                      {
-                        "const": "verify_only",
-                        "type": "string"
-                      },
-                      {
-                        "const": "host_transfer",
-                        "type": "string"
-                      }
+                      { "const": "verify_only", "type": "string" },
+                      { "const": "host_transfer", "type": "string" }
                     ]
                   }
                 }
               },
-              "completed": {
-                "type": "boolean"
-              }
+              "completed": { "type": "boolean" }
             }
           }
         },
         "currentSetlistIndex": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "anyOf": [{ "minimum": 0, "type": "integer" }, { "type": "null" }]
         },
-        "createdAtMs": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "updatedAtMs": {
-          "minimum": 0,
-          "type": "integer"
-        }
+        "createdAtMs": { "minimum": 0, "type": "integer" },
+        "updatedAtMs": { "minimum": 0, "type": "integer" }
       }
     },
     "RunScoreDelta": {
       "type": "object",
       "required": ["runSequence", "progress", "beat", "songTimeMs", "totals"],
       "properties": {
-        "runSequence": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "progress": {
-          "minimum": 0,
-          "maximum": 1,
-          "type": "number"
-        },
-        "beat": {
-          "type": "number"
-        },
-        "songTimeMs": {
-          "type": "integer"
-        },
+        "runSequence": { "minimum": 0, "type": "integer" },
+        "progress": { "minimum": 0, "maximum": 1, "type": "number" },
+        "beat": { "type": "number" },
+        "songTimeMs": { "type": "integer" },
         "totals": {
           "additionalProperties": false,
           "type": "object",
@@ -727,65 +357,29 @@
             "mineHits"
           ],
           "properties": {
-            "hits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "misses": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "barelies": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "combo": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "maxCombo": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "currentMaxHits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "maxHits": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "mineHits": {
-              "minimum": 0,
-              "default": 0,
-              "type": "integer"
-            }
+            "hits": { "minimum": 0, "type": "integer" },
+            "misses": { "minimum": 0, "type": "integer" },
+            "barelies": { "minimum": 0, "type": "integer" },
+            "combo": { "minimum": 0, "type": "integer" },
+            "maxCombo": { "minimum": 0, "type": "integer" },
+            "currentMaxHits": { "minimum": 0, "type": "integer" },
+            "maxHits": { "minimum": 0, "type": "integer" },
+            "mineHits": { "minimum": 0, "default": 0, "type": "integer" }
           }
         }
       }
     },
     "ClientHello": {
       "type": "object",
-      "required": ["clientVersion", "gameBuildHash", "distribution", "mods"],
+      "required": ["instanceId", "clientVersion", "gameBuildHash", "distribution", "mods"],
       "properties": {
-        "clientVersion": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "gameBuildHash": {
-          "minLength": 1,
-          "type": "string"
-        },
+        "instanceId": { "minLength": 1, "maxLength": 96, "type": "string" },
+        "clientVersion": { "minLength": 1, "type": "string" },
+        "gameBuildHash": { "minLength": 1, "type": "string" },
         "distribution": {
           "anyOf": [
-            {
-              "const": "standalone",
-              "type": "string"
-            },
-            {
-              "const": "beatblock-plus",
-              "type": "string"
-            }
+            { "const": "standalone", "type": "string" },
+            { "const": "beatblock-plus", "type": "string" }
           ]
         },
         "mods": {
@@ -793,14 +387,7 @@
           "items": {
             "type": "object",
             "required": ["id", "hash"],
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "hash": {
-                "type": "string"
-              }
-            }
+            "properties": { "id": { "type": "string" }, "hash": { "type": "string" } }
           }
         }
       }
@@ -810,14 +397,8 @@
       "type": "object",
       "required": ["revision", "updatedAtMs", "slots"],
       "properties": {
-        "revision": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "updatedAtMs": {
-          "minimum": 0,
-          "type": "integer"
-        },
+        "revision": { "minimum": 0, "type": "integer" },
+        "updatedAtMs": { "minimum": 0, "type": "integer" },
         "slots": {
           "minItems": 4,
           "maxItems": 4,
@@ -829,82 +410,32 @@
             "properties": {
               "id": {
                 "anyOf": [
-                  {
-                    "const": "A",
-                    "type": "string"
-                  },
-                  {
-                    "const": "B",
-                    "type": "string"
-                  },
-                  {
-                    "const": "C",
-                    "type": "string"
-                  },
-                  {
-                    "const": "D",
-                    "type": "string"
-                  }
+                  { "const": "A", "type": "string" },
+                  { "const": "B", "type": "string" },
+                  { "const": "C", "type": "string" },
+                  { "const": "D", "type": "string" }
                 ]
               },
-              "participantId": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "participantName": {
-                "minLength": 1,
-                "maxLength": 48,
-                "type": "string"
-              },
-              "renderSourceId": {
-                "minimum": 1,
-                "type": "integer"
-              },
+              "participantId": { "minLength": 1, "type": "string" },
+              "participantName": { "minLength": 1, "maxLength": 48, "type": "string" },
+              "renderSourceId": { "minimum": 1, "type": "integer" },
               "mode": {
                 "anyOf": [
-                  {
-                    "const": "clean",
-                    "type": "string"
-                  },
-                  {
-                    "const": "full",
-                    "type": "string"
-                  }
+                  { "const": "clean", "type": "string" },
+                  { "const": "full", "type": "string" }
                 ]
               },
-              "width": {
-                "minimum": 320,
-                "maximum": 1920,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 180,
-                "maximum": 1080,
-                "type": "integer"
-              },
+              "width": { "minimum": 320, "maximum": 1920, "type": "integer" },
+              "height": { "minimum": 180, "maximum": 1080, "type": "integer" },
               "fps": {
                 "anyOf": [
-                  {
-                    "const": 30,
-                    "type": "number"
-                  },
-                  {
-                    "const": 60,
-                    "type": "number"
-                  }
+                  { "const": 30, "type": "number" },
+                  { "const": 60, "type": "number" }
                 ]
               },
-              "delayMs": {
-                "minimum": 250,
-                "maximum": 1500,
-                "type": "integer"
-              },
-              "featured": {
-                "type": "boolean"
-              },
-              "active": {
-                "type": "boolean"
-              }
+              "delayMs": { "minimum": 250, "maximum": 1500, "type": "integer" },
+              "featured": { "type": "boolean" },
+              "active": { "type": "boolean" }
             }
           }
         }
@@ -915,22 +446,10 @@
       "type": "object",
       "required": ["enabled", "healthySlots", "updatedAtMs"],
       "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "healthySlots": {
-          "minimum": 0,
-          "maximum": 4,
-          "type": "integer"
-        },
-        "error": {
-          "maxLength": 160,
-          "type": "string"
-        },
-        "updatedAtMs": {
-          "minimum": 0,
-          "type": "integer"
-        }
+        "enabled": { "type": "boolean" },
+        "healthySlots": { "minimum": 0, "maximum": 4, "type": "integer" },
+        "error": { "maxLength": 160, "type": "string" },
+        "updatedAtMs": { "minimum": 0, "type": "integer" }
       }
     },
     "ChartTransferOffer": {
@@ -938,49 +457,19 @@
       "type": "object",
       "required": [
         "requestId",
-        "roomId",
         "name",
-        "compressedBytes",
+        "size",
         "archiveSha256",
         "chartHash",
-        "variant",
         "containsExecutableContent"
       ],
       "properties": {
-        "requestId": {
-          "minLength": 1,
-          "maxLength": 80,
-          "type": "string"
-        },
-        "roomId": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "name": {
-          "minLength": 1,
-          "maxLength": 256,
-          "type": "string"
-        },
-        "compressedBytes": {
-          "minimum": 1,
-          "maximum": 1073741824,
-          "type": "integer"
-        },
-        "archiveSha256": {
-          "pattern": "^[a-f0-9]{64}$",
-          "type": "string"
-        },
-        "chartHash": {
-          "pattern": "^[a-f0-9]{64}$",
-          "type": "string"
-        },
-        "variant": {
-          "maxLength": 128,
-          "type": "string"
-        },
-        "containsExecutableContent": {
-          "type": "boolean"
-        }
+        "requestId": { "minLength": 1, "maxLength": 80, "type": "string" },
+        "name": { "minLength": 1, "maxLength": 256, "type": "string" },
+        "size": { "minimum": 1, "maximum": 1073741824, "type": "integer" },
+        "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+        "chartHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+        "containsExecutableContent": { "type": "boolean" }
       }
     }
   }

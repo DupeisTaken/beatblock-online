@@ -315,8 +315,7 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
         }
         "runtime.snapshot_request" | "diagnostics.get" => publish_snapshots(state).await,
         "api.token_rotate" => {
-            let token = hex::encode(rand::random::<[u8; 24]>());
-            std::fs::write(state.data_dir.join("local-token.txt"), &token)?;
+            let token = crate::credentials::rotate_local_token(&state.data_dir)?;
             *state.local_token.write().expect("token lock poisoned") = token;
             publish_snapshots(state).await
         }
@@ -446,22 +445,21 @@ fn required_index(payload: &Value, field: &str) -> Result<usize> {
 
 async fn update_settings(state: &AppState, payload: &Value) -> Result<()> {
     let mut config = state.config.write().await;
+    let mut next = config.clone();
     if let Some(name) = payload.get("displayName").and_then(Value::as_str) {
-        config.display_name = name.trim().to_owned();
+        next.display_name = name.trim().to_owned();
     }
     if let Some(port) = payload.get("hostPort").and_then(Value::as_u64) {
-        config.host_port = u16::try_from(port)?;
+        next.host_port = u16::try_from(port)?;
     }
     if let Some(delay) = payload.get("spectatorDelayMs").and_then(Value::as_u64) {
-        config.spectator_delay_ms = (delay as u32).clamp(250, 1500);
+        next.spectator_delay_ms = u32::try_from(delay)?.clamp(250, 1500);
     }
     if let Some(enabled) = payload.get("hudEnabled").and_then(Value::as_bool) {
-        config.hud_enabled = enabled;
+        next.hud_enabled = enabled;
     }
-    std::fs::write(
-        state.data_dir.join("config.json"),
-        serde_json::to_vec_pretty(&*config)?,
-    )?;
+    crate::app_state::write_config_atomically(&state.data_dir, &next)?;
+    *config = next;
     drop(config);
     publish_snapshots(state).await
 }

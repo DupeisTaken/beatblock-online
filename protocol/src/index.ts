@@ -116,7 +116,8 @@ export const RoomSnapshotSchema = Type.Object({
   admissionMode: Type.Union([Type.Literal('password_only'), Type.Literal('host_approval')]),
   allowChartTransfers: Type.Boolean({ default: true }),
   chart: Type.Optional(ChartLockSchema),
-  participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS + 1 }),
+  // MAX_PLAYERS already includes the room host.
+  participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS }),
   scheduledStartTimeMs: Type.Optional(Type.Integer({ minimum: 0 })),
   forceStart: Type.Boolean(),
   setlist: Type.Array(
@@ -175,12 +176,10 @@ export type CommentatorMirrorStatus = Static<typeof CommentatorMirrorStatusSchem
 export const ChartTransferOfferSchema = Type.Object(
   {
     requestId: Type.String({ minLength: 1, maxLength: 80 }),
-    roomId: Type.String({ minLength: 1 }),
     name: Type.String({ minLength: 1, maxLength: 256 }),
-    compressedBytes: Type.Integer({ minimum: 1, maximum: 1024 * 1024 * 1024 }),
+    size: Type.Integer({ minimum: 1, maximum: 1024 * 1024 * 1024 }),
     archiveSha256: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     chartHash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
-    variant: Type.String({ maxLength: 128 }),
     containsExecutableContent: Type.Boolean(),
   },
   { additionalProperties: false },
@@ -197,6 +196,7 @@ export const RunScoreDeltaSchema = Type.Object({
 export type RunScoreDelta = Static<typeof RunScoreDeltaSchema>;
 
 export const ClientHelloSchema = Type.Object({
+  instanceId: Type.String({ minLength: 1, maxLength: 96 }),
   clientVersion: Type.String({ minLength: 1 }),
   gameBuildHash: Type.String({ minLength: 1 }),
   distribution: Type.Union([Type.Literal('standalone'), Type.Literal('beatblock-plus')]),
@@ -234,23 +234,50 @@ export function calculateAccuracy(
   return Math.max(0, Math.floor(raw * 100) / 100);
 }
 
+function compareUnicodeScalars(left: string, right: string): number {
+  // Rust String::cmp orders UTF-8 scalar values. JavaScript's native string
+  // comparison orders UTF-16 code units, which differs for supplementary-plane
+  // names (for example emoji) versus late-BMP characters.
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const leftScalar = left.codePointAt(leftIndex)!;
+    const rightScalar = right.codePointAt(rightIndex)!;
+    if (leftScalar !== rightScalar) {
+      return leftScalar - rightScalar;
+    }
+    leftIndex += leftScalar > 0xffff ? 2 : 1;
+    rightIndex += rightScalar > 0xffff ? 2 : 1;
+  }
+  return left.length - right.length;
+}
+
 export function rankPlayers(players: Participant[]): Participant[] {
+  const validityOrder: Record<RunValidity, number> = {
+    valid: 3,
+    pending: 2,
+    invalid: 1,
+    dnf: 0,
+  };
   const competitors = players
-    .filter((player) => player.role !== 'spectator')
+    .filter((player) => player.admitted && player.role !== 'spectator')
     .slice()
     .sort((a, b) => {
-      const aValid = a.validity === 'valid' || a.validity === 'pending';
-      const bValid = b.validity === 'valid' || b.validity === 'pending';
-      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (validityOrder[b.validity] !== validityOrder[a.validity]) {
+        return validityOrder[b.validity] - validityOrder[a.validity];
+      }
       if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
       if (b.progress !== a.progress) return b.progress - a.progress;
       if (b.totals.maxCombo !== a.totals.maxCombo) return b.totals.maxCombo - a.totals.maxCombo;
-      return a.displayName.localeCompare(b.displayName);
+      return compareUnicodeScalars(a.displayName, b.displayName);
     });
   const ranks = new Map(competitors.map((player, index) => [player.sessionId, index + 1]));
   return players.map((player) => {
+    // Authoritative room ranking clears stale ranks before assigning the next order.
+    const next = { ...player };
+    delete next.rank;
     const rank = ranks.get(player.sessionId);
-    return rank === undefined ? player : { ...player, rank };
+    return rank === undefined ? next : { ...next, rank };
   });
 }
 

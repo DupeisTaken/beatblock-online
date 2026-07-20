@@ -19,6 +19,8 @@ The firewall rule is reconciled once per transaction. Its `program=` path is nor
 
 Every mutating action reports monotonic phases and a percentage. Controls are locked once replacement begins. The complete Lua adapter is first written to a sibling staging directory, checked against the Lovely module declarations and the required Online disconnect/timeout recovery contracts, then atomically swapped into place. The manifest is written only after required component hashes pass. Existing injector backups are never replaced during update or repair.
 
+The elevated helper treats its manifest and status-file arguments as untrusted. Status updates are confined to UUID-named JSON files in the managed operations directory, and persisted Mods, backup, runtime, maintenance-installer, hash, and OBS paths must match installer-owned locations before any privileged copy or removal. A stale game folder is never used for game-file deletion unless it still has Beatblock's required executable/library shape.
+
 Installed layout:
 
 ```text

@@ -14,13 +14,32 @@ struct PendingEvent {
     envelope_json: String,
 }
 
+impl PendingEvent {
+    fn estimated_bytes(&self) -> usize {
+        self.room_id
+            .len()
+            .saturating_add(self.run_id.len())
+            .saturating_add(self.envelope_json.len())
+            .saturating_add(std::mem::size_of::<Self>())
+    }
+}
+
+#[derive(Default)]
+struct PendingBacklog {
+    events: Vec<PendingEvent>,
+    bytes: usize,
+}
+
 // Roughly 34 seconds of 60 Hz telemetry from a full 16-player room. A failed
 // disk must not turn the durable retry path into an unbounded memory leak.
+// The byte ceiling is equally important: a peer can make two envelopes with
+// the same count consume radically different amounts of memory.
 const MAX_PENDING_EVENTS: usize = 32_768;
+const MAX_PENDING_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct Storage {
     connection: Mutex<Connection>,
-    pending_events: Mutex<Vec<PendingEvent>>,
+    pending_events: Mutex<PendingBacklog>,
 }
 
 impl Storage {
@@ -68,7 +87,7 @@ impl Storage {
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
-            pending_events: Mutex::new(Vec::new()),
+            pending_events: Mutex::new(PendingBacklog::default()),
         })
     }
 
@@ -135,16 +154,21 @@ impl Storage {
             .pending_events
             .lock()
             .expect("pending storage events poisoned");
-        if pending.len() >= MAX_PENDING_EVENTS {
-            bail!("durable event backlog reached its safety limit");
-        }
-        pending.push(PendingEvent {
+        let event = PendingEvent {
             room_id: room_id.to_owned(),
             run_id: run_id.to_owned(),
             sequence: envelope.sequence,
             received_at_ms: crate::room::unix_ms(),
             envelope_json,
-        });
+        };
+        let event_bytes = event.estimated_bytes();
+        if pending.events.len() >= MAX_PENDING_EVENTS
+            || pending.bytes.saturating_add(event_bytes) > MAX_PENDING_EVENT_BYTES
+        {
+            bail!("durable event backlog reached its safety limit");
+        }
+        pending.bytes += event_bytes;
+        pending.events.push(event);
         Ok(())
     }
 
@@ -158,7 +182,7 @@ impl Storage {
                 .lock()
                 .expect("pending storage events poisoned"),
         );
-        if pending.is_empty() {
+        if pending.events.is_empty() {
             return Ok(0);
         }
         let result = (|| -> Result<usize> {
@@ -170,7 +194,7 @@ impl Storage {
                     "INSERT OR IGNORE INTO run_events(room_id,run_id,sequence,received_at_ms,envelope_json)
                      VALUES(?1,?2,?3,?4,?5)",
                 )?;
-                for event in &pending {
+                for event in &pending.events {
                     inserted += statement.execute(params![
                         event.room_id,
                         event.run_id,
@@ -190,10 +214,19 @@ impl Storage {
                 .expect("pending storage events poisoned");
             // Older failed events must remain ahead of anything queued while the
             // transaction was running so a retry preserves arrival order.
-            pending.append(&mut retry);
-            if pending.len() > MAX_PENDING_EVENTS {
-                let dropped = pending.len() - MAX_PENDING_EVENTS;
-                pending.truncate(MAX_PENDING_EVENTS);
+            pending.events.append(&mut retry.events);
+            pending.bytes = pending.bytes.saturating_add(retry.bytes);
+            let mut dropped = 0usize;
+            while pending.events.len() > MAX_PENDING_EVENTS
+                || pending.bytes > MAX_PENDING_EVENT_BYTES
+            {
+                let Some(event) = pending.events.pop() else {
+                    break;
+                };
+                pending.bytes = pending.bytes.saturating_sub(event.estimated_bytes());
+                dropped += 1;
+            }
+            if dropped > 0 {
                 tracing::error!(dropped, "durable event backlog discarded newest events");
             }
             *retry = pending;
@@ -206,6 +239,7 @@ impl Storage {
             .pending_events
             .lock()
             .expect("pending storage events poisoned")
+            .events
             .is_empty()
     }
 
@@ -317,9 +351,27 @@ mod tests {
         }
         assert!(storage.queue_event("bounded-room", &event).is_err());
         assert_eq!(
-            storage.pending_events.lock().unwrap().len(),
+            storage.pending_events.lock().unwrap().events.len(),
             MAX_PENDING_EVENTS
         );
+    }
+
+    #[test]
+    fn pending_event_backlog_is_bounded_by_serialized_bytes() {
+        let storage = Storage::open(":memory:").unwrap();
+        let event = Envelope::new(
+            "run.score_delta",
+            0,
+            serde_json::json!({"padding":"x".repeat(512 * 1024)}),
+        );
+        let mut accepted = 0usize;
+        while storage.queue_event("bounded-room", &event).is_ok() {
+            accepted += 1;
+        }
+        let pending = storage.pending_events.lock().unwrap();
+        assert!(accepted < MAX_PENDING_EVENTS);
+        assert!(pending.bytes <= MAX_PENDING_EVENT_BYTES);
+        assert_eq!(pending.events.len(), accepted);
     }
 
     #[test]
@@ -332,7 +384,7 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(storage.flush_pending_events().is_err());
         assert!(started.elapsed() < std::time::Duration::from_millis(100));
-        assert_eq!(storage.pending_events.lock().unwrap().len(), 1);
+        assert_eq!(storage.pending_events.lock().unwrap().events.len(), 1);
         drop(connection);
         assert_eq!(storage.flush_pending_events().unwrap(), 1);
     }

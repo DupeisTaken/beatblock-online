@@ -42,6 +42,18 @@ function love.load()
   cs.vfx.chromaticAberration.enabled=true
   Renderer.init()
   assert(Renderer.active,'renderer fixture did not initialize')
+  -- A graphics driver may never complete an async readback. Verify the public
+  -- reclamation path frees both canvases and invalidates their old tickets.
+  Renderer.readbackPending={true,true}
+  Renderer.readbackRequests={{fixture=true},{fixture=true}}
+  Renderer.readbackTickets={41,42}
+  Renderer.readbackStartedAt={0,0}
+  Renderer.reclaimStalledReadbacks(1.001)
+  assert(not Renderer.readbackPending[1] and not Renderer.readbackPending[2],
+    'renderer did not reclaim stalled readbacks')
+  assert(Renderer.readbackTickets[1]==nil and Renderer.readbackTickets[2]==nil,
+    'renderer retained abandoned readback tickets')
+  Renderer.droppedFrames=0
   Renderer.beginGameplayOnly(cs)
   assert(cs.bgColor==0 and cs.bg==nil and cs.drawVideoBG==false,'renderer retained a chart backdrop')
   assert(cs.vfx.bgNoise==0 and cs.vfx.bgNoise_OLD.enable==false,'renderer retained background noise')

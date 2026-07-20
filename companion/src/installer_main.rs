@@ -1,6 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use beatblock_online_companion::{
     gui,
     installer::{
@@ -9,7 +9,7 @@ use beatblock_online_companion::{
 };
 use clap::Parser;
 use directories::ProjectDirs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Install and maintain Beatblock Online")]
@@ -42,8 +42,15 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
-    let operation_file = args.operation_file.clone();
+    let mut args = Args::parse();
+    let data_dir = resolved_data_dir(args.data_dir.as_ref());
+    let operation_file = match validate_operation_file(&data_dir, args.operation_file.as_deref()) {
+        Ok(path) => path,
+        Err(_) => std::process::exit(1),
+    };
+    // Keep only the path that passed the ownership and symlink checks. Error
+    // reporting must never reuse an untrusted command-line destination.
+    args.operation_file = operation_file.clone();
     let operation = requested_operation(&args);
     if let Err(error) = run(args) {
         // The GUI-subsystem helper has no terminal. Publish the full anyhow
@@ -78,11 +85,19 @@ fn requested_operation(args: &Args) -> OperationKind {
 }
 
 fn run(args: Args) -> Result<()> {
-    let data_dir = args.data_dir.unwrap_or_else(|| {
-        ProjectDirs::from("org", "BeatblockOnline", "BeatblockOnline")
-            .map(|dirs| dirs.data_local_dir().to_owned())
-            .unwrap_or_else(|| PathBuf::from("installer-data"))
-    });
+    let requested = [
+        args.install_now,
+        args.repair_now,
+        args.uninstall_now,
+        args.restore_now,
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if requested > 1 {
+        bail!("choose exactly one maintenance operation");
+    }
+    let data_dir = resolved_data_dir(args.data_dir.as_ref());
     std::fs::create_dir_all(&data_dir)?;
     let installer = Installer::new(data_dir.clone());
     if args.install_now {
@@ -150,4 +165,71 @@ fn run(args: Args) -> Result<()> {
         return Ok(());
     }
     gui::run(data_dir)
+}
+
+fn resolved_data_dir(explicit: Option<&PathBuf>) -> PathBuf {
+    explicit.cloned().unwrap_or_else(|| {
+        ProjectDirs::from("org", "BeatblockOnline", "BeatblockOnline")
+            .map(|dirs| dirs.data_local_dir().to_owned())
+            .unwrap_or_else(|| PathBuf::from("installer-data"))
+    })
+}
+
+fn validate_operation_file(data_dir: &Path, requested: Option<&Path>) -> Result<Option<PathBuf>> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let operations = data_dir.join("operations");
+    std::fs::create_dir_all(&operations).context("create operation-status directory")?;
+    if std::fs::symlink_metadata(&operations)?
+        .file_type()
+        .is_symlink()
+    {
+        bail!("operation-status directory cannot be a symlink");
+    }
+    let expected_parent = std::fs::canonicalize(&operations)?;
+    let parent = requested
+        .parent()
+        .context("operation-status path has no parent")?;
+    if std::fs::canonicalize(parent)? != expected_parent {
+        bail!("operation-status path is outside the managed directory");
+    }
+    if requested
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("json"))
+    {
+        bail!("operation-status file must use a .json extension");
+    }
+    let stem = requested
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .context("operation-status filename is not valid UTF-8")?;
+    uuid::Uuid::parse_str(stem).context("operation-status filename must be a UUID")?;
+    if std::fs::symlink_metadata(requested).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        bail!("operation-status file cannot be a symlink");
+    }
+    Ok(Some(requested.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_status_is_confined_to_uuid_files_in_managed_directory() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-operation-path-{}", uuid::Uuid::new_v4()));
+        let operations = root.join("operations");
+        std::fs::create_dir_all(&operations).unwrap();
+        let valid = operations.join(format!("{}.json", uuid::Uuid::new_v4()));
+        assert_eq!(
+            validate_operation_file(&root, Some(&valid)).unwrap(),
+            Some(valid)
+        );
+        assert!(validate_operation_file(&root, Some(&root.join("victim.json"))).is_err());
+        assert!(validate_operation_file(&root, Some(&operations.join("not-a-uuid.json"))).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

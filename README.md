@@ -2,7 +2,11 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md), which introduces the redesigned Online workspace, Commentator broadcast controls, synchronized final-shaded OBS renderer output, safer installer upgrades, and reproducible native-artifact verification.
+The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md),
+which introduces the redesigned Online workspace, Commentator broadcast
+controls, synchronized final-shaded OBS renderer output, authenticated room and
+local IPC boundaries, safer installer upgrades, bounded runtime resources, and
+reproducible native-artifact verification.
 
 ## Player quick start
 
@@ -14,7 +18,7 @@ The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md), wh
 6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; the host can Play or Direct, Setlist supports ordered commands and next-chart continuation, and Broadcast exposes per-stream advanced export settings. A Spectator only receives Broadcast when the host grants Commentator access.
 7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
 
-![Concentrated host dashboard](reports/trial-runs/dashboard-room-latest.png)
+![Concentrated host dashboard](tests/ui-baselines/host-lobby.png)
 
 ## Recommended specifications
 
@@ -55,6 +59,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the
 
 ## Detailed documentation
 
+- [Ship-readiness security, correctness, resource, and UX audit](reports/ship-readiness-audit-2026-07-20.md)
 - [Installation, repair, adapters, and injection](docs/injection.md)
 - [Adaptive Online dashboard and controls](docs/mod-guide.md)
 - [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
