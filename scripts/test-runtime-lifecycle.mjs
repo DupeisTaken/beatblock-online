@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { connect } from 'node:net';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { buildRuntimeLifecycleReport } from './runtime-lifecycle-report.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const cargoTarget = resolve(root, process.env.CARGO_TARGET_DIR ?? 'companion/target');
@@ -10,6 +11,25 @@ const data = resolve(root, '.test/runtime-lifecycle-data');
 const reportPath = resolve(root, 'reports/trial-runs/runtime-lifecycle-latest.json');
 await rm(data, { recursive: true, force: true });
 await mkdir(data, { recursive: true });
+
+// This gate must measure the current source tree, not whichever ignored release
+// executable happened to be left by an earlier build.
+const build = spawnSync(
+  'cargo',
+  [
+    'build',
+    '--manifest-path',
+    resolve(root, 'companion/Cargo.toml'),
+    '--release',
+    '--locked',
+    '--bin',
+    'BeatblockOnlineRuntime',
+  ],
+  { cwd: root, encoding: 'utf8', windowsHide: true },
+);
+if (build.status !== 0) {
+  throw new Error(`could not build the lifecycle runtime:\n${build.stdout}\n${build.stderr}`);
+}
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 // Windows security/indexing can briefly retain a freshly linked executable
@@ -58,7 +78,10 @@ async function connectIpc(timeout = 5000) {
   while (Date.now() - started < timeout) {
     try {
       return await new Promise((resolveSocket, reject) => {
-        const socket = connect(8975, '127.0.0.1', () => resolveSocket(socket));
+        const socket =
+          process.platform === 'win32'
+            ? connect('\\\\.\\pipe\\beatblock-online-v3', () => resolveSocket(socket))
+            : connect(8975, '127.0.0.1', () => resolveSocket(socket));
         socket.once('error', reject);
       });
     } catch {
@@ -102,6 +125,9 @@ const processSample = spawnSync(
   ['-NoProfile', '-Command', `(Get-Process -Id ${runtime.pid}).WorkingSet64`],
   { encoding: 'utf8', windowsHide: true },
 );
+if (processSample.status !== 0) {
+  throw new Error(`could not sample runtime working set: ${processSample.stderr}`);
+}
 const workingSetBytes = Number(processSample.stdout.trim());
 
 const duplicate = await spawnWithTransientRetry(['--data-dir', data, '--port', '18975'], {
@@ -126,20 +152,18 @@ const orphan = await spawnWithTransientRetry(
 const orphanCode = await waitExit(orphan, 3000);
 if (orphanCode !== 0) throw new Error(`parent cleanup returned ${orphanCode}`);
 
-const report = {
-  schemaVersion: 2,
-  generatedAt: new Date().toISOString(),
-  passed: true,
+const report = buildRuntimeLifecycleReport({
   readiness: ready.type,
   protocolVersion: ready.version,
   workingSetBytes,
-  idleWorkingSetTargetBytes: 30 * 1024 * 1024,
-  idleWorkingSetTargetMet: workingSetBytes > 0 && workingSetBytes < 30 * 1024 * 1024,
   duplicateMutexRejected: true,
   explicitSessionShutdown: true,
   parentExitCleanup: true,
   visibleConsoleRequested: false,
-};
+});
 await mkdir(resolve(root, 'reports/trial-runs'), { recursive: true });
 await writeFileWithTransientRetry(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify(report, null, 2));
+if (!report.passed) {
+  throw new Error('runtime lifecycle or resource gate failed; see the report above');
+}

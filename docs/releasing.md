@@ -42,10 +42,19 @@ executable for Explorer and taskbar rendering.
 `.github/workflows/release.yml` runs on the pinned `windows-2022` hosted image:
 
 - A manual **Run workflow** build validates and uploads a 14-day workflow artifact without publishing a release.
-- Pushing a `v*` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and generated release notes.
+- Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and generated release notes. A mismatched tag fails before the native build.
 - Tags containing `-` (for example, `v0.3.0-alpha.3`) publish as prereleases.
 
-The workflow grants `contents: write` only to the build job because GitHub requires that permission to create a release. All other CI jobs use read-only repository permissions.
+Third-party actions are pinned to full commit SHAs. The build job has read-only repository access plus the OIDC permissions needed to produce GitHub artifact attestations. A separate environment-gated publication job is the only job with `contents: write`; it downloads the reviewed workflow artifact and publishes those exact files. CI and release generation also regenerate the protocol schema and fail if the checked-in schema drifts from the TypeScript source.
+
+CI and release builds install the pinned `cargo-audit 0.22.2` scanner and check
+the current RustSec database. The repository audit policy is limited to the
+supported x64 Windows product graph. Its two documented `quick-xml` exceptions
+come exclusively from Slint's Linux-only `wayland-scanner` lockfile branch; the
+Windows dependency tree contains no `quick-xml`. Remove those exceptions as
+soon as upstream `wayland-scanner` accepts `quick-xml` 0.41 or later.
+
+The workflow produces GitHub artifact attestations for the installer, OBS plugin, checksums, and mod bundle. Those attestations establish repository/workflow provenance but do not replace Windows Authenticode signing. Until a protected code-signing identity is configured, Windows may still show an unknown-publisher warning; verify the release checksum and GitHub attestation before running the installer.
 
 Create and push a release tag only after the normal CI checks pass:
 

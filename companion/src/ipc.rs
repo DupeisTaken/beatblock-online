@@ -81,13 +81,9 @@ async fn handle_tcp(stream: TcpStream, state: AppState) -> Result<()> {
 
 #[cfg(windows)]
 pub async fn run_named_pipe(state: AppState) -> Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
     let client_slots = Arc::new(Semaphore::new(MAX_IPC_CLIENTS));
     loop {
-        let server = match ServerOptions::new()
-            .first_pipe_instance(false)
-            .create(r"\\.\pipe\beatblock-online-v3")
-        {
+        let server = match create_owner_only_named_pipe(r"\\.\pipe\beatblock-online-v3") {
             Ok(server) => server,
             Err(error) => {
                 tracing::warn!(%error, "named-pipe IPC listener creation failed; retrying");
@@ -136,6 +132,62 @@ pub async fn run_named_pipe(state: AppState) -> Result<()> {
             }
         });
     }
+}
+
+#[cfg(windows)]
+fn create_owner_only_named_pipe(
+    name: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use std::{ffi::c_void, ptr};
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
+    };
+
+    // SYSTEM and the object owner are the only principals granted access.
+    // The game and runtime run as the same Windows user, while another local
+    // account cannot race client.hello and seize the control channel.
+    let sddl = "D:P(A;;GA;;;SY)(A;;GA;;;OW)"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("create owner-only named-pipe security descriptor");
+    }
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    let result = unsafe {
+        ServerOptions::new()
+            .first_pipe_instance(false)
+            .reject_remote_clients(true)
+            .create_with_security_attributes_raw(
+                name,
+                (&mut attributes as *mut SECURITY_ATTRIBUTES).cast::<c_void>(),
+            )
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    result.context("create owner-only named-pipe IPC listener")
 }
 
 /// Reads one newline-delimited IPC message without allowing a malformed local
@@ -297,6 +349,12 @@ fn for_game(mut event: Envelope) -> Option<Envelope> {
             | "leaderboard.snapshot"
             | "match.results"
             | "renderer.snapshot"
+            | "broadcast.plan"
+            | "broadcast.revoked"
+            | "chart.transfer_offer"
+            | "chart.transfer_progress"
+            | "chart.transfer_complete"
+            | "chart.transfer_failed"
             | "history.snapshot"
             | "diagnostics.snapshot"
     );
@@ -317,6 +375,16 @@ mod tests {
     use super::*;
     use crate::model::CompanionConfig;
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn owner_only_named_pipe_accepts_the_creating_windows_user() {
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let name = format!(r"\\.\pipe\bbt-ipc-acl-{}", uuid::Uuid::new_v4());
+        let _server = create_owner_only_named_pipe(&name).unwrap();
+        let _client = ClientOptions::new().open(&name).unwrap();
+    }
+
     #[tokio::test]
     async fn ipc_reader_rejects_oversized_lines_without_unbounded_buffering() {
         let bytes = vec![b'x'; MAX_IPC_FRAME + 1];
@@ -331,6 +399,26 @@ mod tests {
         assert!(for_game(Envelope::new("gameplay.snapshot", 2, serde_json::json!({}))).is_none());
         assert!(for_game(Envelope::new("runtime.snapshot", 3, serde_json::json!({}))).is_some());
         assert!(for_game(Envelope::new("control.ack", 4, serde_json::json!({}))).is_some());
+    }
+
+    #[test]
+    fn game_ipc_forwards_transfer_and_broadcast_state() {
+        for (sequence, kind) in [
+            "broadcast.plan",
+            "broadcast.revoked",
+            "chart.transfer_offer",
+            "chart.transfer_progress",
+            "chart.transfer_complete",
+            "chart.transfer_failed",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                for_game(Envelope::new(kind, sequence as u64, serde_json::json!({}))).is_some(),
+                "{kind} must reach the in-game Online UI"
+            );
+        }
     }
 
     #[tokio::test]

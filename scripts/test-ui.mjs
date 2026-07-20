@@ -70,6 +70,8 @@ for (const file of captures) {
   const actual = resolve(output, file);
   const baseline = resolve(baselines, file);
   const report = resolve(reports, file);
+  const diffReport = resolve(reports, file.replace('.png', '.diff.png'));
+  assertPngDimensions(actual, await readFile(actual), 600, 360);
   await cp(actual, report);
   // Nearest-neighbor review artifacts preserve the source 600x360 pixels.
   await run(python, [
@@ -80,17 +82,22 @@ for (const file of captures) {
   ]);
   if (update) {
     await cp(actual, baseline);
+    await rm(diffReport, { force: true });
   } else {
+    assertPngDimensions(baseline, await readFile(baseline), 600, 360);
     await run(python, [
       resolve(root, 'scripts/ui-image-compare.py'),
       actual,
       baseline,
-      resolve(reports, file.replace('.png', '.diff.png')),
+      diffReport,
       '--threshold',
       '0.1',
       '--max-changed-percent',
       '0.05',
     ]);
+    // Passing comparisons should not leave stale review artifacts that look
+    // like unresolved visual regressions.
+    await rm(diffReport, { force: true });
   }
 }
 await rm(stage, { recursive: true, force: true });
@@ -104,4 +111,17 @@ function run(command, args) {
     );
     process.on('error', reject);
   });
+}
+
+function assertPngDimensions(path, bytes, width, height) {
+  if (
+    bytes.length < 24 ||
+    bytes.subarray(1, 4).toString('ascii') !== 'PNG' ||
+    bytes.readUInt32BE(16) !== width ||
+    bytes.readUInt32BE(20) !== height
+  ) {
+    const actual =
+      bytes.length >= 24 ? `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}` : 'not a PNG';
+    throw new Error(`${path} is ${actual}; deterministic UI captures must be ${width}x${height}`);
+  }
 }

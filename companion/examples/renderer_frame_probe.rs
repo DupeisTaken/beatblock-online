@@ -21,6 +21,7 @@ use std::{
 };
 
 const HEADER_SIZE: usize = 64;
+type CommittedFrame = (u64, u32, u32, Vec<u8>);
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
     let value = bytes
@@ -36,7 +37,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(value.try_into()?))
 }
 
-fn read_committed_frame(path: &Path) -> Result<Option<(u64, u32, u32, Vec<u8>)>> {
+fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

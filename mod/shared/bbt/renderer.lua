@@ -8,6 +8,7 @@ local Renderer = {
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0, previousTapMask = 0,
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
+  readbackStartedAt = {nil,nil},
   playing = false, hasInput = false, droppedFrames = 0, nextFrameAt = nil,
   previousAngle = nil, motionSequence = 0,
 }
@@ -79,6 +80,7 @@ function Renderer.shutdown()
   -- graphics resources while the hidden child is waiting to exit.
   Renderer.readbackPending = {false,false}
   Renderer.readbackRequests = {nil,nil}
+  Renderer.readbackStartedAt = {nil,nil}
   Renderer.inputs, Renderer.frames, Renderer.outputs = nil, nil, nil
   Renderer.active = false
 end
@@ -373,6 +375,7 @@ local function copyFrame(data, readbackSlot, ticket)
   end
   Renderer.readbackPending[readbackSlot] = false
   Renderer.readbackRequests[readbackSlot] = nil
+  Renderer.readbackStartedAt[readbackSlot] = nil
   if not Renderer.frames then return end
   if not data then
     Renderer.droppedFrames = Renderer.droppedFrames + 1
@@ -400,7 +403,26 @@ local function copyFrame(data, readbackSlot, ticket)
   ffi.cast('uint64_t*', Renderer.frames.pointer + 32)[0] = Renderer.sequence
 end
 
+function Renderer.reclaimStalledReadbacks(now)
+  now=now or love.timer.getTime()
+  for slot=1,2 do
+    local started=Renderer.readbackStartedAt[slot]
+    if Renderer.readbackPending[slot] and started and now-started>=1 then
+      Renderer.readbackRequests[slot]=nil
+      Renderer.readbackPending[slot]=false
+      Renderer.readbackStartedAt[slot]=nil
+      -- Invalidate the abandoned request before this canvas is reused.
+      Renderer.readbackTickets[slot]=nil
+      Renderer.droppedFrames=Renderer.droppedFrames+1
+      if Renderer.frames then
+        ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0]=Renderer.droppedFrames
+      end
+    end
+  end
+end
+
 local function finishReadbacks()
+  Renderer.reclaimStalledReadbacks(love.timer.getTime())
   for slot = 1, 2 do
     local request = Renderer.readbackRequests[slot]
     if request then
@@ -409,6 +431,7 @@ local function finishReadbacks()
       if not updated or not checked then
         Renderer.readbackRequests[slot] = nil
         Renderer.readbackPending[slot] = false
+        Renderer.readbackStartedAt[slot] = nil
         Renderer.droppedFrames = Renderer.droppedFrames + 1
       elseif complete then
         local failed = request:hasError()
@@ -416,6 +439,7 @@ local function finishReadbacks()
         if failed or not data then
           Renderer.readbackRequests[slot] = nil
           Renderer.readbackPending[slot] = false
+          Renderer.readbackStartedAt[slot] = nil
           Renderer.droppedFrames = Renderer.droppedFrames + 1
         else
           copyFrame(data, slot, Renderer.readbackTickets[slot])
@@ -459,6 +483,7 @@ function Renderer.capture(cleanSource, shadedSource, finalShader)
   local ticket=Renderer.captureSequence
   Renderer.readbackPending[readbackSlot] = true
   Renderer.readbackTickets[readbackSlot] = ticket
+  Renderer.readbackStartedAt[readbackSlot] = now
   if love.graphics.readbackTextureAsync then
     local success, request = pcall(love.graphics.readbackTextureAsync, output)
     if success and request then
@@ -469,6 +494,7 @@ function Renderer.capture(cleanSource, shadedSource, finalShader)
   local success, data = pcall(love.graphics.readbackTexture, output)
   if success then copyFrame(data,readbackSlot,ticket) else
     Renderer.readbackPending[readbackSlot] = false
+    Renderer.readbackStartedAt[readbackSlot] = nil
     Renderer.droppedFrames = Renderer.droppedFrames + 1
     ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
   end

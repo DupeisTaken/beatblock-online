@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
@@ -152,12 +152,55 @@ export function listZipEntries(buffer, label = 'archive') {
   return entries;
 }
 
-export async function verifyRelease({ pePaths, zipPaths, checksumPaths, checksumPath }) {
+export function assertExactZipEntries(actualEntries, expectedEntries, label = 'archive') {
+  const normalize = (entry) => entry.replaceAll('\\', '/');
+  const actual = actualEntries
+    .map(normalize)
+    .filter((entry) => !entry.endsWith('/'))
+    .sort();
+  const expected = expectedEntries.map(normalize).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    const missing = expected.filter((entry) => !actual.includes(entry));
+    const unexpected = actual.filter((entry) => !expected.includes(entry));
+    throw new Error(
+      `${label} contents differ from the reviewed source tree` +
+        `\nmissing: ${missing.join(', ') || '(none)'}` +
+        `\nunexpected: ${unexpected.join(', ') || '(none)'}`,
+    );
+  }
+  return actual;
+}
+
+async function expectedArchiveEntries(directory) {
+  const files = [];
+  async function visit(current) {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = resolve(current, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) {
+        files.push(`BeatblockOnline/${relative(directory, path).replaceAll('\\', '/')}`);
+      }
+    }
+  }
+  await visit(directory);
+  return files.sort();
+}
+
+export async function verifyRelease({
+  pePaths,
+  zipPaths,
+  checksumPaths,
+  checksumPath,
+  zipExpectations = new Map(),
+}) {
   for (const path of pePaths) {
     inspectPe(await readFile(path), basename(path));
   }
   for (const path of zipPaths) {
-    inspectZip(await readFile(path), basename(path));
+    const buffer = await readFile(path);
+    const entries = listZipEntries(buffer, basename(path));
+    const expected = zipExpectations.get(path);
+    if (expected) assertExactZipEntries(entries, expected, basename(path));
   }
 
   const lines = [];
@@ -190,12 +233,18 @@ if (isMain) {
   if (zipPaths.length !== 2) {
     throw new Error(`Expected two mod release ZIPs, found ${zipPaths.length}`);
   }
+  const zipExpectations = new Map();
+  for (const path of zipPaths) {
+    const distribution = basename(path).includes('-standalone-') ? 'standalone' : 'beatblock-plus';
+    zipExpectations.set(path, await expectedArchiveEntries(resolve(root, 'mod', distribution)));
+  }
   const checksumPath = resolve(root, 'release/SHA256SUMS.txt');
   const lines = await verifyRelease({
     pePaths,
     zipPaths,
     checksumPaths: [pePaths[0], pePaths[1], ...zipPaths],
     checksumPath,
+    zipExpectations,
   });
   console.log(`Verified ${pePaths.length} x64 PE artifacts and ${zipPaths.length} ZIP archives.`);
   console.log(lines.join('\n'));

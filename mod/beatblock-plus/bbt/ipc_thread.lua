@@ -2,8 +2,19 @@
 local outbound = love.thread.getChannel('bbt_outbound')
 local inbound = love.thread.getChannel('bbt_inbound')
 local control = love.thread.getChannel('bbt_ipc_control')
+local latestChannels = {
+  love.thread.getChannel('bbt_render_latest'),
+  love.thread.getChannel('bbt_keyframe_latest'),
+  love.thread.getChannel('bbt_snapshot_latest'),
+  love.thread.getChannel('bbt_heartbeat_latest'),
+}
 local PROTOCOL_VERSION = 3
-inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":"worker source entered"}}')
+local MAX_IPC_FRAME = 1024 * 1024
+local MAX_INBOUND_BACKLOG = 512
+local function pushLocalEvent(value)
+  if inbound:getCount()<MAX_INBOUND_BACKLOG then inbound:push(value) end
+end
+pushLocalEvent('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":"worker source entered"}}')
 require('love.timer')
 local transport, remainder = nil, ''
 local modPath = love.thread.getChannel('bbt_mod_path'):demand()
@@ -31,16 +42,16 @@ if ffiOk then ffi.cdef[[
 ]] end
 
 local function runtimeError(message)
-  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.error","sequence":0,"runTimeUs":0,"payload":{"message":' .. string.format('%q', message) .. '}}')
+  pushLocalEvent('{"version":'..PROTOCOL_VERSION..',"type":"runtime.error","sequence":0,"runTimeUs":0,"payload":{"message":' .. string.format('%q', message) .. '}}')
 end
 
 local function runtimeStatus(phase)
-  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":' .. string.format('%q', phase) .. '}}')
+  pushLocalEvent('{"version":'..PROTOCOL_VERSION..',"type":"runtime.launch_status","sequence":0,"runTimeUs":0,"payload":{"phase":' .. string.format('%q', phase) .. '}}')
 end
 
 local function runtimeDisconnected(detail)
   local message=detail or 'The runtime disconnected before the Online action completed. Reconnecting; please retry.'
-  inbound:push('{"version":'..PROTOCOL_VERSION..',"type":"runtime.disconnected","sequence":0,"runTimeUs":0,"payload":{"phase":"runtime disconnected; reconnecting","message":'..string.format('%q',message)..'}}')
+  pushLocalEvent('{"version":'..PROTOCOL_VERSION..',"type":"runtime.disconnected","sequence":0,"runTimeUs":0,"payload":{"phase":"runtime disconnected; reconnecting","message":'..string.format('%q',message)..'}}')
 end
 
 local function launchRuntimeHidden()
@@ -79,6 +90,9 @@ end
 local pipeSendReported, pipeEmptyReported = false, false
 local handshakeMessage = nil
 local lastTransportError = nil
+local function rememberHandshake(value)
+  if value:find('client.hello', 1, true) then handshakeMessage=value end
+end
 local function namedPipe()
   if not ffiOk then return nil end
   local C, name = ffi.C, [[\\.\pipe\beatblock-online-v3]]
@@ -93,7 +107,7 @@ local function namedPipe()
   local buffer, count, available = ffi.new('uint8_t[65536]'), ffi.new('DWORD[1]'), ffi.new('DWORD[1]')
   return {
     send=function(value)
-      if value:find('client.hello', 1, true) then handshakeMessage=value end
+      rememberHandshake(value)
       local data=value..'\n'; local bytes=ffi.cast('const uint8_t*',data); local offset=0
       while offset<#data do
         local written=ffi.new('DWORD[1]')
@@ -132,11 +146,59 @@ local function tcp()
   local client = socket.tcp(); client:settimeout(0.25)
   if not client:connect('127.0.0.1', 8975) then client:close(); return nil end
   client:settimeout(0)
-  return { send=function(value) return client:send(value..'\n')~=nil end, receive=function() local value,err=client:receive('*l'); if err=='closed' then return false end; return value end, close=function() client:close() end }
+  local receiveRemainder=''
+  return {
+    send=function(value)
+      -- TCP is a supported fallback on non-FFI builds and needs the same
+      -- reconnect ownership handshake as the Windows named-pipe transport.
+      rememberHandshake(value)
+      local data,index=value..'\n',1
+      -- The worker may block briefly; the gameplay thread never does. Complete
+      -- partial LuaSocket writes so a control frame cannot be truncated.
+      client:settimeout(.25)
+      while index<=#data do
+        local sent,err,last=client:send(data,index)
+        if sent then index=sent+1
+        elseif last and last>=index then index=last+1
+        else client:settimeout(0); lastTransportError='TCP write failed ('..tostring(err)..').'; return false end
+      end
+      client:settimeout(0)
+      return true
+    end,
+    receive=function()
+      local value,err,partial=client:receive('*l')
+      if partial and #partial>0 then
+        receiveRemainder=receiveRemainder..partial
+        if #receiveRemainder>MAX_IPC_FRAME then
+          lastTransportError='TCP message exceeded the 1 MiB safety limit.'
+          return false
+        end
+      end
+      if value then
+        local complete=receiveRemainder..value..'\n'
+        receiveRemainder=''
+        return complete
+      end
+      if err=='closed' then return false end
+      return nil
+    end,
+    close=function() client:close() end,
+  }
 end
 
 local stopping = false
 local connectedReported, bytesReported = false, false
+local pendingSend = nil
+local function nextQueuedMessage()
+  if pendingSend then return pendingSend end
+  local value=outbound:pop()
+  if value then return value end
+  for _,channel in ipairs(latestChannels) do
+    value=channel:pop()
+    if value then return value end
+  end
+  return nil
+end
 local function disconnectTransport()
   if not transport then return end
   transport.close(); transport=nil; remainder=''
@@ -145,6 +207,24 @@ local function disconnectTransport()
   nextLaunchAt=love.timer.getTime()+.25
   runtimeDisconnected(lastTransportError)
   lastTransportError=nil
+end
+local function publishReceivedFrames()
+  -- Stop at a bounded channel depth. Leaving complete frames in `remainder`
+  -- applies backpressure to the runtime without discarding ordered control
+  -- acknowledgements or room state.
+  while inbound:getCount()<MAX_INBOUND_BACKLOG and remainder:find('\n',1,true) do
+    local at=remainder:find('\n',1,true)
+    local line=remainder:sub(1,at-1)
+    remainder=remainder:sub(at+1)
+    if #line>MAX_IPC_FRAME then
+      lastTransportError='Runtime IPC message exceeded the 1 MiB safety limit.'
+      disconnectTransport()
+      return false
+    elseif #line>0 then
+      inbound:push(line)
+    end
+  end
+  return transport~=nil
 end
 runtimeStatus('ipc worker ready')
 while not stopping do
@@ -164,25 +244,38 @@ while not stopping do
     if not connectedReported then
       runtimeStatus('runtime transport connected'); connectedReported=true
       launchAttempts=0; nextLaunchAt=0
-      if handshakeMessage and not transport.send(handshakeMessage) then disconnectTransport() end
-    end
-    if transport then
-      local sent=0
-      while outbound:getCount()>0 and sent<16 do
-        if not transport.send(outbound:pop()) then disconnectTransport(); break end
-        sent=sent+1
+      if handshakeMessage then
+        if not transport.send(handshakeMessage) then disconnectTransport()
+        elseif pendingSend==handshakeMessage then pendingSend=nil end
       end
     end
     if transport then
+      local sent=0
+      while sent<16 do
+        local value=nextQueuedMessage()
+        if not value then break end
+        if not transport.send(value) then
+          pendingSend=value
+          disconnectTransport()
+          break
+        end
+        pendingSend=nil
+        sent=sent+1
+      end
+    end
+    if transport then publishReceivedFrames() end
+    if transport and inbound:getCount()<MAX_INBOUND_BACKLOG then
       local chunk = transport.receive()
       if chunk == false then disconnectTransport()
       elseif chunk then
         if not bytesReported then runtimeStatus('runtime bytes received'); bytesReported=true end
         remainder = remainder .. chunk
-        while remainder:find('\n', 1, true) do
-          local at = remainder:find('\n', 1, true)
-          local line = remainder:sub(1, at - 1); remainder = remainder:sub(at + 1)
-          if #line > 0 then inbound:push(line) end
+        publishReceivedFrames()
+        -- A full backlog can retain multiple complete bounded frames. Only a
+        -- newline-free partial frame is subject to the per-frame byte ceiling.
+        if transport and not remainder:find('\n',1,true) and #remainder>MAX_IPC_FRAME then
+          lastTransportError='Runtime IPC message exceeded the 1 MiB safety limit.'
+          disconnectTransport()
         end
       end
     end

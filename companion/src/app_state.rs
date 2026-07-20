@@ -16,14 +16,97 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
+    fs::OpenOptions,
+    io::Write,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
+
+const EVENT_SUBSCRIBER_CAPACITY: usize = 2_048;
+const NETWORK_EVENT_CAPACITY: usize = 2_048;
+const MAX_PEER_RUN_PAYLOAD_BYTES: usize = 16 * 1024;
+const MAX_PEER_STATE_PAYLOAD_BYTES: usize = 4 * 1024;
+const MAX_PEER_TELEMETRY_PAYLOAD_BYTES: usize = 8 * 1024;
+const MAX_QUEUED_TRANSFER_BUILDS: usize = 4;
+
+fn validated_room_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        anyhow::bail!("room name must contain 1-80 characters");
+    }
+    Ok(name.to_owned())
+}
+
+/// Persists settings through a same-directory, durable replacement so a
+/// crash cannot leave a truncated config file.
+pub(crate) fn write_config_atomically(data_dir: &Path, config: &CompanionConfig) -> Result<()> {
+    config.validate()?;
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("config.json");
+    let temporary = data_dir.join(format!(".config-{}.tmp", uuid::Uuid::new_v4().simple()));
+    let bytes = serde_json::to_vec_pretty(config)?;
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .context("create temporary runtime config")?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        crate::exports::replace_file(&temporary, &path).context("activate runtime config")
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerMessageClass {
+    Run,
+    State,
+    Telemetry,
+}
+
+/// Classifies every peer-to-host control message before any shared state is
+/// touched. Host-authored snapshots and unknown future message kinds are
+/// rejected by default instead of accidentally flowing through apply_common.
+fn classify_peer_message(message: &Envelope) -> Result<PeerMessageClass> {
+    let (class, payload_limit) = match message.kind.as_str() {
+        "run.started" | "run.score_delta" | "score.mutation" | "run.invalid" | "run.finished" => {
+            (PeerMessageClass::Run, MAX_PEER_RUN_PAYLOAD_BYTES)
+        }
+        "client.ready"
+        | "chart.status"
+        | "chart.transfer_request"
+        | "chart.transfer_decision"
+        | "broadcast.subscribe"
+        | "broadcast.mirror_status" => (PeerMessageClass::State, MAX_PEER_STATE_PAYLOAD_BYTES),
+        "client.hello" | "input.tap" | "render.keyframe" => (
+            PeerMessageClass::Telemetry,
+            MAX_PEER_TELEMETRY_PAYLOAD_BYTES,
+        ),
+        _ => anyhow::bail!("peer message kind {} is not allowed", message.kind),
+    };
+    if serde_json::to_vec(&message.payload)?.len() > payload_limit {
+        anyhow::bail!("peer {} payload exceeds its safety limit", message.kind);
+    }
+    if message.kind == "run.invalid"
+        && message
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.len() > 512)
+    {
+        anyhow::bail!("run invalidation reason exceeds its safety limit");
+    }
+    Ok(class)
+}
 
 /// Host timestamps are meaningful only in the host's wall-clock domain. Keep
 /// the authoritative remaining countdown, but express the target in the local
@@ -57,12 +140,63 @@ struct ReconnectRequest {
     role: ParticipantRole,
 }
 
+struct TemporaryFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TemporaryFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+}
+
+impl Drop for TemporaryFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn temporary(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("bbt-app-{label}-{}", rand::random::<u64>()))
+    }
+
+    #[test]
+    fn config_replacement_is_atomic_and_validated() {
+        let root = temporary("config");
+        let mut config = CompanionConfig {
+            display_name: "Durable Player".into(),
+            ..CompanionConfig::default()
+        };
+        write_config_atomically(&root, &config).unwrap();
+        let persisted: CompanionConfig =
+            serde_json::from_slice(&std::fs::read(root.join("config.json")).unwrap()).unwrap();
+        assert_eq!(persisted.display_name, "Durable Player");
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".config-")));
+
+        config.display_name.clear();
+        assert!(write_config_atomically(&root, &config).is_err());
+        let unchanged: CompanionConfig =
+            serde_json::from_slice(&std::fs::read(root.join("config.json")).unwrap()).unwrap();
+        assert_eq!(unchanged.display_name, "Durable Player");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn room_names_follow_protocol_bounds() {
+        assert_eq!(validated_room_name("  Finals  ").unwrap(), "Finals");
+        assert!(validated_room_name("").is_err());
+        assert!(validated_room_name(&"界".repeat(81)).is_err());
     }
 
     #[tokio::test]
@@ -167,6 +301,200 @@ mod tests {
             Some(93_000)
         );
     }
+
+    #[tokio::test]
+    async fn peer_cannot_inject_host_state_or_publish_noop_telemetry() {
+        let root = temporary("peer-allowlist");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room = RoomEngine::host(
+            "Approval".into(),
+            "Host".into(),
+            AdmissionMode::HostApproval,
+        );
+        let peer = room.request_join("Peer", ParticipantRole::Player).unwrap();
+        room.admit(&peer, true, ParticipantRole::Player).unwrap();
+        *state.room.write().await = room;
+        state.is_host.store(true, Ordering::Release);
+        let original_client = state.client.read().await.clone();
+        let mut events = state.events.subscribe();
+
+        state
+            .handle_network_event(NetworkEvent::Envelope {
+                session_id: peer.clone(),
+                envelope: Envelope::new(
+                    "client.hello",
+                    1,
+                    json!({"clientVersion":"forged","mods":["unbounded"]}),
+                ),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*state.client.read().await, original_client);
+        assert!(events.try_recv().is_err());
+
+        let room_id = state.room.read().await.snapshot.id.clone();
+        let injected = state
+            .handle_network_event(NetworkEvent::Envelope {
+                session_id: peer,
+                envelope: Envelope::new("room.snapshot", 2, json!({"id":"attacker-owned"})),
+            })
+            .await;
+        assert!(injected.is_err());
+        assert_eq!(state.room.read().await.snapshot.id, room_id);
+        assert!(events.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn peer_payload_limits_are_applied_before_dispatch() {
+        let oversized = Envelope::new(
+            "run.score_delta",
+            1,
+            json!({"padding":"x".repeat(MAX_PEER_RUN_PAYLOAD_BYTES + 1)}),
+        );
+        assert!(classify_peer_message(&oversized).is_err());
+        assert!(classify_peer_message(&Envelope::new("gameplay.snapshot", 1, json!({}),)).is_err());
+    }
+
+    #[tokio::test]
+    async fn executable_transfer_requires_exact_pending_offer_confirmation() {
+        let root = temporary("transfer-consent");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let header = ChartTransferHeader {
+            request_id: "request-1".into(),
+            name: "chart.zip".into(),
+            size: 12,
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: true,
+        };
+        *state.pending_inbound_transfer_offer.write().await =
+            Some(("host-session".into(), header.clone()));
+
+        assert!(state
+            .decide_chart_transfer("wrong-request", true, false, true)
+            .await
+            .is_err());
+        assert!(state.pending_inbound_transfer_offer.read().await.is_some());
+        assert!(state
+            .decide_chart_transfer("request-1", true, false, false)
+            .await
+            .is_err());
+        assert!(state.pending_inbound_transfer_offer.read().await.is_some());
+        state
+            .decide_chart_transfer("request-1", true, false, true)
+            .await
+            .unwrap();
+        assert!(state.pending_inbound_transfer_offer.read().await.is_none());
+        assert!(state
+            .network
+            .authorize_incoming_chart_transfer("host-session", header, true)
+            .await
+            .is_err());
+        state.network.clear_incoming_chart_transfers().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn trusted_non_executable_offer_is_not_published_as_a_manual_prompt() {
+        let root = temporary("trusted-transfer");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let room_id = state.room.read().await.snapshot.id.clone();
+        state.trusted_transfer_rooms.write().await.insert(room_id);
+        let header = ChartTransferHeader {
+            request_id: "trusted-request".into(),
+            name: "chart.zip".into(),
+            size: 12,
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: false,
+        };
+        let mut events = state.events.subscribe();
+
+        state
+            .apply_host_message(
+                "host-session",
+                Envelope::new("chart.transfer_offer", 1, json!(header)),
+            )
+            .await
+            .unwrap();
+
+        assert!(state.pending_inbound_transfer_offer.read().await.is_none());
+        assert!(events.try_recv().is_err());
+        state.network.clear_incoming_chart_transfers().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn peer_transfer_decision_is_exact_and_cleans_rejected_archive() {
+        let root = temporary("transfer-decision");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room = RoomEngine::host(
+            "Approval".into(),
+            "Host".into(),
+            AdmissionMode::HostApproval,
+        );
+        let peer = room.request_join("Peer", ParticipantRole::Player).unwrap();
+        room.admit(&peer, true, ParticipantRole::Player).unwrap();
+        *state.room.write().await = room;
+        state.is_host.store(true, Ordering::Release);
+        let archive = root.join("outgoing.zip");
+        std::fs::write(&archive, b"archive").unwrap();
+        let header = ChartTransferHeader {
+            request_id: "request-1".into(),
+            name: "chart.zip".into(),
+            size: 7,
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: false,
+        };
+        state
+            .pending_transfer_offers
+            .write()
+            .await
+            .insert(peer.clone(), (archive.clone(), header));
+
+        let mismatched = state
+            .handle_network_event(NetworkEvent::Envelope {
+                session_id: peer.clone(),
+                envelope: Envelope::new(
+                    "chart.transfer_decision",
+                    1,
+                    json!({"requestId":"wrong","accept":false}),
+                ),
+            })
+            .await;
+        assert!(mismatched.is_err());
+        assert!(archive.exists());
+        assert!(state
+            .pending_transfer_offers
+            .read()
+            .await
+            .contains_key(&peer));
+
+        state
+            .handle_network_event(NetworkEvent::Envelope {
+                session_id: peer.clone(),
+                envelope: Envelope::new(
+                    "chart.transfer_decision",
+                    2,
+                    json!({"requestId":"request-1","accept":false}),
+                ),
+            })
+            .await
+            .unwrap();
+        assert!(!archive.exists());
+        assert!(!state
+            .pending_transfer_offers
+            .read()
+            .await
+            .contains_key(&peer));
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[derive(Clone)]
@@ -200,7 +528,11 @@ pub struct AppState {
     commentator_statuses: Arc<RwLock<HashMap<String, CommentatorMirrorStatus>>>,
     local_mirror_enabled: Arc<AtomicBool>,
     pending_transfer_offers: Arc<RwLock<HashMap<String, (PathBuf, ChartTransferHeader)>>>,
+    pending_inbound_transfer_offer: Arc<RwLock<Option<(String, ChartTransferHeader)>>>,
     trusted_transfer_rooms: Arc<RwLock<HashSet<String>>>,
+    active_transfer_builds: Arc<RwLock<HashSet<String>>>,
+    transfer_build_slots: Arc<Semaphore>,
+    transfer_install_slot: Arc<Semaphore>,
     last_auto_match_hash: Arc<RwLock<Option<String>>>,
     ipc_client_id: Arc<RwLock<Option<String>>>,
     control_in_flight: Arc<AtomicBool>,
@@ -232,8 +564,8 @@ impl AppState {
         let _recovered_for_history = storage.recover_room(unix_ms())?;
         let room = RoomEngine::offline();
         let lobby = serde_json::to_value(&room.snapshot)?;
-        let (events, _) = broadcast::channel(8192);
-        let (network_events_tx, network_events_rx) = mpsc::channel(8192);
+        let (events, _) = broadcast::channel(EVENT_SUBSCRIBER_CAPACITY);
+        let (network_events_tx, network_events_rx) = mpsc::channel(NETWORK_EVENT_CAPACITY);
         let network = Arc::new(NetworkHub::new(network_events_tx));
         let renderer = Arc::new(RendererManager::new(data_dir.clone())?);
         let exports = ExportPublisher::new(data_dir.join("exports"))?;
@@ -274,7 +606,11 @@ impl AppState {
                 commentator_statuses: Arc::new(RwLock::new(HashMap::new())),
                 local_mirror_enabled: Arc::new(AtomicBool::new(false)),
                 pending_transfer_offers: Arc::new(RwLock::new(HashMap::new())),
+                pending_inbound_transfer_offer: Arc::new(RwLock::new(None)),
                 trusted_transfer_rooms: Arc::new(RwLock::new(HashSet::new())),
+                active_transfer_builds: Arc::new(RwLock::new(HashSet::new())),
+                transfer_build_slots: Arc::new(Semaphore::new(1)),
+                transfer_install_slot: Arc::new(Semaphore::new(1)),
                 last_auto_match_hash: Arc::new(RwLock::new(None)),
                 ipc_client_id: Arc::new(RwLock::new(None)),
                 control_in_flight: Arc::new(AtomicBool::new(false)),
@@ -332,7 +668,13 @@ impl AppState {
     }
 
     pub async fn ingest_remote(&self, message: Envelope) -> Result<()> {
-        self.apply_host_message(message).await
+        let session_id = self
+            .local_session_id
+            .read()
+            .await
+            .clone()
+            .context("host session is not connected")?;
+        self.apply_host_message(&session_id, message).await
     }
 
     async fn apply_local(&self, message: Envelope) -> Result<()> {
@@ -405,15 +747,23 @@ impl AppState {
         Ok(())
     }
 
-    async fn apply_host_message(&self, mut message: Envelope) -> Result<()> {
+    async fn apply_host_message(&self, session_id: &str, mut message: Envelope) -> Result<()> {
         localize_host_schedule(&mut message, unix_ms());
         self.validate(&message)?;
+        let mut publish_message = true;
         if message.kind == "chart.transfer_offer" {
             let offer: ChartTransferHeader = serde_json::from_value(message.payload.clone())?;
+            offer.validate()?;
+            *self.pending_inbound_transfer_offer.write().await =
+                Some((session_id.to_owned(), offer.clone()));
             let room_id = self.room.read().await.snapshot.id.clone();
             if self.trusted_transfer_rooms.read().await.contains(&room_id)
                 && !offer.contains_executable_content
             {
+                self.network
+                    .authorize_incoming_chart_transfer(session_id, offer.clone(), false)
+                    .await?;
+                *self.pending_inbound_transfer_offer.write().await = None;
                 self.network
                     .broadcast(Envelope::new(
                         "chart.transfer_decision",
@@ -425,6 +775,9 @@ impl AppState {
                         }),
                     ))
                     .await;
+                // The offer has already been authorized and answered. Do not
+                // surface a stale manual Accept/Reject prompt to the game UI.
+                publish_message = false;
             }
         } else if message.kind == "broadcast.plan" {
             let plan: BroadcastPlan = serde_json::from_value(message.payload.clone())?;
@@ -470,7 +823,9 @@ impl AppState {
             self.try_auto_match_locked_chart().await;
         }
         self.apply_common(&message).await?;
-        let _ = self.events.send(message);
+        if publish_message {
+            let _ = self.events.send(message);
+        }
         Ok(())
     }
 
@@ -526,42 +881,75 @@ impl AppState {
                 envelope,
             } => {
                 if self.is_host.load(Ordering::Relaxed) {
-                    self.require_admitted_peer(&session_id).await?;
                     self.validate(&envelope)?;
-                    self.apply_common(&envelope).await?;
-                    let coalesce_room = envelope.kind.starts_with("run.");
-                    if coalesce_room {
+                    let class = match classify_peer_message(&envelope) {
+                        Ok(class) => class,
+                        Err(error) => {
+                            self.network
+                                .disconnect_peer(
+                                    &session_id,
+                                    "Peer sent a forbidden or oversized control message",
+                                    false,
+                                )
+                                .await;
+                            return Err(error);
+                        }
+                    };
+                    self.require_admitted_peer(&session_id).await?;
+                    if class == PeerMessageClass::Telemetry {
+                        // These messages currently have no authoritative host
+                        // consumer. Silently discard them rather than mutating
+                        // host-local state or publishing noisy no-op events.
+                        return Ok(());
+                    }
+                    if class == PeerMessageClass::Run {
                         let room_id = self.room.read().await.snapshot.id.clone();
                         self.storage.queue_event(&room_id, &envelope)?;
                         self.apply_run_to_room(&session_id, &envelope).await?;
                         self.sync_renderer_player(&session_id).await;
-                    } else if envelope.kind == "client.ready" {
+                        let _ = self.events.send(envelope);
+                        self.mark_room_dirty();
+                        return Ok(());
+                    }
+                    let mut room_changed = false;
+                    let publish_event = true;
+                    if envelope.kind == "client.ready" {
                         let ready = envelope
                             .payload
                             .get("ready")
                             .and_then(Value::as_bool)
-                            .unwrap_or(false);
+                            .context("client.ready requires a boolean ready field")?;
                         self.room.write().await.set_ready(&session_id, ready)?;
+                        room_changed = true;
                     } else if envelope.kind == "chart.status" {
                         let verified = envelope
                             .payload
                             .get("verified")
                             .and_then(Value::as_bool)
-                            .unwrap_or(false);
+                            .context("chart.status requires a boolean verified field")?;
                         let reason = envelope
                             .payload
                             .get("reason")
                             .and_then(Value::as_str)
-                            .map(str::to_owned);
+                            .map(|reason| reason.chars().take(512).collect::<String>());
                         self.room
                             .write()
                             .await
                             .set_verified(&session_id, verified, reason)?;
+                        room_changed = true;
                     } else if envelope.kind == "chart.transfer_request" {
                         let room = self.room.read().await.snapshot.clone();
                         let chart = room
                             .chart
                             .context("a chart must be locked before transfer")?;
+                        let requested_hash = envelope
+                            .payload
+                            .get("chartHash")
+                            .and_then(Value::as_str)
+                            .context("chart transfer request requires chartHash")?;
+                        if requested_hash != chart.hash {
+                            anyhow::bail!("chart transfer request does not match the active lock");
+                        }
                         if chart.official
                             || chart.transfer_mode != ChartTransferMode::HostTransfer
                             || !room.allow_chart_transfers
@@ -575,30 +963,42 @@ impl AppState {
                                 .clone()
                                 .context("the host chart package path is unavailable")?,
                         );
-                        let outgoing = self
-                            .data_dir
-                            .join("transfer-outgoing")
-                            .join(format!("{}.zip", chart.hash));
-                        let path = crate::transfer::archive_chart_directory(&selected, &outgoing)?;
-                        let offer = crate::transfer::inspect_offer(&path, "room host")?;
-                        let header = ChartTransferHeader {
-                            request_id: format!("{}-{}", session_id, unix_ms()),
-                            name: offer.name,
-                            size: offer.size,
-                            archive_sha256: offer.sha256,
-                            chart_hash: chart.hash,
-                            contains_executable_content: offer.contains_executable_content,
-                        };
-                        self.pending_transfer_offers
-                            .write()
+                        if self
+                            .pending_transfer_offers
+                            .read()
                             .await
-                            .insert(session_id.clone(), (path, header.clone()));
-                        self.network
-                            .send_to(
-                                &session_id,
-                                Envelope::new("chart.transfer_offer", 0, json!(header)),
-                            )
-                            .await?;
+                            .contains_key(&session_id)
+                        {
+                            anyhow::bail!("this peer already has an active chart transfer offer");
+                        }
+                        let mut active_builds = self.active_transfer_builds.write().await;
+                        if active_builds.contains(&session_id) {
+                            anyhow::bail!("a chart transfer offer is already being prepared");
+                        }
+                        if active_builds.len() >= MAX_QUEUED_TRANSFER_BUILDS {
+                            anyhow::bail!("the chart transfer packaging queue is full");
+                        }
+                        active_builds.insert(session_id.clone());
+                        drop(active_builds);
+                        let state = self.clone();
+                        let recipient = session_id.clone();
+                        tokio::spawn(async move {
+                            let result = state
+                                .prepare_chart_transfer_offer(recipient.clone(), chart, selected)
+                                .await;
+                            state
+                                .active_transfer_builds
+                                .write()
+                                .await
+                                .remove(&recipient);
+                            if let Err(error) = result {
+                                let _ = state.events.send(Envelope::new(
+                                    "chart.transfer_failed",
+                                    0,
+                                    json!({"message":error.to_string()}),
+                                ));
+                            }
+                        });
                     } else if envelope.kind == "chart.transfer_decision" {
                         let accept = envelope
                             .payload
@@ -610,11 +1010,10 @@ impl AppState {
                             .get("requestId")
                             .and_then(Value::as_str)
                             .context("transfer requestId is required")?;
-                        let pending = self
-                            .pending_transfer_offers
-                            .write()
-                            .await
-                            .remove(&session_id)
+                        let mut pending_offers = self.pending_transfer_offers.write().await;
+                        let pending = pending_offers
+                            .get(&session_id)
+                            .cloned()
                             .context("there is no active transfer offer for this peer")?;
                         if pending.1.request_id != request_id {
                             anyhow::bail!("transfer decision does not match the active offer");
@@ -630,6 +1029,12 @@ impl AppState {
                                     "script or executable content requires separate confirmation"
                                 );
                             }
+                        }
+                        let pending = pending_offers
+                            .remove(&session_id)
+                            .context("active transfer offer disappeared")?;
+                        drop(pending_offers);
+                        if accept {
                             let network = self.network.clone();
                             let events = self.events.clone();
                             let recipient = session_id.clone();
@@ -649,7 +1054,10 @@ impl AppState {
                                         json!({"message":error.to_string()}),
                                     ));
                                 }
+                                let _ = tokio::fs::remove_file(&pending.0).await;
                             });
+                        } else {
+                            let _ = tokio::fs::remove_file(&pending.0).await;
                         }
                     } else if envelope.kind == "broadcast.subscribe" {
                         let enabled = envelope
@@ -704,10 +1112,10 @@ impl AppState {
                             .await
                             .insert(session_id.clone(), status);
                     }
-                    let _ = self.events.send(envelope);
-                    if coalesce_room {
-                        self.mark_room_dirty();
-                    } else {
+                    if publish_event {
+                        let _ = self.events.send(envelope);
+                    }
+                    if room_changed {
                         self.broadcast_room().await?;
                     }
                 } else {
@@ -721,7 +1129,7 @@ impl AppState {
                         self.leave_room().await?;
                         self.emit_error(reason);
                     } else {
-                        self.apply_host_message(envelope).await?;
+                        self.apply_host_message(&session_id, envelope).await?;
                     }
                 }
             }
@@ -781,68 +1189,46 @@ impl AppState {
                     }),
                 ));
             }
-            NetworkEvent::ChartTransferReceived { header, path, .. } => {
+            NetworkEvent::ChartTransferReceived {
+                header,
+                path,
+                executable_content_confirmed,
+                ..
+            } => {
                 if self.is_host.load(Ordering::Relaxed) {
                     let _ = tokio::fs::remove_file(path).await;
                     anyhow::bail!("the host does not accept chart transfers");
                 }
-                let expected = self
-                    .room
-                    .read()
-                    .await
-                    .snapshot
-                    .chart
-                    .clone()
-                    .context("received a chart after the room lock was cleared")?;
-                if expected.hash != header.chart_hash {
-                    let _ = tokio::fs::remove_file(path).await;
-                    anyhow::bail!("received chart does not match the active lock");
-                }
-                let cache = self.data_dir.join("chart-cache");
-                let archive_sha = header.archive_sha256.clone();
-                let chart_hash = header.chart_hash.clone();
-                let archive = path.clone();
-                let installed = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
-                    let installed = crate::transfer::install_received_package(
-                        &archive,
-                        &archive_sha,
-                        &cache,
-                        true,
-                    )?;
-                    let canonical = crate::chart_hash::canonical_chart_hash_cached(
-                        &installed,
-                        cache.join(".hash-index"),
-                    )?;
-                    if canonical.hash != chart_hash {
-                        anyhow::bail!(
-                            "transferred archive passed SHA-256 but its canonical chart hash is wrong"
-                        );
+                // Archive inspection and canonical hashing are blocking work.
+                // Keep them off the sole network event consumer, and serialize
+                // installs to prevent several large packages competing for CPU
+                // and disk at once.
+                let state = self.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = state
+                        .install_received_chart_transfer(header, path, executable_content_confirmed)
+                        .await
+                    {
+                        let _ = state.events.send(Envelope::new(
+                            "chart.transfer_failed",
+                            0,
+                            json!({"message":error.to_string()}),
+                        ));
                     }
-                    std::fs::write(
-                        installed.join(".bbt-chart-hash"),
-                        format!("{}\n", canonical.hash),
-                    )?;
-                    Ok(installed)
-                })
-                .await??;
-                let _ = tokio::fs::remove_file(path).await;
-                let installed_text = installed.to_string_lossy().into_owned();
-                *self.selected_chart_path.write().await = Some(installed_text.clone());
-                self.chart_paths
-                    .write()
-                    .await
-                    .insert(header.chart_hash.clone(), installed_text);
-                self.set_local_verified(true, None).await?;
-                let _ = self.events.send(Envelope::new(
-                    "chart.transfer_complete",
-                    0,
-                    json!({"requestId":header.request_id,"chartHash":header.chart_hash}),
-                ));
+                });
             }
             NetworkEvent::Disconnected { session_id, reason } => {
                 if self.is_host.load(Ordering::Relaxed) {
                     self.room.write().await.disconnect(&session_id);
                     self.renderer.stop_participant(&session_id);
+                    if let Some((path, _)) = self
+                        .pending_transfer_offers
+                        .write()
+                        .await
+                        .remove(&session_id)
+                    {
+                        let _ = tokio::fs::remove_file(path).await;
+                    }
                     self.commentator_subscribers
                         .write()
                         .await
@@ -883,6 +1269,158 @@ impl AppState {
                 tracing::warn!(%reason, "peer transport diagnostic");
             }
         }
+        Ok(())
+    }
+
+    async fn install_received_chart_transfer(
+        &self,
+        header: ChartTransferHeader,
+        path: PathBuf,
+        executable_content_confirmed: bool,
+    ) -> Result<()> {
+        let _cleanup = TemporaryFileCleanup::new(path.clone());
+        let _install_slot = self
+            .transfer_install_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .context("chart transfer installer stopped")?;
+        let expected = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .clone()
+            .context("received a chart after the room lock was cleared")?;
+        if expected.hash != header.chart_hash {
+            anyhow::bail!("received chart does not match the active lock");
+        }
+        let cache = self.data_dir.join("chart-cache");
+        let archive_sha = header.archive_sha256.clone();
+        let chart_hash = header.chart_hash.clone();
+        let archive = path;
+        let installed = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+            let installed = crate::transfer::install_received_package(
+                &archive,
+                &archive_sha,
+                &cache,
+                executable_content_confirmed,
+            )?;
+            let canonical = crate::chart_hash::canonical_chart_hash_cached(
+                &installed,
+                cache.join(".hash-index"),
+            )?;
+            if canonical.hash != chart_hash {
+                anyhow::bail!(
+                    "transferred archive passed SHA-256 but its canonical chart hash is wrong"
+                );
+            }
+            std::fs::write(
+                installed.join(".bbt-chart-hash"),
+                format!("{}\n", canonical.hash),
+            )?;
+            Ok(installed)
+        })
+        .await??;
+        let installed_text = installed.to_string_lossy().into_owned();
+        *self.selected_chart_path.write().await = Some(installed_text.clone());
+        self.chart_paths
+            .write()
+            .await
+            .insert(header.chart_hash.clone(), installed_text);
+        self.set_local_verified(true, None).await?;
+        let _ = self.events.send(Envelope::new(
+            "chart.transfer_complete",
+            0,
+            json!({"requestId":header.request_id,"chartHash":header.chart_hash}),
+        ));
+        Ok(())
+    }
+
+    async fn prepare_chart_transfer_offer(
+        &self,
+        session_id: String,
+        chart: ChartLock,
+        selected: PathBuf,
+    ) -> Result<()> {
+        let _build_slot = self
+            .transfer_build_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .context("chart transfer packager stopped")?;
+        if !self.is_host.load(Ordering::Acquire) {
+            anyhow::bail!("room closed while waiting to prepare the chart package");
+        }
+        self.require_admitted_peer(&session_id).await?;
+        let queued_hash = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .as_ref()
+            .map(|active| active.hash.clone());
+        if queued_hash.as_deref() != Some(chart.hash.as_str()) {
+            anyhow::bail!("the locked chart changed before its package could be prepared");
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let outgoing = self
+            .data_dir
+            .join("transfer-outgoing")
+            .join(format!("{request_id}.zip"));
+        let chart_hash = chart.hash.clone();
+        let (path, offer) = tokio::task::spawn_blocking(move || {
+            let path = crate::transfer::archive_chart_directory(&selected, &outgoing)?;
+            let offer = crate::transfer::inspect_offer(&path, "room host")?;
+            Ok::<_, anyhow::Error>((path, offer))
+        })
+        .await??;
+        let mut cleanup = TemporaryFileCleanup::new(path.clone());
+        if !self.is_host.load(Ordering::Acquire) {
+            anyhow::bail!("room closed while preparing the chart package");
+        }
+        let active_hash = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .as_ref()
+            .map(|active| active.hash.clone());
+        if active_hash.as_deref() != Some(chart_hash.as_str()) {
+            anyhow::bail!("the locked chart changed while preparing its package");
+        }
+        self.require_admitted_peer(&session_id).await?;
+        let header = ChartTransferHeader {
+            request_id,
+            name: offer.name,
+            size: offer.size,
+            archive_sha256: offer.sha256,
+            chart_hash,
+            contains_executable_content: offer.contains_executable_content,
+        };
+        header.validate()?;
+        self.pending_transfer_offers
+            .write()
+            .await
+            .insert(session_id.clone(), (path, header.clone()));
+        if let Err(error) = self
+            .network
+            .send_to(
+                &session_id,
+                Envelope::new("chart.transfer_offer", 0, json!(header)),
+            )
+            .await
+        {
+            self.pending_transfer_offers
+                .write()
+                .await
+                .remove(&session_id);
+            return Err(error);
+        }
+        cleanup.armed = false;
         Ok(())
     }
 
@@ -974,6 +1512,7 @@ impl AppState {
         port: u16,
         admission_mode: AdmissionMode,
     ) -> Result<SocketAddr> {
+        let room_name = validated_room_name(&room_name)?;
         self.cancel_reconnect();
         self.cancel_nat_renewal();
         self.release_nat_mapping().await;
@@ -1036,14 +1575,15 @@ impl AppState {
         role: ParticipantRole,
     ) -> Result<()> {
         let mut config = self.config.write().await;
-        config.display_name = display_name;
-        config.requested_role = role;
+        let mut next = config.clone();
+        next.display_name = display_name.trim().to_owned();
+        next.requested_role = role;
         if let Some(address) = address {
-            config.host_address = address.ip().to_string();
-            config.host_port = address.port();
+            next.host_address = address.ip().to_string();
+            next.host_port = address.port();
         }
-        let bytes = serde_json::to_vec_pretty(&*config)?;
-        std::fs::write(self.data_dir.join("config.json"), bytes)?;
+        write_config_atomically(&self.data_dir, &next)?;
+        *config = next;
         Ok(())
     }
 
@@ -1051,12 +1591,21 @@ impl AppState {
     /// replacing the user's last remote host address with a loopback address.
     pub async fn save_host_profile(&self, display_name: String, port: u16) -> Result<()> {
         let mut config = self.config.write().await;
-        config.display_name = display_name;
-        config.requested_role = ParticipantRole::Host;
-        config.host_port = port;
-        let bytes = serde_json::to_vec_pretty(&*config)?;
-        std::fs::write(self.data_dir.join("config.json"), bytes)?;
+        let mut next = config.clone();
+        next.display_name = display_name.trim().to_owned();
+        next.requested_role = ParticipantRole::Host;
+        next.host_port = port;
+        write_config_atomically(&self.data_dir, &next)?;
+        *config = next;
         Ok(())
+    }
+
+    pub async fn replace_config(&self, mut config: CompanionConfig) -> Result<CompanionConfig> {
+        config.display_name = config.display_name.trim().to_owned();
+        config.host_address = config.host_address.trim().to_owned();
+        write_config_atomically(&self.data_dir, &config)?;
+        *self.config.write().await = config.clone();
+        Ok(config)
     }
 
     pub async fn join_room(
@@ -1209,7 +1758,10 @@ impl AppState {
         self.commentator_statuses.write().await.clear();
         *self.broadcast_plan.write().await = BroadcastPlan::empty();
         self.pending_transfer_offers.write().await.clear();
+        *self.pending_inbound_transfer_offer.write().await = None;
         self.trusted_transfer_rooms.write().await.clear();
+        self.active_transfer_builds.write().await.clear();
+        self.network.clear_incoming_chart_transfers().await;
         *self.last_auto_match_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.is_host.store(false, Ordering::Relaxed);
@@ -1466,7 +2018,9 @@ impl AppState {
         self.commentator_statuses.write().await.clear();
         *self.broadcast_plan.write().await = BroadcastPlan::empty();
         self.pending_transfer_offers.write().await.clear();
+        *self.pending_inbound_transfer_offer.write().await = None;
         self.trusted_transfer_rooms.write().await.clear();
+        self.active_transfer_builds.write().await.clear();
         *self.last_auto_match_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.network
@@ -1671,6 +2225,36 @@ impl AppState {
     ) -> Result<()> {
         if self.is_host.load(Ordering::Relaxed) {
             anyhow::bail!("only a receiving participant can decide a chart transfer");
+        }
+        let (host_session, offer) = self
+            .pending_inbound_transfer_offer
+            .read()
+            .await
+            .clone()
+            .context("there is no chart transfer offer awaiting a decision")?;
+        if offer.request_id != request_id {
+            anyhow::bail!("chart transfer decision does not match the active offer");
+        }
+        if accept && offer.contains_executable_content && !executable_content_confirmed {
+            anyhow::bail!("script or executable content requires separate confirmation");
+        }
+        if trust_room && (!accept || offer.contains_executable_content) {
+            anyhow::bail!(
+                "only an accepted non-executable chart offer can be trusted automatically"
+            );
+        }
+        // Consume the UI offer only after validating the exact request. The
+        // network authorization is then an exact, one-use capability checked
+        // before the receiver creates a temporary file.
+        *self.pending_inbound_transfer_offer.write().await = None;
+        if accept {
+            self.network
+                .authorize_incoming_chart_transfer(
+                    &host_session,
+                    offer,
+                    executable_content_confirmed,
+                )
+                .await?;
         }
         if trust_room {
             let room_id = self.room.read().await.snapshot.id.clone();
@@ -1979,7 +2563,10 @@ impl AppState {
         self.commentator_statuses.write().await.clear();
         *self.broadcast_plan.write().await = BroadcastPlan::empty();
         self.pending_transfer_offers.write().await.clear();
+        *self.pending_inbound_transfer_offer.write().await = None;
         self.trusted_transfer_rooms.write().await.clear();
+        self.active_transfer_builds.write().await.clear();
+        self.network.clear_incoming_chart_transfers().await;
         *self.last_auto_match_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.is_host.store(false, Ordering::Relaxed);

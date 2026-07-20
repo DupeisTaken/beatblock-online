@@ -6,7 +6,7 @@ There is no operator website, account system, cloud deployment, or container. Th
 
 1. Open **Online** and choose **Host a Room**.
 2. Enter a room name, UDP port, password, display name, and admission policy.
-3. Share the `IP:port` or password-free `bbt://...?...v=2` link separately from the password.
+3. Share the `IP:port` or password-free `bbt://...?...v=3` link separately from the password.
 4. Select pending roster rows to approve/reject requests. Select admitted rows to change roles or remove a participant.
 5. Follow **Select Chart**, build an optional setlist, and wait for every assigned player's exact verification.
 6. When the dashboard reports all assigned players ready, choose **Start Race**.

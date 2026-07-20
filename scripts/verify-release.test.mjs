@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import {
+  assertExactZipEntries,
   checksumLine,
   inspectObsBuildManifest,
   inspectPe,
@@ -10,6 +11,7 @@ import {
   listZipEntries,
   sha256Hex,
 } from './verify-release.mjs';
+import { validateReleaseTag } from './verify-release-tag.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -61,6 +63,26 @@ test('release version metadata and generated asset names stay aligned', async ()
     assert.ok(contents.includes(version), `${label} does not reference version ${version}`);
   }
   assert.ok(releaseGuide.includes(`v${version}`));
+});
+
+test('tagged releases must exactly match the package version', () => {
+  assert.deepEqual(
+    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-alpha.3', version: '0.3.0-alpha.3' }),
+    { tagged: true, expected: 'v0.3.0-alpha.3' },
+  );
+  assert.throws(
+    () =>
+      validateReleaseTag({
+        refType: 'tag',
+        refName: 'v0.3.0-alpha.4',
+        version: '0.3.0-alpha.3',
+      }),
+    /does not match package version/,
+  );
+  assert.deepEqual(
+    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-alpha.3' }),
+    { tagged: false, expected: 'v0.3.0-alpha.3' },
+  );
 });
 
 function x64PeFixture() {
@@ -124,10 +146,31 @@ test('listZipEntries rejects malformed central-directory metadata', () => {
   assert.throws(() => listZipEntries(archive), /malformed ZIP central directory/);
 });
 
+test('final ZIP verification rejects missing or unexpected files', () => {
+  const expected = ['BeatblockOnline/README.txt', 'BeatblockOnline/bbt/core.lua'];
+  assert.deepEqual(
+    assertExactZipEntries(
+      ['BeatblockOnline\\bbt\\core.lua', 'BeatblockOnline\\README.txt'],
+      expected,
+    ),
+    expected,
+  );
+  assert.throws(
+    () =>
+      assertExactZipEntries(
+        ['BeatblockOnline/README.txt', 'BeatblockOnline/unknown.dll'],
+        expected,
+        'fixture.zip',
+      ),
+    /contents differ from the reviewed source tree/,
+  );
+});
+
 test('hosted workflows preserve source-only and artifact-backed test boundaries', async () => {
-  const [ci, release] = await Promise.all([
+  const [ci, release, auditPolicy] = await Promise.all([
     readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8'),
     readFile(resolve(root, '.github/workflows/release.yml'), 'utf8'),
+    readFile(resolve(root, 'companion/.cargo/audit.toml'), 'utf8'),
   ]);
   for (const testName of [
     'detector_accepts_isolated_test_game_shape',
@@ -167,7 +210,43 @@ test('hosted workflows preserve source-only and artifact-backed test boundaries'
       /powershell -NoProfile -File scripts\/test-release-utils\.ps1/,
       'hosted Windows workflows must exercise the legacy-compatible checksum helper',
     );
+    assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/);
+    assert.match(workflow, /- run: cargo audit\r?\n\s+working-directory: companion/);
+    assert.match(
+      workflow,
+      /cargo clippy --manifest-path companion\/Cargo\.toml --all-targets -- -D warnings/,
+    );
+    assert.match(
+      workflow,
+      /cargo clippy --manifest-path companion\/Cargo\.toml --features installer-ui --bin BeatblockOnlineInstaller -- -D warnings/,
+    );
   }
+  assert.match(auditPolicy, /os = \["windows"\]/);
+  assert.match(auditPolicy, /RUSTSEC-2026-0194/);
+  assert.match(auditPolicy, /RUSTSEC-2026-0195/);
+});
+
+test('hosted workflows pin third-party actions and isolate release publication', async () => {
+  const workflows = await Promise.all(
+    ['ci.yml', 'release.yml'].map((name) =>
+      readFile(resolve(root, '.github/workflows', name), 'utf8'),
+    ),
+  );
+  for (const workflow of workflows) {
+    const uses = [...workflow.matchAll(/^\s*-\s+uses:\s+([^\s#]+)/gm)].map((match) => match[1]);
+    assert.ok(uses.length > 0);
+    for (const action of uses) {
+      assert.match(action, /@[0-9a-f]{40}$/, `${action} is not pinned to a full commit SHA`);
+    }
+  }
+
+  const release = workflows[1];
+  const buildJob = release.slice(release.indexOf('  build:'), release.indexOf('  publish:'));
+  const publishJob = release.slice(release.indexOf('  publish:'));
+  assert.doesNotMatch(buildJob, /contents:\s*write/);
+  assert.match(publishJob, /needs:\s*build/);
+  assert.match(publishJob, /contents:\s*write/);
+  assert.match(release, /actions\/attest-build-provenance@[0-9a-f]{40}/);
 });
 
 test('checksumLine is stable and uses only the asset filename', () => {

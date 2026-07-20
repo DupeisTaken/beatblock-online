@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   calculateAccuracy,
   BroadcastPlanSchema,
+  ChartTransferOfferSchema,
+  ClientHelloSchema,
   decodeRenderDatagram,
   EMPTY_TOTALS,
   encodeRenderDatagram,
@@ -38,6 +40,68 @@ describe('Beatblock score derivation', () => {
       validity: 'valid' as const,
     }));
     expect(rankPlayers(players).find((player) => player.displayName === 'A')?.rank).toBe(1);
+  });
+
+  it('matches authoritative admission and validity ranking', () => {
+    const player = (
+      sessionId: string,
+      validity: 'valid' | 'pending' | 'invalid' | 'dnf',
+      accuracy: number,
+      admitted = true,
+    ) => ({
+      sessionId,
+      displayName: sessionId,
+      role: 'player' as const,
+      admitted,
+      connected: true,
+      ready: true,
+      verified: true,
+      progress: 1,
+      accuracy,
+      setTotal: 0,
+      totals: { ...EMPTY_TOTALS },
+      validity,
+      rank: 99,
+      commentatorAccess: false,
+    });
+    const ranked = rankPlayers([
+      player('valid', 'valid', 50),
+      player('pending', 'pending', 100),
+      player('invalid', 'invalid', 100),
+      player('dnf', 'dnf', 100),
+      player('unadmitted', 'valid', 100, false),
+    ]);
+
+    expect(ranked.map(({ sessionId, rank }) => [sessionId, rank])).toEqual([
+      ['valid', 1],
+      ['pending', 2],
+      ['invalid', 3],
+      ['dnf', 4],
+      ['unadmitted', undefined],
+    ]);
+  });
+
+  it('uses the same Unicode scalar tie-break as the Rust room engine', () => {
+    const base = {
+      role: 'player' as const,
+      admitted: true,
+      connected: true,
+      ready: true,
+      verified: true,
+      progress: 1,
+      accuracy: 100,
+      setTotal: 0,
+      totals: { ...EMPTY_TOTALS },
+      validity: 'valid' as const,
+      commentatorAccess: false,
+    };
+    const ranked = rankPlayers([
+      { ...base, sessionId: 'supplementary', displayName: '\u{10000}' },
+      { ...base, sessionId: 'bmp', displayName: '\u{e000}' },
+    ]);
+
+    expect(ranked.find(({ sessionId }) => sessionId === 'bmp')?.rank).toBe(1);
+    expect(ranked.find(({ sessionId }) => sessionId === 'supplementary')?.rank).toBe(2);
   });
 
   it('round-trips the packed 60 Hz renderer datagram', () => {
@@ -89,5 +153,34 @@ describe('Beatblock score derivation', () => {
     expect(
       Value.Check(BroadcastPlanSchema, { revision: 1, updatedAtMs: 10, slots: slots.slice(1) }),
     ).toBe(false);
+  });
+
+  it('validates the runtime client hello ownership key', () => {
+    const hello = {
+      instanceId: 'game-123',
+      clientVersion: '0.3.0-alpha.3',
+      gameBuildHash: 'a'.repeat(64),
+      distribution: 'standalone',
+      mods: [],
+    };
+    expect(Value.Check(ClientHelloSchema, hello)).toBe(true);
+    expect(Value.Check(ClientHelloSchema, { ...hello, instanceId: undefined })).toBe(false);
+    expect(Value.Check(ClientHelloSchema, { ...hello, instanceId: 'x'.repeat(97) })).toBe(false);
+  });
+
+  it('validates the chart-transfer offer emitted by the Rust runtime', () => {
+    const offer = {
+      requestId: 'peer-1-1234',
+      name: 'room host',
+      size: 1024,
+      archiveSha256: 'a'.repeat(64),
+      chartHash: 'b'.repeat(64),
+      containsExecutableContent: false,
+    };
+    expect(Value.Check(ChartTransferOfferSchema, offer)).toBe(true);
+    expect(Value.Check(ChartTransferOfferSchema, { ...offer, size: 0 })).toBe(false);
+    expect(Value.Check(ChartTransferOfferSchema, { ...offer, compressedBytes: offer.size })).toBe(
+      false,
+    );
   });
 });

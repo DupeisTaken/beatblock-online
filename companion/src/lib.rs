@@ -1,5 +1,6 @@
 pub mod app_state;
 pub mod chart_hash;
+pub mod credentials;
 pub mod exports;
 pub mod game_commands;
 #[cfg(feature = "installer-ui")]

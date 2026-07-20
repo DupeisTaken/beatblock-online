@@ -35,13 +35,27 @@ local COMMAND_TIMEOUT_MS = {
   ['room.join_request'] = 20000,
   ['runtime.restart_request'] = 15000,
 }
-
-local function nowMs()
-  return os.time() * 1000
-end
+-- Ordered control/score traffic must remain bounded while the runtime is down.
+-- At 512 small JSON frames the game retains a useful recovery window without
+-- allowing a long offline session to consume unbounded process memory.
+local MAX_ORDERED_OUTBOUND = 512
+local MAX_INBOUND_PER_FRAME = 128
+local COALESCED_CHANNELS = {
+  ['render.sample'] = 'bbt_render_latest',
+  ['render.keyframe'] = 'bbt_keyframe_latest',
+  ['gameplay.snapshot'] = 'bbt_snapshot_latest',
+  ['client.ping'] = 'bbt_heartbeat_latest',
+}
 
 local function monotonicMs()
   return love and love.timer and math.floor(love.timer.getTime() * 1000) or 0
+end
+
+-- os.time has one-second resolution. Anchor it once to LÖVE's monotonic clock
+-- so pre-handshake timestamps still advance in milliseconds.
+local WALL_CLOCK_OFFSET_MS = os.time() * 1000 - monotonicMs()
+local function nowMs()
+  return WALL_CLOCK_OFFSET_MS + monotonicMs()
 end
 
 local function estimatedServerTimeMs()
@@ -96,7 +110,23 @@ function BBT.send(kind, payload)
     payload = payload,
   }
   BBT.sequence = BBT.sequence + 1
-  love.thread.getChannel('bbt_outbound'):push(encode(message))
+  local encoded=encode(message)
+  local latestName=COALESCED_CHANNELS[kind]
+  if latestName then
+    -- Presentation/liveness telemetry is latest-value state. Replacing it keeps
+    -- a disconnected runtime from accumulating minutes of obsolete samples.
+    local latest=love.thread.getChannel(latestName)
+    latest:clear()
+    latest:push(encoded)
+    return true
+  end
+  local outbound=love.thread.getChannel('bbt_outbound')
+  if outbound:getCount()>=MAX_ORDERED_OUTBOUND then
+    BBT.lastError='Online IPC is overloaded; reconnect before continuing the race.'
+    return false
+  end
+  outbound:push(encoded)
+  return true
 end
 
 function BBT.command(kind, payload)
@@ -113,7 +143,13 @@ function BBT.command(kind, payload)
   BBT.pendingRequestKind = kind
   BBT.pendingRequestProgress = nil
   BBT.pendingRequestDeadlineMs = monotonicMs() + (COMMAND_TIMEOUT_MS[kind] or DEFAULT_COMMAND_TIMEOUT_MS)
-  BBT.send(kind, payload)
+  if not BBT.send(kind, payload) then
+    BBT.pendingRequestId = nil
+    BBT.pendingRequestKind = nil
+    BBT.pendingRequestProgress = nil
+    BBT.pendingRequestDeadlineMs = nil
+    return nil
+  end
   return requestId
 end
 
@@ -136,6 +172,9 @@ function BBT.startOnlineRuntime()
   love.thread.getChannel('bbt_ipc_control'):clear()
   love.thread.getChannel('bbt_outbound'):clear()
   love.thread.getChannel('bbt_inbound'):clear()
+  for _,channelName in pairs(COALESCED_CHANNELS) do
+    love.thread.getChannel(channelName):clear()
+  end
   local threadPath = BBT.modPath .. '/bbt/ipc_thread.lua'
   -- Lovely's patch directory lives outside LÖVE's virtual filesystem. Read the
   -- worker once while entering Online, then hand LÖVE a FileData object so the
@@ -165,6 +204,9 @@ function BBT.exitOnline()
   -- run journals are already persisted by the runtime; unsent UI telemetry is
   -- expendable once the user explicitly leaves Online.
   love.thread.getChannel('bbt_outbound'):clear()
+  for _,channelName in pairs(COALESCED_CHANNELS) do
+    love.thread.getChannel(channelName):clear()
+  end
   BBT.command('runtime.session_end', {})
   clearPendingRequest()
   BBT.sessionActive = false
@@ -727,7 +769,13 @@ function BBT.update(dt)
     end
   end
   local incoming = love.thread.getChannel('bbt_inbound')
-  while incoming:getCount() > 0 do handleCommand(incoming:pop()) end
+  local processed=0
+  -- A stalled or backgrounded game may resume to a full bounded backlog.
+  -- Amortize JSON/event work so recovery cannot monopolize a render frame.
+  while incoming:getCount()>0 and processed<MAX_INBOUND_PER_FRAME do
+    handleCommand(incoming:pop())
+    processed=processed+1
+  end
   if BBT.pendingRequestId and BBT.pendingRequestDeadlineMs and monotonicMs() >= BBT.pendingRequestDeadlineMs then
     local kind = BBT.pendingRequestKind or 'Online action'
     BBT.lastError = kind .. ' did not receive a runtime response. Check the runtime connection and retry.'
@@ -808,7 +856,7 @@ function BBT.update(dt)
     progress = current.maxHits > 0 and math.min(1, current.currentMaxHits / current.maxHits) or 0,
     connected = BBT.connected,
     health = health,
-    updatedAtMs = nowMs(),
+    updatedAtMs = estimatedServerTimeMs(),
   })
 end
 

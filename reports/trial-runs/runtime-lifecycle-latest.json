@@ -1,14 +1,24 @@
 {
-  "schemaVersion": 2,
-  "generatedAt": "2026-07-17T19:19:15.596Z",
+  "schemaVersion": 3,
+  "generatedAt": "2026-07-19T17:28:18.823Z",
   "passed": true,
   "readiness": "runtime.ready",
   "protocolVersion": 3,
-  "workingSetBytes": 31727616,
+  "workingSetBytes": 12980224,
   "idleWorkingSetTargetBytes": 31457280,
-  "idleWorkingSetTargetMet": false,
+  "idleWorkingSetTargetMet": true,
   "duplicateMutexRejected": true,
   "explicitSessionShutdown": true,
   "parentExitCleanup": true,
-  "visibleConsoleRequested": false
+  "visibleConsoleRequested": false,
+  "invariants": {
+    "readinessReceived": true,
+    "protocolCompatible": true,
+    "workingSetMeasured": true,
+    "idleWorkingSetTargetMet": true,
+    "duplicateMutexRejected": true,
+    "explicitSessionShutdown": true,
+    "parentExitCleanup": true,
+    "noVisibleConsoleRequested": true
+  }
 }

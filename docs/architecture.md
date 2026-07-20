@@ -35,11 +35,11 @@ the participant preserves the remaining countdown in its own clock domain
 before forwarding the snapshot to Lua. System-clock skew therefore cannot
 desynchronize launch.
 
-The runtime/API never publishes passwords, API tokens, absolute chart paths, or unrelated process data to room snapshots. Protocol-v1 clients receive an explicit compatibility failure.
+The runtime/API never publishes passwords, API tokens, absolute chart paths, or unrelated process data to room snapshots. Non-v3 clients receive an explicit compatibility failure.
 
 ## Supported-build IPC details
 
-The gameplay hooks only enqueue compact Lua tables. A dedicated LÖVE thread owns all IPC and therefore keeps pipe, network, export, hashing, and storage work off the gameplay thread. On the supported reference build it uses LuaJIT FFI with `CreateFileW`/`ReadFile`/`WriteFile` against `\\.\pipe\beatblock-online-v3`. Writes are completed in a loop, outbound work is capped at 16 messages per pass, and carriage returns/newlines introduced by Beatblock's JSON encoder are removed before newline framing.
+The gameplay hooks only enqueue compact Lua tables. A dedicated LÖVE thread owns all IPC and therefore keeps pipe, network, export, hashing, and storage work off the gameplay thread. On Windows it uses LuaJIT FFI with `CreateFileW`/`ReadFile`/`WriteFile` against the owner-only, remote-client-rejecting `\\.\pipe\beatblock-online-v3`; the runtime does not expose the unauthenticated TCP fallback in production Windows builds. Writes are completed in a loop, outbound work is capped at 16 messages per pass, and carriage returns/newlines introduced by Beatblock's JSON encoder are removed before newline framing.
 
 The Online shell derives explicit room, Results, Setlist, Broadcast, History, Settings, Help, Form, and Confirm view state from protocol-v3 snapshots. `dashboard_model.lua` owns phase selection, stable-ID filtering, score presentation, role gates, and next-action precedence. CI executes this pure module with Beatblock's bundled Lua 5.1 runtime and compares the real native UI against deterministic screenshots.
 
@@ -49,15 +49,20 @@ High-rate score mutations are validated and journaled immediately, while full
 room snapshots, recovery state, OBS room exports, and peer fan-out coalesce onto
 a 20 Hz publication clock. SQLite journal rows commit in 25 ms transactions and
 local NDJSON journals keep one buffered writer per run with a 50 ms flush bound.
-The durable retry backlog is capped at 32,768 events, the non-blocking NDJSON
-queue at 8,192 messages, and only 32 journal files remain open at once. Raw
-SQLite and NDJSON telemetry is pruned to the documented 30-day retention period
-at startup. Local IPC and QUIC control frames reject messages larger than 1 MiB,
-and failed-password tracking is bounded by both address count and time. Local
-IPC serves at most 16 simultaneous clients; the host serves at most 64 pending
-QUIC authentications and closes any handshake that does not finish within ten
-seconds. These limits prevent abandoned or hostile connections from retaining
-an unbounded number of tasks and socket buffers.
+The durable retry backlog is capped at both 32,768 events and 16 MiB, the
+non-blocking NDJSON queue at 8,192 messages, and only 32 journal files remain
+open at once. Raw SQLite and NDJSON telemetry is pruned to the documented
+30-day retention period at startup. Local IPC rejects frames larger than 1 MiB;
+QUIC control frames use a 64 KiB ceiling plus smaller per-message-class limits.
+Application event channels hold at most 2,048 messages and each peer control
+queue holds 512. Failed-password tracking is bounded by both address count and
+time. Local IPC serves at most 16 simultaneous clients; the host serves at most
+64 pending QUIC authentications and closes any handshake that does not finish
+within ten seconds. Client and server SPAKE proofs cover the complete exchange
+and the TLS certificate fingerprint observed by the client, so the room
+password authenticates the otherwise self-signed QUIC channel. These limits
+prevent abandoned or hostile connections from retaining an unbounded number
+of tasks and socket buffers.
 OBS text exports collapse into 100 ms batches, skip unchanged fields, and use
 atomic replacement without forcing ephemeral overlay state through the physical
 disk cache. These clocks keep durable ordering separate from presentation work.
@@ -73,14 +78,20 @@ buffers and periodically reopens an idle mapping so atomic renderer-file
 replacement cannot leave a source attached to an abandoned file object.
 
 Chart hashing and imported ZIP extraction stream file contents and reject
-packages above 1 GiB, 20,000 entries, or the path-length safety ceiling. These
-limits bound memory, file handles, and disk allocation before imported content
-is activated.
+packages above 1 GiB, 20,000 entries, or the path-length safety ceiling. An
+incoming transfer needs an exact, one-use authorization matching its peer,
+request ID, hashes, size, name, and executable-content decision before a
+UUID-named temporary file is created. Failed, replayed, cancelled, and
+disconnected transfers remove their temporary archives. Packaging and
+installation use serialized blocking workers so large archives cannot stall
+the network event loop. These limits bound memory, file handles, and disk
+allocation before imported content is activated.
 
 Runtime launch happens from the worker through `CreateProcessA` with an explicitly
 defined Win32 startup structure and `CREATE_NO_WINDOW`. Physical `.test`
 injection showed that `WinExec` can wait indefinitely for GUI input-idle from
 the intentionally windowless runtime, leaving the host form without a reply.
 The worker closes its process/thread handles immediately and continues into the
-named-pipe handshake. LuaSocket remains the isolated loopback fallback for
-environments where FFI cannot load; the supported build uses the named pipe.
+named-pipe handshake. LuaSocket remains a loopback development fallback on
+non-Windows environments; the supported Windows build uses only the
+access-controlled named pipe.
