@@ -229,11 +229,15 @@ function love.load()
   assert(online.workspace=='setlist','Chart selection must restore the Setlist workspace')
   assert(online.focusId=='nav_setlist','Setlist return must restore workspace focus')
 
-  local function findControl(id)
+  local function optionalControl(id)
     online:drawState()
     for _,control in ipairs(online.controls or {}) do
       if control.id==id then return control end
     end
+  end
+  local function findControl(id)
+    local control=optionalControl(id)
+    if control then return control end
     error('Missing UI control '..id)
   end
   local function activate(id)
@@ -261,7 +265,8 @@ function love.load()
   assert(exportCommand.payload.mode=='full' and exportCommand.payload.width==1920 and exportCommand.payload.height==1080,'Advanced export must preserve mode and resolution')
   assert(exportCommand.payload.fps==30 and exportCommand.payload.delayMs==1000,'Advanced export must preserve FPS and delay')
   roomFixture.lifecycle='playing'
-  local lockedApply=findControl('broadcast_apply')
+  -- Disabled controls are intentionally omitted from the focus/click table.
+  local lockedApply=optionalControl('broadcast_apply')
   assert(not lockedApply or lockedApply.run==nil,'Advanced export Apply must lock during an active race')
 
   reset(); roomFixture.lifecycle='results'
