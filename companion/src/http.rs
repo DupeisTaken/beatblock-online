@@ -9,9 +9,9 @@ use crate::{
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Path, Query, State, WebSocketUpgrade,
+        DefaultBodyLimit, Path, State, WebSocketUpgrade,
     },
-    http::{header, Method, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
@@ -26,11 +26,6 @@ use tower_http::{
 };
 
 #[derive(Deserialize)]
-struct TokenQuery {
-    token: Option<String>,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LockChartRequest {
     chart: ChartLock,
@@ -38,20 +33,64 @@ struct LockChartRequest {
     append_to_setlist: bool,
 }
 
-fn authorized(state: &AppState, token: &Option<String>) -> Result<(), StatusCode> {
-    if token.as_deref()
-        == Some(
-            state
-                .local_token
-                .read()
-                .expect("token lock poisoned")
-                .as_str(),
-        )
-    {
+fn authorized(state: &AppState, candidate: Option<&str>) -> Result<(), StatusCode> {
+    let token = state.local_token.read().expect("token lock poisoned");
+    if candidate.is_some_and(|candidate| constant_time_eq(candidate.as_bytes(), token.as_bytes())) {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+fn websocket_token(headers: &HeaderMap) -> Option<(&str, Option<String>)> {
+    if let Some(token) = bearer_token(headers) {
+        return Some((token, None));
+    }
+    headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)?
+        .to_str()
+        .ok()?
+        .split(',')
+        .map(str::trim)
+        .find_map(|protocol| {
+            protocol
+                .strip_prefix("bbt-token.")
+                .map(|token| (token, Some(protocol.to_owned())))
+        })
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+fn is_allowed_local_origin(value: &[u8]) -> bool {
+    let Ok(value) = std::str::from_utf8(value) else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(value) else {
+        return false;
+    };
+    origin.scheme() == "http"
+        && matches!(origin.host_str(), Some("127.0.0.1" | "localhost"))
+        && origin.username().is_empty()
+        && origin.password().is_none()
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
 }
 
 pub fn router(state: AppState) -> Router {
@@ -78,22 +117,33 @@ pub fn router(state: AppState) -> Router {
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin, _| {
-                    let value = origin.as_bytes();
-                    value.starts_with(b"http://127.0.0.1:")
-                        || value.starts_with(b"http://localhost:")
+                    is_allowed_local_origin(origin.as_bytes())
                 }))
                 .allow_methods([Method::GET, Method::POST, Method::PUT])
-                .allow_headers([header::CONTENT_TYPE]),
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
         )
-        .layer(TraceLayer::new_for_http())
+        // Every JSON command is tiny; reject oversized localhost requests
+        // before buffering them even when the bearer token is valid.
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        // Query strings may contain third-party data. Log only the path so
+        // credentials can never reappear when verbose HTTP tracing is enabled.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::debug_span!(
+                    "http.request",
+                    method = %request.method(),
+                    path = request.uri().path()
+                )
+            }),
+        )
         .with_state(state)
 }
 
 async fn get_state(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     Ok(Json(json!({
         "gameplay": state.gameplay.read().await.clone(),
         "connection": state.connection_status.read().await.clone(),
@@ -104,9 +154,9 @@ async fn get_state(
 
 async fn get_room(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     Ok(Json(
         serde_json::to_value(&state.room.read().await.snapshot).unwrap_or_default(),
     ))
@@ -114,17 +164,17 @@ async fn get_room(
 
 async fn get_players(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     Ok(Json(json!(state.room.read().await.snapshot.participants)))
 }
 
 async fn get_streams(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     Ok(Json(json!({
         "streams": state.renderer.slots(),
         "budgetWarning": state.renderer.budget_warning(),
@@ -133,9 +183,9 @@ async fn get_streams(
 
 async fn get_history(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     state
         .storage
         .history()
@@ -145,9 +195,9 @@ async fn get_history(
 
 async fn get_diagnostics(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     let local_addresses = local_ip_address::list_afinet_netifas()
         .unwrap_or_default()
         .into_iter()
@@ -170,31 +220,34 @@ async fn get_diagnostics(
 
 async fn get_config(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<CompanionConfig>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     Ok(Json(state.config.read().await.clone()))
 }
 
 async fn put_config(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(config): Json<CompanionConfig>,
 ) -> Result<Json<CompanionConfig>, StatusCode> {
-    authorized(&state, &query.token)?;
-    let bytes = serde_json::to_vec_pretty(&config).map_err(|_| StatusCode::BAD_REQUEST)?;
-    std::fs::write(state.data_dir.join("config.json"), bytes)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    *state.config.write().await = config.clone();
-    Ok(Json(config))
+    authorized(&state, bearer_token(&headers))?;
+    state
+        .replace_config(config)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::warn!(%error, "invalid runtime configuration");
+            StatusCode::BAD_REQUEST
+        })
 }
 
 async fn chart_hash(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<ChartHashRequest>,
 ) -> Result<Json<crate::chart_hash::ChartHash>, StatusCode> {
-    authorized(&state, &query.token)?;
+    authorized(&state, bearer_token(&headers))?;
     canonical_chart_hash_cached(request.path, state.data_dir.join("chart-cache"))
         .map(Json)
         .map_err(|error| {
@@ -205,10 +258,10 @@ async fn chart_hash(
 
 async fn host_room(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<HostRoomRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
@@ -224,7 +277,7 @@ async fn host_room(
     {
         Ok(address) => Json(json!({
             "address":address.to_string(),
-            "joinUri":format!("bbt://{}?v=2", public_display_address(address)),
+            "joinUri":join_uri(address),
             "room":state.room.read().await.snapshot.clone(),
         }))
         .into_response(),
@@ -238,10 +291,10 @@ async fn host_room(
 
 async fn join_room(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<JoinRoomRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let address = match resolve_address(&request.address).await {
@@ -274,10 +327,10 @@ async fn join_room(
 
 async fn admit(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<AdmissionRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_response(
@@ -289,10 +342,10 @@ async fn admit(
 
 async fn lock_chart(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<LockChartRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_response(
@@ -304,10 +357,10 @@ async fn lock_chart(
 
 async fn set_ready(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<ReadyRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_response(state.set_local_ready(request.ready).await)
@@ -315,10 +368,10 @@ async fn set_ready(
 
 async fn start_room(
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<StartRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.start_room(request.force).await {
@@ -333,8 +386,8 @@ async fn start_room(
     }
 }
 
-async fn close_room(State(state): State<AppState>, Query(query): Query<TokenQuery>) -> Response {
-    if authorized(&state, &query.token).is_err() {
+async fn close_room(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_response(state.close_room().await)
@@ -343,10 +396,10 @@ async fn close_room(State(state): State<AppState>, Query(query): Query<TokenQuer
 async fn configure_stream(
     State(state): State<AppState>,
     Path(slot): Path<String>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     Json(request): Json<RendererRequest>,
 ) -> Response {
-    if authorized(&state, &query.token).is_err() {
+    if authorized(&state, bearer_token(&headers)).is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state.configure_renderer(&slot, request).await {
@@ -362,9 +415,20 @@ async fn configure_stream(
 async fn events(
     websocket: WebSocketUpgrade,
     State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    authorized(&state, &query.token)?;
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        if !is_allowed_local_origin(origin.as_bytes()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    let (token, protocol) = websocket_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    authorized(&state, Some(token))?;
+    let websocket = if let Some(protocol) = protocol {
+        websocket.protocols([protocol])
+    } else {
+        websocket
+    };
     Ok(websocket.on_upgrade(move |socket| stream_events(socket, state)))
 }
 
@@ -421,5 +485,68 @@ fn public_display_address(bound: SocketAddr) -> String {
         format!("127.0.0.1:{}", bound.port())
     } else {
         bound.to_string()
+    }
+}
+
+fn join_uri(address: SocketAddr) -> String {
+    format!(
+        "bbt://{}?v={}",
+        public_display_address(address),
+        crate::model::PROTOCOL_VERSION
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_tokens_use_headers_and_constant_time_comparison() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer abc123".parse().unwrap());
+        assert_eq!(bearer_token(&headers), Some("abc123"));
+        assert!(constant_time_eq(b"same", b"same"));
+        assert!(!constant_time_eq(b"same", b"different"));
+        assert!(!constant_time_eq(b"same", b"samf"));
+    }
+
+    #[test]
+    fn websocket_subprotocol_carries_the_token_without_a_query_string() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "other, bbt-token.abc123".parse().unwrap(),
+        );
+        assert_eq!(
+            websocket_token(&headers),
+            Some(("abc123", Some("bbt-token.abc123".into())))
+        );
+    }
+
+    #[test]
+    fn cors_and_websocket_origins_are_exactly_loopback_http() {
+        for allowed in [
+            b"http://localhost:3000".as_slice(),
+            b"http://127.0.0.1:8080".as_slice(),
+        ] {
+            assert!(is_allowed_local_origin(allowed));
+        }
+        for rejected in [
+            b"https://localhost:3000".as_slice(),
+            b"http://localhost.evil.example:3000".as_slice(),
+            b"http://127.0.0.1.example:3000".as_slice(),
+            b"http://localhost:3000/path".as_slice(),
+        ] {
+            assert!(!is_allowed_local_origin(rejected));
+        }
+    }
+
+    #[test]
+    fn generated_join_links_follow_the_protocol_constant() {
+        let address: SocketAddr = "0.0.0.0:32145".parse().unwrap();
+        assert_eq!(
+            join_uri(address),
+            format!("bbt://127.0.0.1:32145?v={}", crate::model::PROTOCOL_VERSION)
+        );
     }
 }

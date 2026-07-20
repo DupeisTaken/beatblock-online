@@ -163,7 +163,7 @@ function Dashboard.primary(context)
     return action('watch_room','SPECTATING ROOM','Rankings and room state update live.','cyan',false)
   end
   if me and me.role ~= 'spectator' and not chartVerified then
-    return action('locate_chart','LOCATE MATCHING CHART','Select the exact chart package and variant locked by the host.','yellow')
+    return action('locate_chart','FIND MATCHING CHART','Select the exact chart package and variant locked by the host.','yellow')
   end
   if me and not me.ready then
     return action('ready','READY','Confirm this verified chart and wait for the synchronized start.','green',chartVerified)

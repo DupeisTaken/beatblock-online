@@ -143,6 +143,32 @@ impl Default for ManagerConfig {
     }
 }
 
+impl ManagerConfig {
+    /// Keeps persisted and API-supplied settings within the same bounds used
+    /// by the room protocol and native UI.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let display_name = self.display_name.trim();
+        if display_name.is_empty() || display_name.chars().count() > 48 {
+            anyhow::bail!("display name must contain 1-48 characters");
+        }
+        let host_address = self.host_address.trim();
+        if host_address.is_empty() || host_address.chars().count() > 2_048 {
+            anyhow::bail!("host address must contain 1-2048 characters");
+        }
+        if !(250..=1_500).contains(&self.spectator_delay_ms) {
+            anyhow::bail!("spectator delay must be between 250 and 1500 milliseconds");
+        }
+        if self
+            .game_directory
+            .as_ref()
+            .is_some_and(|path| path.contains('\0') || path.chars().count() > 32_767)
+        {
+            anyhow::bail!("game directory is invalid");
+        }
+        Ok(())
+    }
+}
+
 fn default_true() -> bool {
     true
 }

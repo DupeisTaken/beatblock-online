@@ -2,17 +2,22 @@
 
 use anyhow::{Context, Result};
 use beatblock_online_companion::{
-    app_state::AppState, http, ipc, model::CompanionConfig, room::unix_ms,
+    app_state::AppState, credentials, http, ipc, model::CompanionConfig, room::unix_ms,
 };
 use clap::Parser;
 use directories::ProjectDirs;
-use rand::RngCore;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::{Duration, SystemTime},
 };
+
+const MAX_RUNTIME_CONFIG_BYTES: u64 = 64 * 1024;
+const MAX_INSTALL_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Hidden Beatblock Online online runtime")]
@@ -35,18 +40,33 @@ fn data_directory(explicit: Option<PathBuf>) -> PathBuf {
     })
 }
 
+/// Reads runtime-owned JSON without allowing a corrupt or replaced file to
+/// allocate an unbounded buffer during startup.
+fn read_json_bounded<T: DeserializeOwned>(path: &Path, max_bytes: u64) -> Option<T> {
+    let file = File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() || file.metadata().ok()?.len() > max_bytes {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max_bytes)
+        .then(|| serde_json::from_slice(&bytes).ok())
+        .flatten()
+}
+
 fn load_config(data_dir: &std::path::Path) -> CompanionConfig {
     let config_path = data_dir.join("config.json");
-    let mut config: CompanionConfig = std::fs::read(&config_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+    let mut config: CompanionConfig =
+        read_json_bounded(&config_path, MAX_RUNTIME_CONFIG_BYTES).unwrap_or_default();
+    if config.validate().is_err() {
+        config = CompanionConfig::default();
+    }
     // Runtime does not link installer UI code. It reads the install manifest only
     // to locate Beatblock when launching isolated renderer processes.
-    if let Some(manifest) = std::fs::read(data_dir.join("install-manifest.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-    {
+    if let Some(manifest) = read_json_bounded::<Value>(
+        &data_dir.join("install-manifest.json"),
+        MAX_INSTALL_MANIFEST_BYTES,
+    ) {
         if config.game_directory.is_none() {
             config.game_directory = manifest
                 .get("gameDirectory")
@@ -65,18 +85,6 @@ fn load_config(data_dir: &std::path::Path) -> CompanionConfig {
     config
 }
 
-fn local_token(data_dir: &std::path::Path) -> Result<String> {
-    let path = data_dir.join("local-token.txt");
-    if path.is_file() {
-        return Ok(std::fs::read_to_string(path)?.trim().to_owned());
-    }
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    let token = hex::encode(bytes);
-    std::fs::write(path, &token)?;
-    Ok(token)
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
     let _instance = SingleInstance::acquire()?;
@@ -93,7 +101,14 @@ fn main() -> Result<()> {
         128 * 1024 * 1024,
     );
     let file_appender = tracing_appender::rolling::daily(data_dir.join("logs"), "runtime.log");
-    let (writer, _guard) = tracing_appender::non_blocking(file_appender);
+    // The upstream default reserves room for 128,000 log lines, which is
+    // disproportionate for a two-worker hidden runtime. Lossy diagnostics are
+    // preferable to memory growth when a disk or security scanner stalls.
+    let (writer, _guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .buffered_lines_limit(4_096)
+        .lossy(true)
+        .thread_name("bbt-log-writer")
+        .finish(file_appender);
     tracing_subscriber::fmt()
         .with_writer(writer)
         .with_ansi(false)
@@ -106,7 +121,7 @@ fn main() -> Result<()> {
 
     let (state, network_events) = AppState::new(
         data_dir.clone(),
-        local_token(&data_dir)?,
+        credentials::load_or_create_local_token(&data_dir)?,
         load_config(&data_dir),
     )?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -221,6 +236,9 @@ fn main() -> Result<()> {
             }
         }
     });
+    // Production Windows IPC is an owner-only named pipe. Keep the loopback
+    // TCP transport only for non-Windows development environments.
+    #[cfg(not(windows))]
     handle.spawn(ipc::run_tcp(state.clone()));
     #[cfg(windows)]
     handle.spawn(ipc::run_named_pipe(state.clone()));
@@ -389,5 +407,39 @@ impl Drop for SingleInstance {
         for handle in &self.handles {
             unsafe { windows_sys::Win32::Foundation::CloseHandle(*handle) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("bbt-main-{label}-{}", rand::random::<u64>()))
+    }
+
+    #[test]
+    fn bounded_runtime_json_rejects_oversized_files() {
+        let directory = temporary("oversized");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.json");
+        std::fs::write(&path, vec![b' '; MAX_RUNTIME_CONFIG_BYTES as usize + 1]).unwrap();
+
+        assert!(read_json_bounded::<Value>(&path, MAX_RUNTIME_CONFIG_BYTES).is_none());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn bounded_runtime_json_reads_valid_files() {
+        let directory = temporary("valid");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.json");
+        std::fs::write(&path, br#"{"ok":true}"#).unwrap();
+
+        assert_eq!(
+            read_json_bounded::<Value>(&path, MAX_RUNTIME_CONFIG_BYTES),
+            Some(serde_json::json!({"ok": true}))
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

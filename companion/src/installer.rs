@@ -14,6 +14,8 @@ static OBS_PLUGIN_PAYLOAD: &[u8] =
 static RUNTIME_PAYLOAD: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/BeatblockOnlineRuntime.exe"));
 const RUNTIME_FILE_NAME: &str = "BeatblockOnlineRuntime.exe";
+const MAX_INSTALL_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_OBS_MARKER_BYTES: u64 = 64 * 1024;
 // Keep upgrade cleanup compatible without presenting the retired product name
 // as a current executable anywhere in the installer UI or documentation.
 const LEGACY_RUNTIME_FILE_NAME: &str = concat!("Beatblock", "TogetherRuntime.exe");
@@ -1075,6 +1077,7 @@ impl Installer {
         if let Some(old) = managed_manifest
             .as_ref()
             .filter(|old| old.game_directory != game_directory)
+            .filter(|old| validate_game_directory(&old.game_directory).is_ok())
         {
             let old_lovely = old.game_directory.join("version.dll");
             if let Some(backup) = old.lovely_backup.as_ref().filter(|path| path.is_file()) {
@@ -1200,6 +1203,8 @@ impl Installer {
         let manifest = self
             .load_manifest()?
             .context("Beatblock Online is not installed")?;
+        validate_game_directory(&manifest.game_directory)
+            .context("refusing to restore files outside a valid Beatblock installation")?;
         let mod_directory = manifest.mods_directory.join("BeatblockOnline");
         progress(OperationProgress::step(
             OperationKind::Restore,
@@ -1285,9 +1290,7 @@ impl Installer {
             bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
         }
         let obs = detect_obs_directory().context("OBS Studio 32 x64 was not detected")?;
-        let program_data = std::env::var_os("ProgramData")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        let program_data = configured_program_data();
         self.stage_obs_plugin_into(obs, &program_data)
     }
 
@@ -1362,7 +1365,7 @@ impl Installer {
 
     fn obs_plugin_ready(&self) -> bool {
         let marker = self.data_dir.join("obs-install.json");
-        let Ok(bytes) = std::fs::read(marker) else {
+        let Ok(bytes) = read_bounded_file(&marker, MAX_OBS_MARKER_BYTES) else {
             return false;
         };
         let Ok(record) = serde_json::from_slice::<ObsInstallManifest>(&bytes) else {
@@ -1513,30 +1516,35 @@ impl Installer {
             ));
             std::fs::remove_dir_all(mod_directory)?;
         }
-        let lovely = manifest.game_directory.join("version.dll");
-        if let Some(backup) = manifest.lovely_backup.as_ref() {
-            progress(OperationProgress::step(
-                OperationKind::Uninstall,
-                "lovely",
-                45,
-                "Restoring the preserved injector",
-            ));
-            if backup.is_file() {
-                std::fs::copy(backup, lovely)?;
+        // A stale game directory must not turn an elevated uninstall into a
+        // general-purpose file deletion primitive. Other product-owned state
+        // can still be removed when the game itself has already disappeared.
+        if validate_game_directory(&manifest.game_directory).is_ok() {
+            let lovely = manifest.game_directory.join("version.dll");
+            if let Some(backup) = manifest.lovely_backup.as_ref() {
+                progress(OperationProgress::step(
+                    OperationKind::Uninstall,
+                    "lovely",
+                    45,
+                    "Restoring the preserved injector",
+                ));
+                if backup.is_file() {
+                    std::fs::copy(backup, lovely)?;
+                }
+            } else if manifest.lovely_owned
+                && lovely.is_file()
+                && !other_lovely_mods(&manifest.mods_directory)
+            {
+                std::fs::remove_file(lovely)?;
             }
-        } else if manifest.lovely_owned
-            && lovely.is_file()
-            && !other_lovely_mods(&manifest.mods_directory)
-        {
-            std::fs::remove_file(lovely)?;
-        }
-        let app_id = manifest.game_directory.join("steam_appid.txt");
-        if let Some(backup) = manifest.steam_app_id_backup.as_ref() {
-            if backup.is_file() {
-                std::fs::copy(backup, app_id)?;
+            let app_id = manifest.game_directory.join("steam_appid.txt");
+            if let Some(backup) = manifest.steam_app_id_backup.as_ref() {
+                if backup.is_file() {
+                    std::fs::copy(backup, app_id)?;
+                }
+            } else if manifest.steam_app_id_owned && app_id.is_file() {
+                std::fs::remove_file(app_id)?;
             }
-        } else if manifest.steam_app_id_owned && app_id.is_file() {
-            std::fs::remove_file(app_id)?;
         }
         let manifest_path = self.manifest_path();
         if manifest_path.is_file() {
@@ -1561,14 +1569,23 @@ impl Installer {
         if apply_platform_changes {
             let _ = self.unregister_uninstall();
         }
-        if let Ok(bytes) = std::fs::read(self.data_dir.join("obs-install.json")) {
+        if let Ok(bytes) = read_bounded_file(
+            &self.data_dir.join("obs-install.json"),
+            MAX_OBS_MARKER_BYTES,
+        ) {
             if let Ok(record) = serde_json::from_slice::<ObsInstallManifest>(&bytes) {
-                let _ = std::fs::remove_file(record.plugin);
-                let _ = std::fs::remove_file(record.locale);
+                if obs_record_paths_are_managed(&record) {
+                    let _ = std::fs::remove_file(record.plugin);
+                    let _ = std::fs::remove_file(record.locale);
+                }
             } else if let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
                 // Alpha manifests used a two-path array in the legacy OBS
-                // Program Files layout; retain uninstall compatibility.
-                for path in paths {
+                // layout. Only retain cleanup for the two known filenames
+                // beneath an OBS plugin directory.
+                for path in paths
+                    .into_iter()
+                    .filter(|path| legacy_obs_path_is_managed(path))
+                {
                     let _ = std::fs::remove_file(path);
                 }
             }
@@ -1809,19 +1826,76 @@ impl Installer {
         self.data_dir.join("install-manifest.json")
     }
 
+    /// Treat the on-disk manifest as untrusted input. Maintenance operations
+    /// may run elevated, so every persisted path must still resolve to one of
+    /// the small set of locations this installer owns.
+    fn validate_manifest_paths(&self, manifest: &InstallManifest) -> Result<()> {
+        let expected_mods = self
+            .mods_directory()
+            .unwrap_or_else(|| self.data_dir.join("Mods"));
+        if !paths_equal(&manifest.mods_directory, &expected_mods) {
+            bail!("installation manifest names an unmanaged Mods directory");
+        }
+        if manifest.game_directory.file_name().is_none() {
+            bail!("installation manifest names an unsafe game directory");
+        }
+
+        let backup_root = self.data_dir.join("backups");
+        if let Some(path) = manifest.lovely_backup.as_ref() {
+            let expected = backup_root.join(backup_name_for(&manifest.game_directory));
+            if !paths_equal(path, &expected) {
+                bail!("installation manifest names an unmanaged Lovely backup");
+            }
+        }
+        if let Some(path) = manifest.steam_app_id_backup.as_ref() {
+            let expected = backup_root.join(app_id_backup_name_for(&manifest.game_directory));
+            if !paths_equal(path, &expected) {
+                bail!("installation manifest names an unmanaged Steam app-id backup");
+            }
+        }
+
+        if let Some(path) = manifest.runtime_path.as_ref() {
+            let runtime_root = self.data_dir.join("runtime");
+            let current = runtime_root.join(RUNTIME_FILE_NAME);
+            let legacy = runtime_root.join(LEGACY_RUNTIME_FILE_NAME);
+            if !paths_equal(path, &current) && !paths_equal(path, &legacy) {
+                bail!("installation manifest names an unmanaged runtime");
+            }
+        }
+        if let Some(path) = manifest.maintenance_installer.as_ref() {
+            let expected = self
+                .data_dir
+                .join("installer")
+                .join("BeatblockOnlineInstaller.exe");
+            if !paths_equal(path, &expected) {
+                bail!("installation manifest names an unmanaged maintenance installer");
+            }
+        }
+
+        for relative in manifest.file_hashes.keys() {
+            if !is_clean_relative_path(relative) {
+                bail!("installation manifest contains an unsafe managed-file path");
+            }
+        }
+        Ok(())
+    }
+
     fn load_manifest(&self) -> Result<Option<InstallManifest>> {
         let path = self.manifest_path();
         if !path.is_file() {
             return Ok(None);
         }
-        let bytes = std::fs::read(path)?;
+        let bytes = read_bounded_file(&path, MAX_INSTALL_MANIFEST_BYTES)?;
         // Windows maintenance tools sometimes rewrite JSON with a UTF-8 BOM.
         // Accept it as a legacy migration input; all new writes remain BOM-free.
         let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
-        Ok(Some(serde_json::from_slice(bytes)?))
+        let manifest: InstallManifest = serde_json::from_slice(bytes)?;
+        self.validate_manifest_paths(&manifest)?;
+        Ok(Some(manifest))
     }
 
     fn save_manifest(&self, manifest: &InstallManifest) -> Result<()> {
+        self.validate_manifest_paths(manifest)?;
         std::fs::create_dir_all(&self.data_dir)?;
         atomic_write(&self.manifest_path(), &serde_json::to_vec_pretty(manifest)?)?;
         Ok(())
@@ -1868,6 +1942,29 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
             .to_ascii_lowercase()
     }
     normalized(left) == normalized(right)
+}
+
+fn is_clean_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+fn read_bounded_file(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > maximum_bytes {
+        bail!(
+            "{} exceeds the {} byte safety limit",
+            path.display(),
+            maximum_bytes
+        );
+    }
+    Ok(std::fs::read(path)?)
 }
 
 fn component(
@@ -2279,6 +2376,27 @@ fn obs_program_data_paths(program_data: &Path) -> (PathBuf, PathBuf) {
         root.join("bin/64bit/beatblock-online-obs.dll"),
         root.join("data/locale/en-US.ini"),
     )
+}
+
+fn configured_program_data() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+}
+
+fn obs_record_paths_are_managed(record: &ObsInstallManifest) -> bool {
+    let (plugin, locale) = obs_program_data_paths(&configured_program_data());
+    paths_equal(&record.plugin, &plugin) && paths_equal(&record.locale, &locale)
+}
+
+fn legacy_obs_path_is_managed(path: &Path) -> bool {
+    let root = configured_program_data().join("obs-studio/plugins/beatblock-together-obs");
+    [
+        root.join("bin/64bit/beatblock-together-obs.dll"),
+        root.join("data/locale/en-US.ini"),
+    ]
+    .iter()
+    .any(|expected| paths_equal(path, expected))
 }
 
 fn validate_obs_payload(payload: &[u8]) -> Result<()> {
@@ -2788,7 +2906,9 @@ mod tests {
         assert!(!data.join("install-manifest.json").exists());
         assert!(!data.join("runtime").join(RUNTIME_FILE_NAME).exists());
         assert!(!legacy_runtime.exists());
-        assert!(!installed_obs.exists());
+        // The test-only custom ProgramData root is deliberately outside the
+        // production cleanup allowlist, so an elevated uninstall leaves it.
+        assert!(installed_obs.exists());
         assert!(data.join("runtime.sqlite3").is_file());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2959,7 +3079,7 @@ mod tests {
         std::fs::create_dir_all(&game).unwrap();
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(data.join("runtime.sqlite3"), b"history").unwrap();
-        let installer = Installer::new(data.clone());
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
         let manifest = InstallManifest {
             version: "test".into(),
             game_directory: game.clone(),
@@ -3015,6 +3135,126 @@ mod tests {
             installer.load_manifest().unwrap().unwrap().version,
             "legacy"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn forged_manifest_cannot_escape_installer_owned_paths() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-forged-manifest-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let mods = root.join("mods");
+        let game = root.join("game");
+        fake_game(&game);
+        std::fs::create_dir_all(&data).unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
+        let mut manifest = InstallManifest {
+            version: "test".into(),
+            game_directory: game.clone(),
+            mods_directory: mods,
+            distribution: Distribution::Standalone,
+            installed_files: Vec::new(),
+            lovely_owned: false,
+            lovely_backup: None,
+            steam_app_id_owned: false,
+            steam_app_id_backup: None,
+            runtime_path: Some(data.join("runtime").join(RUNTIME_FILE_NAME)),
+            maintenance_installer: Some(
+                data.join("installer").join("BeatblockOnlineInstaller.exe"),
+            ),
+            firewall_installed: false,
+            firewall_public: false,
+            file_hashes: Default::default(),
+            lovely_original_sha256: None,
+        };
+
+        manifest.lovely_backup = Some(root.join("victim.dll"));
+        std::fs::write(
+            installer.manifest_path(),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(installer.load_manifest().is_err());
+
+        manifest.lovely_backup = None;
+        manifest.runtime_path = Some(root.join("victim.exe"));
+        std::fs::write(
+            installer.manifest_path(),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(installer.load_manifest().is_err());
+
+        manifest.runtime_path = None;
+        manifest
+            .file_hashes
+            .insert(PathBuf::from("../victim"), "00".repeat(32));
+        std::fs::write(
+            installer.manifest_path(),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(installer.load_manifest().is_err());
+
+        std::fs::write(
+            installer.manifest_path(),
+            vec![b' '; MAX_INSTALL_MANIFEST_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(installer.load_manifest().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn forged_obs_marker_cannot_delete_arbitrary_files() {
+        let root = std::env::temp_dir().join(format!("bbt-forged-obs-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let mods = root.join("mods");
+        let game = root.join("game");
+        fake_game(&game);
+        let victim_plugin = root.join("victim.dll");
+        let victim_locale = root.join("victim.ini");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(&victim_plugin, b"keep").unwrap();
+        std::fs::write(&victim_locale, b"keep").unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), mods.clone());
+        installer
+            .save_manifest(&InstallManifest {
+                version: "test".into(),
+                game_directory: game,
+                mods_directory: mods,
+                distribution: Distribution::Standalone,
+                installed_files: Vec::new(),
+                lovely_owned: false,
+                lovely_backup: None,
+                steam_app_id_owned: false,
+                steam_app_id_backup: None,
+                runtime_path: None,
+                maintenance_installer: None,
+                firewall_installed: false,
+                firewall_public: false,
+                file_hashes: Default::default(),
+                lovely_original_sha256: None,
+            })
+            .unwrap();
+        let forged = ObsInstallManifest {
+            version: "test".into(),
+            obs_directory: root.clone(),
+            plugin: victim_plugin.clone(),
+            locale: victim_locale.clone(),
+            plugin_sha256: "00".repeat(32),
+        };
+        std::fs::write(
+            data.join("obs-install.json"),
+            serde_json::to_vec(&forged).unwrap(),
+        )
+        .unwrap();
+
+        installer
+            .uninstall_with_progress_platform(false, false, |_| {})
+            .unwrap();
+        assert!(victim_plugin.is_file());
+        assert!(victim_locale.is_file());
         let _ = std::fs::remove_dir_all(root);
     }
 

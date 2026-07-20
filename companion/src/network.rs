@@ -15,6 +15,7 @@ use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -24,13 +25,18 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 const AUTH_IDENTITY: &[u8] = b"beatblock-online-room-v3";
-const MAX_CONTROL_FRAME: usize = 1_048_576;
+const MAX_CONTROL_FRAME: usize = 64 * 1024;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_PASSWORD_FAILURE_IPS: usize = 4_096;
 const MAX_PASSWORD_FAILURES_PER_IP: usize = 5;
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING_AUTHENTICATIONS: usize = 64;
+const OUTGOING_QUEUE_CAPACITY: usize = 512;
+const TARGETED_SEND_TIMEOUT: Duration = Duration::from_millis(250);
+const TRANSFER_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_TRANSFER_REQUEST_ID_CHARS: usize = 80;
+const MAX_TRANSFER_NAME_CHARS: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -58,7 +64,8 @@ pub enum NetworkEvent {
     ChartTransferReceived {
         session_id: String,
         header: ChartTransferHeader,
-        path: std::path::PathBuf,
+        path: PathBuf,
+        executable_content_confirmed: bool,
     },
     Disconnected {
         session_id: String,
@@ -67,7 +74,7 @@ pub enum NetworkEvent {
     Diagnostic(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChartTransferHeader {
     pub request_id: String,
@@ -76,6 +83,26 @@ pub struct ChartTransferHeader {
     pub archive_sha256: String,
     pub chart_hash: String,
     pub contains_executable_content: bool,
+}
+
+impl ChartTransferHeader {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.request_id.is_empty()
+            || self.request_id.chars().count() > MAX_TRANSFER_REQUEST_ID_CHARS
+        {
+            bail!("chart transfer request id exceeds the safety limit");
+        }
+        if self.name.is_empty() || self.name.chars().count() > MAX_TRANSFER_NAME_CHARS {
+            bail!("chart transfer name exceeds the safety limit");
+        }
+        if self.size == 0 || self.size > crate::transfer::MAX_TRANSFER_BYTES {
+            bail!("chart transfer size is outside the 1 byte to 1 GiB safety range");
+        }
+        if !is_sha256_hex(&self.archive_sha256) || !is_sha256_hex(&self.chart_hash) {
+            bail!("chart transfer metadata contains an invalid SHA-256 digest");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +122,7 @@ struct AuthChallenge {
     version: u8,
     spake_message: String,
     nonce: String,
+    certificate_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +139,30 @@ struct AuthWelcome {
     message: String,
     #[serde(default)]
     resume_token: Option<String>,
+    #[serde(default)]
+    server_proof: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct IncomingTransferAuthorization {
+    header: ChartTransferHeader,
+    executable_content_confirmed: bool,
+}
+
+/// Removes a partially received archive if its task errors, disconnects, or is
+/// cancelled. Completed files are explicitly disarmed after ownership passes
+/// to the application state.
+struct TemporaryTransferFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for TemporaryTransferFile {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -124,6 +176,8 @@ pub struct NetworkHub {
     password_failures: Arc<RwLock<HashMap<IpAddr, VecDeque<Instant>>>>,
     resume_sessions: Arc<RwLock<HashMap<String, String>>>,
     client_resume_token: Arc<RwLock<Option<String>>>,
+    incoming_transfer_authorizations:
+        Arc<RwLock<HashMap<(String, String), IncomingTransferAuthorization>>>,
 }
 
 impl NetworkHub {
@@ -138,6 +192,7 @@ impl NetworkHub {
             password_failures: Arc::new(RwLock::new(HashMap::new())),
             resume_sessions: Arc::new(RwLock::new(HashMap::new())),
             client_resume_token: Arc::new(RwLock::new(None)),
+            incoming_transfer_authorizations: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -150,6 +205,7 @@ impl NetworkHub {
         }
         let certified = generate_simple_self_signed(vec!["beatblock-online.local".into()])?;
         let cert_der = certified.cert.der().clone();
+        let certificate_sha256: [u8; 32] = Sha256::digest(cert_der.as_ref()).into();
         let key = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
         let mut server_config = quinn::ServerConfig::with_single_cert(vec![cert_der], key.into())?;
         let transport = Arc::get_mut(&mut server_config.transport)
@@ -179,6 +235,7 @@ impl NetworkHub {
                 };
                 let hub = hub.clone();
                 let password = password.clone();
+                let certificate_sha256 = certificate_sha256;
                 tokio::spawn(async move {
                     let _authentication_slot = authentication_slot;
                     let connected = tokio::time::timeout(AUTH_TIMEOUT, incoming).await;
@@ -186,7 +243,7 @@ impl NetworkHub {
                         Ok(Ok(connection)) => {
                             match tokio::time::timeout(
                                 AUTH_TIMEOUT,
-                                hub.accept_peer(connection.clone(), &password),
+                                hub.accept_peer(connection.clone(), &password, &certificate_sha256),
                             )
                             .await
                             {
@@ -217,6 +274,16 @@ impl NetworkHub {
         display_name: &str,
         role: ParticipantRole,
     ) -> Result<String> {
+        if password.chars().count() < 4 || password.chars().count() > 128 {
+            bail!("room password must contain 4-128 characters");
+        }
+        let display_name = display_name.trim();
+        if display_name.is_empty() || display_name.chars().count() > 48 {
+            bail!("display name must contain 1-48 characters");
+        }
+        if role == ParticipantRole::Host {
+            bail!("a joining peer cannot request the host role");
+        }
         tokio::time::timeout(
             JOIN_TIMEOUT,
             self.join_inner(address, password, display_name, role),
@@ -239,8 +306,9 @@ impl NetworkHub {
             .connect(address, "beatblock-online.local")?
             .await
             .context("connect to host QUIC endpoint")?;
+        let observed_certificate_sha256 = peer_certificate_sha256(&connection)?;
         let (mut send, mut recv) = connection.open_bi().await?;
-        let (spake, outbound) = Spake2::<Ed25519Group>::start_symmetric(
+        let (spake, client_message) = Spake2::<Ed25519Group>::start_symmetric(
             &Password::new(password.as_bytes()),
             &Identity::new(AUTH_IDENTITY),
         );
@@ -250,7 +318,7 @@ impl NetworkHub {
                 version: PROTOCOL_VERSION,
                 display_name: display_name.trim().into(),
                 role,
-                spake_message: BASE64.encode(outbound),
+                spake_message: BASE64.encode(&client_message),
                 resume_token: self.client_resume_token.read().await.clone(),
             },
         )
@@ -259,17 +327,46 @@ impl NetworkHub {
         if challenge.version != PROTOCOL_VERSION {
             bail!("host uses incompatible protocol version");
         }
+        let challenged_certificate_sha256 = hex::decode(&challenge.certificate_sha256)
+            .context("host certificate digest is invalid")?;
+        if !constant_time_eq(&challenged_certificate_sha256, &observed_certificate_sha256) {
+            bail!("host authentication was bound to a different TLS certificate");
+        }
+        let server_message = BASE64.decode(&challenge.spake_message)?;
+        let nonce = BASE64.decode(&challenge.nonce)?;
         let key = spake
-            .finish(&BASE64.decode(challenge.spake_message)?)
+            .finish(&server_message)
             .map_err(|_| anyhow::anyhow!("password exchange failed"))?;
-        let proof = auth_proof(&key, challenge.nonce.as_bytes(), b"client")?;
+        let proof = auth_proof(
+            &key,
+            &client_message,
+            &server_message,
+            &nonce,
+            &observed_certificate_sha256,
+            b"client",
+        )?;
         write_frame(&mut send, &AuthProof { proof }).await?;
         let welcome: AuthWelcome = read_frame(&mut recv).await?;
         if !welcome.accepted {
             bail!(welcome.message);
         }
+        let expected_server_proof = auth_proof(
+            &key,
+            &client_message,
+            &server_message,
+            &nonce,
+            &observed_certificate_sha256,
+            b"server",
+        )?;
+        let server_proof = welcome
+            .server_proof
+            .as_deref()
+            .context("host did not prove possession of the room password")?;
+        if !constant_time_eq(server_proof.as_bytes(), expected_server_proof.as_bytes()) {
+            bail!("host password proof is invalid");
+        }
         *self.client_resume_token.write().await = welcome.resume_token.clone();
-        let (outgoing_tx, outgoing_rx) = mpsc::channel(4096);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(OUTGOING_QUEUE_CAPACITY);
         *self.server_writer.write().await = Some(outgoing_tx);
         *self.server_connection.write().await = Some(connection.clone());
         *self.endpoint.lock().expect("endpoint mutex poisoned") = Some(endpoint);
@@ -290,27 +387,110 @@ impl NetworkHub {
             .peers
             .read()
             .await
-            .values()
-            .cloned()
+            .iter()
+            .map(|(session_id, writer)| (session_id.clone(), writer.clone()))
             .collect::<Vec<_>>();
-        for writer in peer_writers {
-            let _ = writer.try_send(envelope.clone());
+        let mut overloaded_peers = Vec::new();
+        for (session_id, writer) in peer_writers {
+            if writer.try_send(envelope.clone()).is_err() {
+                overloaded_peers.push(session_id);
+            }
         }
-        if let Some(writer) = self.server_writer.read().await.as_ref() {
-            let _ = writer.try_send(envelope);
+        for session_id in overloaded_peers {
+            self.disconnect_peer(
+                &session_id,
+                "Disconnected because the control-message queue was full",
+                true,
+            )
+            .await;
+        }
+        let server_writer = self.server_writer.read().await.clone();
+        if let Some(writer) = server_writer {
+            if writer.try_send(envelope).is_err() {
+                if let Some(connection) = self.server_connection.read().await.clone() {
+                    connection.close(1u32.into(), b"control-message queue was full");
+                }
+                *self.server_writer.write().await = None;
+                *self.server_connection.write().await = None;
+            }
         }
     }
 
     pub async fn send_to(&self, session_id: &str, envelope: Envelope) -> Result<()> {
-        if let Some(writer) = self.peers.read().await.get(session_id) {
-            writer.send(envelope).await?;
-            return Ok(());
+        if let Some(writer) = self.peers.read().await.get(session_id).cloned() {
+            match tokio::time::timeout(TARGETED_SEND_TIMEOUT, writer.send(envelope)).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => {
+                    self.disconnect_peer(session_id, "Control stream closed", true)
+                        .await;
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    self.disconnect_peer(
+                        session_id,
+                        "Disconnected because the control-message queue was full",
+                        true,
+                    )
+                    .await;
+                    bail!("timed out enqueueing a control message for {session_id}");
+                }
+            }
         }
-        if let Some(writer) = self.server_writer.read().await.as_ref() {
-            writer.send(envelope).await?;
-            return Ok(());
+        if let Some(writer) = self.server_writer.read().await.clone() {
+            match tokio::time::timeout(TARGETED_SEND_TIMEOUT, writer.send(envelope)).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => {
+                    if let Some(connection) = self.server_connection.read().await.clone() {
+                        connection.close(1u32.into(), b"control stream closed");
+                    }
+                    *self.server_writer.write().await = None;
+                    *self.server_connection.write().await = None;
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    if let Some(connection) = self.server_connection.read().await.clone() {
+                        connection.close(1u32.into(), b"control-message queue was full");
+                    }
+                    *self.server_writer.write().await = None;
+                    *self.server_connection.write().await = None;
+                    bail!("timed out enqueueing a control message for the room host");
+                }
+            }
         }
         bail!("network session is not connected")
+    }
+
+    /// Grants exactly one incoming archive stream permission for the supplied
+    /// session and metadata. Authorization is consumed even when a sender
+    /// reuses the request ID with different metadata, preventing retries from
+    /// turning a prior consent decision into a wildcard.
+    pub async fn authorize_incoming_chart_transfer(
+        &self,
+        session_id: &str,
+        header: ChartTransferHeader,
+        executable_content_confirmed: bool,
+    ) -> Result<()> {
+        header.validate()?;
+        if header.contains_executable_content && !executable_content_confirmed {
+            bail!("executable chart content requires explicit confirmation");
+        }
+        let key = (session_id.to_owned(), header.request_id.clone());
+        let mut authorizations = self.incoming_transfer_authorizations.write().await;
+        if authorizations.contains_key(&key) {
+            bail!("chart transfer request is already authorized");
+        }
+        authorizations.insert(
+            key,
+            IncomingTransferAuthorization {
+                header,
+                executable_content_confirmed,
+            },
+        );
+        Ok(())
+    }
+
+    pub async fn clear_incoming_chart_transfers(&self) {
+        self.incoming_transfer_authorizations.write().await.clear();
     }
 
     pub async fn send_render_sample(&self, sample: &RenderSample) -> Result<()> {
@@ -404,6 +584,7 @@ impl NetworkHub {
         self.peer_connections.write().await.clear();
         *self.server_writer.write().await = None;
         *self.server_connection.write().await = None;
+        self.incoming_transfer_authorizations.write().await.clear();
     }
 
     pub async fn peer_count(&self) -> usize {
@@ -418,6 +599,10 @@ impl NetworkHub {
                 .retain(|_, mapped_session| mapped_session != session_id);
         }
         self.peers.write().await.remove(session_id);
+        self.incoming_transfer_authorizations
+            .write()
+            .await
+            .retain(|(authorized_session, _), _| authorized_session != session_id);
         if let Some(connection) = self.peer_connections.write().await.remove(session_id) {
             connection.close(1u32.into(), reason.as_bytes());
         }
@@ -427,7 +612,12 @@ impl NetworkHub {
         *self.client_resume_token.write().await = None;
     }
 
-    async fn accept_peer(&self, connection: Connection, password: &str) -> Result<()> {
+    async fn accept_peer(
+        &self,
+        connection: Connection,
+        password: &str,
+        certificate_sha256: &[u8; 32],
+    ) -> Result<()> {
         let remote_address = connection.remote_address();
         {
             let mut failures = self.password_failures.write().await;
@@ -446,13 +636,14 @@ impl NetworkHub {
                     message: "This room uses Beatblock Online protocol v3; update every client"
                         .into(),
                     resume_token: None,
+                    server_proof: None,
                 },
             )
             .await?;
             bail!("incompatible participant protocol");
         }
         let client_message = BASE64.decode(hello.spake_message)?;
-        let (spake, outbound) = Spake2::<Ed25519Group>::start_symmetric(
+        let (spake, server_message) = Spake2::<Ed25519Group>::start_symmetric(
             &Password::new(password.as_bytes()),
             &Identity::new(AUTH_IDENTITY),
         );
@@ -460,18 +651,25 @@ impl NetworkHub {
             .finish(&client_message)
             .map_err(|_| anyhow::anyhow!("password exchange failed"))?;
         let nonce_bytes: [u8; 32] = rand::random();
-        let nonce = BASE64.encode(nonce_bytes);
         write_frame(
             &mut send,
             &AuthChallenge {
                 version: PROTOCOL_VERSION,
-                spake_message: BASE64.encode(outbound),
-                nonce: nonce.clone(),
+                spake_message: BASE64.encode(&server_message),
+                nonce: BASE64.encode(nonce_bytes),
+                certificate_sha256: hex::encode(certificate_sha256),
             },
         )
         .await?;
         let proof: AuthProof = read_frame(&mut recv).await?;
-        let expected = auth_proof(&key, nonce.as_bytes(), b"client")?;
+        let expected = auth_proof(
+            &key,
+            &client_message,
+            &server_message,
+            &nonce_bytes,
+            certificate_sha256,
+            b"client",
+        )?;
         if !constant_time_eq(proof.proof.as_bytes(), expected.as_bytes()) {
             // Hold the write guard in a named binding so deref coercion reaches
             // the underlying map instead of passing the guard wrapper itself.
@@ -485,6 +683,7 @@ impl NetworkHub {
                     session_id: String::new(),
                     message: "Incorrect room password".into(),
                     resume_token: None,
+                    server_proof: None,
                 },
             )
             .await?;
@@ -505,6 +704,7 @@ impl NetworkHub {
                             session_id: String::new(),
                             message: "This room session is already connected".into(),
                             resume_token: None,
+                            server_proof: None,
                         },
                     )
                     .await?;
@@ -528,10 +728,18 @@ impl NetworkHub {
                 session_id: session_id.clone(),
                 message: "Authenticated; awaiting room admission policy".into(),
                 resume_token: Some(resume_token),
+                server_proof: Some(auth_proof(
+                    &key,
+                    &client_message,
+                    &server_message,
+                    &nonce_bytes,
+                    certificate_sha256,
+                    b"server",
+                )?),
             },
         )
         .await?;
-        let (outgoing_tx, outgoing_rx) = mpsc::channel(4096);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(OUTGOING_QUEUE_CAPACITY);
         self.peers
             .write()
             .await
@@ -574,6 +782,7 @@ impl NetworkHub {
         let events = self.events.clone();
         let peers = self.peers.clone();
         let peer_connections = self.peer_connections.clone();
+        let incoming_transfer_authorizations = self.incoming_transfer_authorizations.clone();
         tokio::spawn(async move {
             let reliable_events = events.clone();
             let reliable_session = session_id.clone();
@@ -603,17 +812,36 @@ impl NetworkHub {
             let transfer_events = events.clone();
             let transfer_session = session_id.clone();
             let transfer_connection = connection.clone();
+            let transfer_authorizations = incoming_transfer_authorizations.clone();
             let transfers = tokio::spawn(async move {
                 while let Ok(mut stream) = transfer_connection.accept_uni().await {
                     let result = async {
-                        let header: ChartTransferHeader = read_frame(&mut stream).await?;
-                        if header.size > crate::transfer::MAX_TRANSFER_BYTES {
-                            bail!("incoming chart transfer exceeds 1 GiB");
-                        }
+                        let header: ChartTransferHeader =
+                            tokio::time::timeout(TRANSFER_HEADER_TIMEOUT, read_frame(&mut stream))
+                                .await
+                                .context("chart transfer header stalled for 10 seconds")??;
+                        header.validate()?;
+                        let authorization = consume_incoming_transfer_authorization(
+                            &transfer_authorizations,
+                            &transfer_session,
+                            &header,
+                        )
+                        .await?;
                         let directory = std::env::temp_dir().join("beatblock-online-transfers");
                         tokio::fs::create_dir_all(&directory).await?;
-                        let path = directory.join(format!("{}.partial", header.request_id));
-                        let mut file = tokio::fs::File::create(&path).await?;
+                        // Never derive local paths from peer-controlled request
+                        // IDs. A UUID plus create_new also prevents clobbering a
+                        // concurrently received or pre-existing file.
+                        let path = directory.join(format!("{}.partial", Uuid::new_v4()));
+                        let mut temporary_file = TemporaryTransferFile {
+                            path: path.clone(),
+                            armed: true,
+                        };
+                        let mut file = tokio::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)
+                            .await?;
                         let mut received = 0u64;
                         loop {
                             let chunk = tokio::time::timeout(
@@ -630,26 +858,31 @@ impl NetworkHub {
                                 bail!("incoming chart transfer exceeded its offered size");
                             }
                             file.write_all(&chunk.bytes).await?;
-                            let _ = transfer_events
-                                .send(NetworkEvent::ChartTransferProgress {
-                                    session_id: transfer_session.clone(),
-                                    request_id: header.request_id.clone(),
-                                    received,
-                                    total: header.size,
-                                })
-                                .await;
+                            let _ = transfer_events.try_send(NetworkEvent::ChartTransferProgress {
+                                session_id: transfer_session.clone(),
+                                request_id: header.request_id.clone(),
+                                received,
+                                total: header.size,
+                            });
                         }
                         file.flush().await?;
                         if received != header.size {
                             bail!("incoming chart transfer ended before completion");
                         }
-                        let _ = transfer_events
-                            .send(NetworkEvent::ChartTransferReceived {
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            transfer_events.send(NetworkEvent::ChartTransferReceived {
                                 session_id: transfer_session.clone(),
                                 header,
-                                path,
-                            })
-                            .await;
+                                path: path.clone(),
+                                executable_content_confirmed: authorization
+                                    .executable_content_confirmed,
+                            }),
+                        )
+                        .await
+                        .context("application event queue stalled for 5 seconds")?
+                        .context("application stopped before chart transfer completed")?;
+                        temporary_file.armed = false;
                         Ok::<(), anyhow::Error>(())
                     }
                     .await;
@@ -683,6 +916,10 @@ impl NetworkHub {
             transfers.abort();
             peers.write().await.remove(&session_id);
             peer_connections.write().await.remove(&session_id);
+            incoming_transfer_authorizations
+                .write()
+                .await
+                .retain(|(authorized_session, _), _| authorized_session != &session_id);
             let reason = match connection.close_reason() {
                 Some(quinn::ConnectionError::ApplicationClosed(close)) => {
                     String::from_utf8_lossy(&close.reason).into_owned()
@@ -700,7 +937,7 @@ impl NetworkHub {
 async fn write_frame<T: Serialize>(send: &mut SendStream, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_CONTROL_FRAME {
-        bail!("control message exceeds 1 MiB");
+        bail!("control message exceeds 64 KiB");
     }
     send.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
     send.write_all(&bytes).await?;
@@ -712,19 +949,75 @@ async fn read_frame<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T> {
     recv.read_exact(&mut length).await?;
     let length = u32::from_le_bytes(length) as usize;
     if length > MAX_CONTROL_FRAME {
-        bail!("control message exceeds 1 MiB");
+        bail!("control message exceeds 64 KiB");
     }
     let mut bytes = vec![0u8; length];
     recv.read_exact(&mut bytes).await?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn auth_proof(key: &[u8], nonce: &[u8], label: &[u8]) -> Result<String> {
+/// Authenticates the complete password-exchange transcript and the certificate
+/// actually observed by the client. This turns the otherwise unauthenticated
+/// self-signed QUIC certificate into a password-authenticated channel binding.
+fn auth_proof(
+    key: &[u8],
+    client_message: &[u8],
+    server_message: &[u8],
+    nonce: &[u8],
+    certificate_sha256: &[u8],
+    label: &[u8],
+) -> Result<String> {
     let mut mac = HmacSha256::new_from_slice(key)?;
-    mac.update(AUTH_IDENTITY);
-    mac.update(nonce);
-    mac.update(label);
+    for field in [
+        AUTH_IDENTITY,
+        &[PROTOCOL_VERSION],
+        client_message,
+        server_message,
+        nonce,
+        certificate_sha256,
+        label,
+    ] {
+        mac.update(&(field.len() as u64).to_le_bytes());
+        mac.update(field);
+    }
     Ok(BASE64.encode(mac.finalize().into_bytes()))
+}
+
+fn peer_certificate_sha256(connection: &Connection) -> Result<[u8; 32]> {
+    let identity = connection
+        .peer_identity()
+        .context("QUIC peer did not provide a TLS identity")?;
+    let certificates = identity
+        .downcast::<Vec<CertificateDer<'static>>>()
+        .map_err(|_| anyhow::anyhow!("QUIC peer identity was not a certificate chain"))?;
+    let certificate = certificates
+        .first()
+        .context("QUIC peer certificate chain was empty")?;
+    Ok(Sha256::digest(certificate.as_ref()).into())
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn consume_incoming_transfer_authorization(
+    authorizations: &RwLock<HashMap<(String, String), IncomingTransferAuthorization>>,
+    session_id: &str,
+    header: &ChartTransferHeader,
+) -> Result<IncomingTransferAuthorization> {
+    header.validate()?;
+    let authorization = authorizations
+        .write()
+        .await
+        .remove(&(session_id.to_owned(), header.request_id.clone()))
+        .context("unsolicited chart transfer was rejected")?;
+    if authorization.header != *header {
+        bail!("chart transfer metadata does not match the accepted offer");
+    }
+    Ok(authorization)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -862,6 +1155,26 @@ pub fn certificate_fingerprint(certificate: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn join_rejects_invalid_credentials_before_network_allocation() {
+        let (events, _receiver) = mpsc::channel(1);
+        let network = NetworkHub::new(events);
+        let address: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        assert!(network
+            .join(address, "abc", "Player", ParticipantRole::Player)
+            .await
+            .is_err());
+        assert!(network
+            .join(address, "password", "", ParticipantRole::Player)
+            .await
+            .is_err());
+        assert!(network
+            .join(address, "password", "Player", ParticipantRole::Host)
+            .await
+            .is_err());
+    }
+
     #[test]
     fn password_failure_tracking_expires_and_stays_bounded() {
         let now = Instant::now();
@@ -998,7 +1311,7 @@ mod tests {
         let address = host.start_host(0, "correct horse".into()).await.unwrap();
         let (client_events_tx, mut client_events) = mpsc::channel(32);
         let client = NetworkHub::new(client_events_tx);
-        client
+        let client_session = client
             .join(address, "correct horse", "Player", ParticipantRole::Player)
             .await
             .unwrap();
@@ -1024,23 +1337,138 @@ mod tests {
             chart_hash: "b".repeat(64),
             contains_executable_content: false,
         };
+        client
+            .authorize_incoming_chart_transfer(&client_session, header.clone(), false)
+            .await
+            .unwrap();
         host.send_chart_transfer(&peer, &header, &source)
             .await
             .unwrap();
         let received = loop {
+            if let NetworkEvent::ChartTransferReceived { path, .. } =
+                tokio::time::timeout(Duration::from_secs(3), client_events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            {
+                break path;
+            }
+        };
+        assert_eq!(std::fs::read(&received).unwrap(), b"bounded chart bytes");
+        let _ = std::fs::remove_file(received);
+
+        // The authorization was consumed by the first stream. Replaying the
+        // byte-identical stream must be rejected before another file is made.
+        let _ = host.send_chart_transfer(&peer, &header, &source).await;
+        let diagnostic = loop {
             match tokio::time::timeout(Duration::from_secs(3), client_events.recv())
                 .await
                 .unwrap()
                 .unwrap()
             {
-                NetworkEvent::ChartTransferReceived { path, .. } => break path,
+                NetworkEvent::Diagnostic(message) => break message,
+                NetworkEvent::ChartTransferReceived { path, .. } => {
+                    panic!("replayed transfer reached disk at {}", path.display())
+                }
                 _ => {}
             }
         };
-        assert_eq!(std::fs::read(&received).unwrap(), b"bounded chart bytes");
-        let _ = std::fs::remove_file(received);
+        assert!(diagnostic.contains("unsolicited chart transfer"));
         let _ = std::fs::remove_dir_all(root);
         host.shutdown().await;
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn incoming_transfer_consent_is_exact_and_one_shot() {
+        let (events, _receiver) = mpsc::channel(8);
+        let hub = NetworkHub::new(events);
+        let offered = ChartTransferHeader {
+            request_id: "transfer-1".into(),
+            name: "chart.zip".into(),
+            size: 32,
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: true,
+        };
+        assert!(hub
+            .authorize_incoming_chart_transfer("host", offered.clone(), false)
+            .await
+            .is_err());
+        hub.authorize_incoming_chart_transfer("host", offered.clone(), true)
+            .await
+            .unwrap();
+
+        let mut mismatched = offered.clone();
+        mismatched.size += 1;
+        assert!(consume_incoming_transfer_authorization(
+            &hub.incoming_transfer_authorizations,
+            "host",
+            &mismatched,
+        )
+        .await
+        .is_err());
+        assert!(consume_incoming_transfer_authorization(
+            &hub.incoming_transfer_authorizations,
+            "host",
+            &offered,
+        )
+        .await
+        .is_err());
+        assert!(hub.incoming_transfer_authorizations.read().await.is_empty());
+    }
+
+    #[test]
+    fn authentication_proof_binds_both_spake_messages_and_certificate() {
+        let key = [7u8; 32];
+        let client_message = [1u8; 32];
+        let server_message = [2u8; 32];
+        let nonce = [3u8; 32];
+        let certificate = [4u8; 32];
+        let proof = auth_proof(
+            &key,
+            &client_message,
+            &server_message,
+            &nonce,
+            &certificate,
+            b"server",
+        )
+        .unwrap();
+
+        let mut forged_certificate = certificate;
+        forged_certificate[0] ^= 1;
+        let forged = auth_proof(
+            &key,
+            &client_message,
+            &server_message,
+            &nonce,
+            &forged_certificate,
+            b"server",
+        )
+        .unwrap();
+        assert_ne!(proof, forged);
+    }
+
+    #[test]
+    fn chart_transfer_header_limits_match_the_protocol_schema() {
+        let valid = ChartTransferHeader {
+            request_id: "r".repeat(MAX_TRANSFER_REQUEST_ID_CHARS),
+            name: "n".repeat(MAX_TRANSFER_NAME_CHARS),
+            size: 1,
+            archive_sha256: "a".repeat(64),
+            chart_hash: "b".repeat(64),
+            contains_executable_content: false,
+        };
+        valid.validate().unwrap();
+
+        let mut invalid = valid.clone();
+        invalid.size = 0;
+        assert!(invalid.validate().is_err());
+        invalid = valid.clone();
+        invalid.archive_sha256 = "A".repeat(64);
+        assert!(invalid.validate().is_err());
+        invalid = valid;
+        invalid.request_id.push('x');
+        assert!(invalid.validate().is_err());
     }
 }

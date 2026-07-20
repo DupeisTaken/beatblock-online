@@ -375,7 +375,7 @@ impl RoomEngine {
             RoomLifecycle::Countdown | RoomLifecycle::Playing
         );
         let expired_run = if let Ok(participant) = self.participant_mut(session_id) {
-            if playing && participant.admitted && !participant.connected {
+            if playing && is_competitor(participant) && !participant.connected {
                 participant.validity = RunValidity::Dnf;
                 participant.invalid_reason = Some("Disconnected for more than 30 seconds".into());
                 true
@@ -637,54 +637,82 @@ impl RoomEngine {
         ) {
             bail!("room is not playing");
         }
-        self.mark_playing();
-        let participant = self.participant_mut(session_id)?;
-        if let Some(previous) = participant.last_sequence {
+        let expected_max_hits = self
+            .snapshot
+            .chart
+            .as_ref()
+            .context("room has no locked chart")?
+            .expected_max_hits;
+        let participant = self
+            .player(session_id)
+            .context("unknown participant session")?;
+        if !is_competitor(participant) {
+            bail!("only admitted players can submit score events");
+        }
+        if !participant.verified {
+            bail!("the locked chart must be verified before submitting score events");
+        }
+        let previous_sequence = participant.last_sequence;
+        if let Some(previous) = previous_sequence {
             if sequence <= previous {
                 return Ok(());
             }
-            if sequence != previous + 1 {
-                participant.validity = RunValidity::Invalid;
-                participant.invalid_reason = Some(format!(
-                    "Unrecoverable event sequence gap: expected {}, received {}",
-                    previous + 1,
-                    sequence
-                ));
-            }
         }
-        participant.last_sequence = Some(sequence);
         let totals_value = payload.get("totals").unwrap_or(payload);
         let totals: ScoreTotals = serde_json::from_value(totals_value.clone())?;
-        if totals.current_max_hits < participant.totals.current_max_hits
-            || totals.misses < participant.totals.misses
-            || totals.barelies < participant.totals.barelies
+        validate_score_totals(&participant.totals, &totals, expected_max_hits)?;
+
+        self.mark_playing();
         {
-            participant.validity = RunValidity::Invalid;
-            participant.invalid_reason = Some("Score totals moved backwards".into());
-        }
-        participant.totals = totals;
-        participant.accuracy = participant.totals.accuracy();
-        participant.progress = payload
-            .get("progress")
-            .and_then(Value::as_f64)
-            .unwrap_or_else(|| {
-                if participant.totals.max_hits == 0 {
-                    0.0
-                } else {
+            let participant = self.participant_mut(session_id)?;
+            let gap = match previous_sequence {
+                Some(previous) => sequence != previous.saturating_add(1),
+                None => sequence != 0,
+            };
+            if gap {
+                let expected = previous_sequence
+                    .map(|previous| previous.saturating_add(1))
+                    .unwrap_or(0);
+                participant.validity = RunValidity::Invalid;
+                participant.invalid_reason = Some(format!(
+                    "Unrecoverable event sequence gap: expected {expected}, received {sequence}"
+                ));
+            }
+            participant.last_sequence = Some(sequence);
+            participant.totals = totals;
+            participant.accuracy = participant.totals.accuracy();
+            participant.progress = payload
+                .get("progress")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| {
                     participant.totals.current_max_hits as f64 / participant.totals.max_hits as f64
-                }
-            })
-            .clamp(0.0, 1.0);
-        if participant.validity == RunValidity::Pending {
-            participant.validity = RunValidity::Valid;
+                })
+                .clamp(0.0, 1.0);
+            if participant.validity == RunValidity::Pending {
+                participant.validity = RunValidity::Valid;
+            }
         }
+        // A structurally valid score mutation from a verified competitor is
+        // proof that the game entered the run. This keeps journal recovery
+        // tolerant of a lost run.started envelope while still rejecting a bare
+        // run.finished event.
+        self.started_runs.insert(session_id.to_owned());
         self.rank();
         self.touch();
         Ok(())
     }
 
     pub fn invalidate(&mut self, session_id: &str, reason: String, dnf: bool) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Countdown | RoomLifecycle::Playing
+        ) {
+            bail!("room is not accepting run invalidations");
+        }
         let participant = self.participant_mut(session_id)?;
+        if !is_competitor(participant) {
+            bail!("only admitted players can invalidate a run");
+        }
         participant.validity = if dnf {
             RunValidity::Dnf
         } else {
@@ -700,15 +728,31 @@ impl RoomEngine {
         // One participant contributes once per scheduled chart. Trusting the
         // client-provided run id here allowed duplicate ids to finish a room
         // before the other participants had reported results.
+        let participant = self
+            .player(session_id)
+            .context("unknown participant session")?;
+        if !is_competitor(participant) {
+            bail!("only admitted players can finish a run");
+        }
         if self.finalized_runs.contains(session_id) {
             return Ok(());
         }
+        if !self.started_runs.contains(session_id) {
+            bail!("participant cannot finish a run that did not start");
+        }
         let participant = self.participant_mut(session_id)?;
-        let contribution = if participant.validity == RunValidity::Valid {
+        let complete = participant.totals.max_hits > 0
+            && participant.totals.current_max_hits == participant.totals.max_hits;
+        let contribution = if participant.validity == RunValidity::Valid && complete {
             participant.accuracy
         } else {
-            participant.validity = RunValidity::Dnf;
-            participant.accuracy = 0.0;
+            // Invalid is an integrity verdict and should survive finalization.
+            // DNF is reserved for an otherwise pending/valid run that ended
+            // without reporting every scoring opportunity.
+            if participant.validity != RunValidity::Invalid {
+                participant.validity = RunValidity::Dnf;
+                participant.accuracy = 0.0;
+            }
             0.0
         };
         participant.set_total = ((participant.set_total + contribution) * 100.0).floor() / 100.0;
@@ -772,11 +816,14 @@ impl RoomEngine {
             .snapshot
             .participants
             .iter()
-            .filter(|p| {
-                p.admitted && matches!(p.role, ParticipantRole::Player | ParticipantRole::Host)
-            })
-            .count();
-        if self.finalized_runs.len() < active {
+            .filter(|participant| is_competitor(participant))
+            .map(|participant| participant.session_id.as_str())
+            .collect::<Vec<_>>();
+        if active.is_empty()
+            || !active
+                .iter()
+                .all(|session_id| self.finalized_runs.contains(*session_id))
+        {
             return;
         }
         self.snapshot.lifecycle = RoomLifecycle::Results;
@@ -919,6 +966,49 @@ fn validity_order(value: RunValidity) -> u8 {
     }
 }
 
+fn is_competitor(participant: &Participant) -> bool {
+    participant.admitted
+        && matches!(
+            participant.role,
+            ParticipantRole::Player | ParticipantRole::Host
+        )
+}
+
+fn validate_score_totals(
+    previous: &ScoreTotals,
+    next: &ScoreTotals,
+    expected_max_hits: u64,
+) -> Result<()> {
+    if next.max_hits != expected_max_hits {
+        bail!(
+            "score note count does not match the locked chart: expected {expected_max_hits}, got {}",
+            next.max_hits
+        );
+    }
+    let decisions = next.hits.saturating_add(next.misses);
+    if next.current_max_hits > next.max_hits
+        || next.hits > next.current_max_hits
+        || next.misses > next.max_hits
+        || next.barelies > next.hits
+        || next.combo > next.max_combo
+        || next.max_combo > next.hits
+        || decisions < next.current_max_hits
+        || decisions > next.max_hits
+    {
+        bail!("score totals violate the locked chart counter bounds");
+    }
+    if next.current_max_hits < previous.current_max_hits
+        || next.hits < previous.hits
+        || next.misses < previous.misses
+        || next.barelies < previous.barelies
+        || next.max_combo < previous.max_combo
+        || next.mine_hits < previous.mine_hits
+    {
+        bail!("score totals moved backwards");
+    }
+    Ok(())
+}
+
 pub fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -968,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn sequence_gap_marks_run_invalid_and_dnf_scores_zero() {
+    fn sequence_gap_remains_invalid_and_scores_zero_after_finish() {
         let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
         let host = room.snapshot.host_session_id.clone();
         room.lock_chart(chart(), false).unwrap();
@@ -979,7 +1069,13 @@ mod tests {
         room.ingest_score(&host, 0, &totals).unwrap();
         room.ingest_score(&host, 2, &totals).unwrap();
         room.finish_run(&host, "run-gap").unwrap();
-        assert_eq!(room.player(&host).unwrap().validity, RunValidity::Dnf);
+        assert_eq!(room.player(&host).unwrap().validity, RunValidity::Invalid);
+        assert!(room
+            .player(&host)
+            .unwrap()
+            .invalid_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("sequence gap")));
         assert_eq!(room.player(&host).unwrap().set_total, 0.0);
     }
 
@@ -1116,6 +1212,7 @@ mod tests {
         }
         room.schedule_start(false, 2_000).unwrap();
         room.mark_playing();
+        room.start_run(&host, 100).unwrap();
         room.finish_run(&host, "host-run").unwrap();
         room.disconnect(&player);
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Playing);
@@ -1172,12 +1269,16 @@ mod tests {
         room.set_ready(&host, true).unwrap();
         room.schedule_start(false, 2_000).unwrap();
         room.mark_playing();
+        room.start_run(&host, 100).unwrap();
         room.finish_run(&host, "finished").unwrap();
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
 
         assert!(room.set_ready(&host, false).is_err());
         assert!(room.set_verified(&host, true, None).is_err());
         assert!(room.schedule_start(true, 2_000).is_err());
+        assert!(room
+            .invalidate(&host, "late mutation".into(), false)
+            .is_err());
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
     }
 
@@ -1255,5 +1356,192 @@ mod tests {
         assert!(room.advance_setlist().is_err());
         assert_eq!(room.snapshot.current_setlist_index, Some(0));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+    }
+
+    #[test]
+    fn spectators_and_pending_players_cannot_submit_run_events() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::HostApproval);
+        let host = room.snapshot.host_session_id.clone();
+        let spectator = room
+            .request_join("Spectator", ParticipantRole::Spectator)
+            .unwrap();
+        room.admit(&spectator, true, ParticipantRole::Spectator)
+            .unwrap();
+        let pending = room
+            .request_join("Pending", ParticipantRole::Player)
+            .unwrap();
+        let unverified = room
+            .request_join("Unverified", ParticipantRole::Player)
+            .unwrap();
+        room.admit(&unverified, true, ParticipantRole::Player)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(true, 2_000).unwrap();
+        let score = json!({
+            "progress": 0.01,
+            "totals": {
+                "hits": 1,
+                "misses": 0,
+                "barelies": 0,
+                "combo": 1,
+                "maxCombo": 1,
+                "currentMaxHits": 1,
+                "maxHits": 100,
+                "mineHits": 0
+            }
+        });
+
+        for session_id in [&spectator, &pending] {
+            assert!(room.ingest_score(session_id, 0, &score).is_err());
+            assert!(room
+                .invalidate(session_id, "not a competitor".into(), false)
+                .is_err());
+            assert!(room.finish_run(session_id, "not-a-run").is_err());
+        }
+        assert!(room.ingest_score(&unverified, 0, &score).is_err());
+        assert!(room.finish_run(&unverified, "not-a-run").is_err());
+        assert!(!room.started_runs.contains(&unverified));
+        room.disconnect_at(&spectator, 0);
+        assert!(!room.expire_disconnect(&spectator));
+        assert_eq!(
+            room.player(&spectator).unwrap().validity,
+            RunValidity::Pending
+        );
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Countdown);
+    }
+
+    #[test]
+    fn only_finalized_competitor_ids_can_complete_the_chart() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let player = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        let spectator = room
+            .request_join("Spectator", ParticipantRole::Spectator)
+            .unwrap();
+        room.lock_chart(chart(), false).unwrap();
+        for session_id in [&host, &player] {
+            room.set_verified(session_id, true, None).unwrap();
+            room.set_ready(session_id, true).unwrap();
+        }
+        room.schedule_start(false, 2_000).unwrap();
+        room.mark_playing();
+
+        // Completion must use the active competitor-ID subset, even if stale
+        // noncompetitor state somehow survives from an older snapshot.
+        room.finalized_runs.insert(spectator);
+        let complete = json!({
+            "progress": 1.0,
+            "totals": {
+                "hits": 100,
+                "misses": 0,
+                "barelies": 0,
+                "combo": 100,
+                "maxCombo": 100,
+                "currentMaxHits": 100,
+                "maxHits": 100,
+                "mineHits": 0
+            }
+        });
+        room.ingest_score(&host, 0, &complete).unwrap();
+        room.finish_run(&host, "host-run").unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Playing);
+
+        room.ingest_score(&player, 0, &complete).unwrap();
+        room.finish_run(&player, "player-run").unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+    }
+
+    #[test]
+    fn finish_requires_start_and_incomplete_valid_runs_become_dnf() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+
+        assert!(room.finish_run(&host, "never-started").is_err());
+        room.ingest_score(
+            &host,
+            0,
+            &json!({
+                "progress": 0.01,
+                "totals": {
+                    "hits": 1,
+                    "misses": 0,
+                    "barelies": 0,
+                    "combo": 1,
+                    "maxCombo": 1,
+                    "currentMaxHits": 1,
+                    "maxHits": 100,
+                    "mineHits": 0
+                }
+            }),
+        )
+        .unwrap();
+        room.finish_run(&host, "early-finish").unwrap();
+        assert_eq!(room.player(&host).unwrap().validity, RunValidity::Dnf);
+        assert_eq!(room.player(&host).unwrap().set_total, 0.0);
+    }
+
+    #[test]
+    fn score_totals_preserve_the_lock_and_detect_initial_or_counter_gaps() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+
+        let score = |current: u64, max_hits: u64| {
+            json!({
+                "progress": current as f64 / max_hits as f64,
+                "totals": {
+                    "hits": current,
+                    "misses": 0,
+                    "barelies": 0,
+                    "combo": current,
+                    "maxCombo": current,
+                    "currentMaxHits": current,
+                    "maxHits": max_hits,
+                    "mineHits": 0
+                }
+            })
+        };
+        assert!(room.ingest_score(&host, 0, &score(1, 99)).is_err());
+        room.ingest_score(&host, 1, &score(2, 100)).unwrap();
+        assert_eq!(room.player(&host).unwrap().validity, RunValidity::Invalid);
+        assert!(room
+            .player(&host)
+            .unwrap()
+            .invalid_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("expected 0, received 1")));
+        assert!(room
+            .ingest_score(
+                &host,
+                2,
+                &json!({
+                    "progress": 0.03,
+                    "totals": {
+                        "hits": 2,
+                        "misses": 0,
+                        "barelies": 0,
+                        "combo": 2,
+                        "maxCombo": 2,
+                        "currentMaxHits": 3,
+                        "maxHits": 100,
+                        "mineHits": 0
+                    }
+                }),
+            )
+            .is_err());
+        assert!(room.ingest_score(&host, 2, &score(1, 100)).is_err());
+        assert_eq!(room.player(&host).unwrap().last_sequence, Some(1));
+        assert_eq!(room.player(&host).unwrap().totals.max_hits, 100);
     }
 }

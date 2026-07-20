@@ -1,0 +1,23 @@
+[advisories]
+# quick-xml 0.39.4 is used only by wayland-scanner, a Linux-only proc macro
+# pulled into Cargo.lock by the latest Slint/winit graph. The supported
+# x86_64-pc-windows-msvc product tree contains no quick-xml package:
+#   cargo tree --features installer-ui --target x86_64-pc-windows-msvc -i quick-xml
+# Remove these exceptions as soon as wayland-scanner permits quick-xml >=0.41.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+informational_warnings = ["unmaintained", "unsound"]
+severity_threshold = "low"
+
+[output]
+deny = ["unsound", "yanked"]
+format = "terminal"
+quiet = false
+show_tree = true
+
+[target]
+arch = ["x86_64"]
+os = ["windows"]
+
+[yanked]
+enabled = true
+update_index = true
