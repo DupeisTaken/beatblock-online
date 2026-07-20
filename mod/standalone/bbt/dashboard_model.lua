@@ -62,7 +62,15 @@ function Dashboard.visibleParticipants(context, filter)
   end
   table.sort(visible,function(a,b)
     if (a.admitted ~= true) ~= (b.admitted ~= true) then return a.admitted ~= true end
-    if a.role ~= b.role then return a.role ~= 'spectator' end
+    local aHost=a.sessionId==current.hostSessionId
+    local bHost=b.sessionId==current.hostSessionId
+    if aHost~=bHost then return aHost end
+    -- Host and Player are both racing roles. Comparing their raw role strings
+    -- made the ordering non-transitive (Host < Player and Player < Host), which
+    -- can crash Lua's table.sort as soon as the real Host role is present.
+    local aSpectator=a.role=='spectator'
+    local bSpectator=b.role=='spectator'
+    if aSpectator~=bSpectator then return not aSpectator end
     return string.lower(a.displayName or '') < string.lower(b.displayName or '')
   end)
   return visible
@@ -151,7 +159,10 @@ function Dashboard.primary(context)
     local index = current.currentSetlistIndex
     local hasNext = index ~= nil and index + 1 < #(current.setlist or {})
     if isHost and hasNext then
-      return action('advance_set','ADVANCE SETLIST','Lock the next chart and return players to verification.','green')
+      return action('advance_set','NEXT CHART','Lock the next chart, locate it locally, and return players to verification.','green')
+    end
+    if isHost then
+      return action('select_next_chart','SELECT NEXT CHART','Add the next chart or reorder the completed set.','cyan')
     end
     return action('view_results','VIEW RESULTS','Review standings, accuracy, and DNF outcomes.','cyan')
   end
@@ -160,6 +171,12 @@ function Dashboard.primary(context)
     return action('wait_chart','WAITING FOR CHART','The host is choosing the next chart.','white',false)
   end
   if me and me.role == 'spectator' then
+    if isHost and summary.allReady then
+      return action('start_race','START RACE','Schedule the synchronized start for every ready player.','green')
+    end
+    if isHost then
+      return action('wait_players','WAITING '..summary.ready..'/'..summary.players,'Directing this race. Start becomes available when every player is verified and ready.','white',false)
+    end
     return action('watch_room','SPECTATING ROOM','Rankings and room state update live.','cyan',false)
   end
   if me and me.role ~= 'spectator' and not chartVerified then

@@ -10,8 +10,8 @@ The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md), wh
 2. Confirm the **Selected game** card points to the folder you intend to modify. The Install page shows the adapter, OBS source, Windows Firewall profile, and uncertified-build choices together before anything changes. A green **SUPPORTED** badge identifies the certified build.
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
-5. Open **Online**, then host a room or join with the host's `IP:port` and password.
-6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; Setlist, Broadcast, History, Settings, and Help are dedicated workspaces. A Spectator only receives Broadcast when the host grants Commentator access.
+5. Open **Online**, then host a room or follow the [Player joining guide](docs/operator-guide.md#join-a-room-as-a-player) with the host's public address, UDP port, and password. When the host uses frp, Players enter the frp server's public address and UDP `remotePort`.
+6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; the host can Play or Direct, Setlist supports ordered commands and next-chart continuation, and Broadcast exposes per-stream advanced export settings. A Spectator only receives Broadcast when the host grants Commentator access.
 7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
 
 ![Concentrated host dashboard](reports/trial-runs/dashboard-room-latest.png)

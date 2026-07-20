@@ -182,6 +182,14 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             let role = parse_role(message.payload.get("role"))?;
             state.set_participant_role(id, role).await
         }
+        "room.host_play_set" => {
+            let participating = message
+                .payload
+                .get("participating")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            state.set_host_participating(participating).await
+        }
         "room.commentator_set" => {
             let id = required(&message.payload, "sessionId")?;
             let enabled = message
@@ -362,6 +370,7 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "room.official_chart_verify"
             | "room.admission_set"
             | "room.role_set"
+            | "room.host_play_set"
             | "room.commentator_set"
             | "room.kick"
             | "setlist.remove"

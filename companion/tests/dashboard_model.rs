@@ -33,7 +33,7 @@ local function lobby(lifecycle, chart, participants, setlist, index)
     setlist=setlist or {},currentSetlistIndex=index,hostSessionId='Host'}
 end
 local chart={songName='Signal',variant='Hard',official=false}
-local host=player('Host','player',true,true,true)
+local host=player('Host','host',true,true,true)
 local ready=player('Ready','player',true,true,true)
 local waiting=player('Waiting','player',true,false,false)
 local spectator=player('Caster','spectator',true,false,false)
@@ -51,9 +51,13 @@ assert(Dashboard.primary({runtimeReady=true,room=lobby('ready',chart,{host,ready
 assert(Dashboard.primary({runtimeReady=true,room=lobby('ready',chart,{host,waiting}),me=host,isHost=true}).id=='wait_players')
 assert(Dashboard.primary({runtimeReady=true,room=lobby('playing',chart,{host}),me=host,isHost=true}).id=='race_locked')
 assert(Dashboard.primary({runtimeReady=true,room=lobby('ready',chart,{spectator}),me=spectator}).id=='watch_room')
+local directing=player('Host','spectator',true,true,true)
+assert(Dashboard.primary({runtimeReady=true,room=lobby('ready',chart,{directing,ready}),me=directing,isHost=true}).id=='start_race')
+assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{directing,waiting}),me=directing,isHost=true}).id=='wait_players')
 local set={{chart=chart},{chart=chart}}
-assert(Dashboard.primary({runtimeReady=true,room=lobby('results',chart,{host},set,0),me=host,isHost=true}).id=='advance_set')
-assert(Dashboard.primary({runtimeReady=true,room=lobby('set_complete',chart,{host},set,1),me=host,isHost=true}).id=='view_results')
+local nextAction=Dashboard.primary({runtimeReady=true,room=lobby('results',chart,{host},set,0),me=host,isHost=true})
+assert(nextAction.id=='advance_set' and nextAction.label=='NEXT CHART')
+assert(Dashboard.primary({runtimeReady=true,room=lobby('set_complete',chart,{host},set,1),me=host,isHost=true}).id=='select_next_chart')
 
 local summary=Dashboard.summary({room=lobby('forming',chart,{host,ready,spectator,pending})})
 assert(summary.players==2 and summary.spectators==1 and summary.pending==1)

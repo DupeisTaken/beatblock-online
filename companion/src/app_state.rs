@@ -842,7 +842,7 @@ impl AppState {
             NetworkEvent::Disconnected { session_id, reason } => {
                 if self.is_host.load(Ordering::Relaxed) {
                     self.room.write().await.disconnect(&session_id);
-                    self.renderer.stop_participant(&session_id);
+                    self.stop_participant_renderer(&session_id).await?;
                     self.commentator_subscribers
                         .write()
                         .await
@@ -1116,7 +1116,7 @@ impl AppState {
                 )
                 .await;
             self.room.write().await.kick(session_id)?;
-            self.renderer.stop_participant(session_id);
+            self.stop_participant_renderer(session_id).await?;
             self.commentator_subscribers
                 .write()
                 .await
@@ -1128,7 +1128,7 @@ impl AppState {
         } else {
             self.room.write().await.admit(session_id, true, role)?;
             if role == ParticipantRole::Spectator {
-                self.renderer.stop_participant(session_id);
+                self.stop_participant_renderer(session_id).await?;
             }
         }
         self.broadcast_room().await
@@ -1140,9 +1140,12 @@ impl AppState {
         role: ParticipantRole,
     ) -> Result<()> {
         self.require_host()?;
+        if session_id == self.room.read().await.snapshot.host_session_id {
+            anyhow::bail!("use the host play control to change host participation");
+        }
         self.room.write().await.set_role(session_id, role)?;
         if role == ParticipantRole::Spectator {
-            self.renderer.stop_participant(session_id);
+            self.stop_participant_renderer(session_id).await?;
         } else {
             self.commentator_subscribers
                 .write()
@@ -1164,6 +1167,21 @@ impl AppState {
         self.broadcast_room().await
     }
 
+    pub async fn set_host_participating(&self, participating: bool) -> Result<()> {
+        self.require_host()?;
+        let host_session_id = self.room.read().await.snapshot.host_session_id.clone();
+        self.room
+            .write()
+            .await
+            .set_host_participating(participating)?;
+        if !participating {
+            // A directing host must never remain attached to an OBS renderer
+            // slot after leaving the race roster.
+            self.stop_participant_renderer(&host_session_id).await?;
+        }
+        self.broadcast_room().await
+    }
+
     pub async fn kick(&self, session_id: &str) -> Result<()> {
         self.require_host()?;
         let _ = self
@@ -1178,7 +1196,7 @@ impl AppState {
             )
             .await;
         self.room.write().await.kick(session_id)?;
-        self.renderer.stop_participant(session_id);
+        self.stop_participant_renderer(session_id).await?;
         self.commentator_subscribers
             .write()
             .await
@@ -1584,6 +1602,16 @@ impl AppState {
             anyhow::bail!("unknown renderer slot");
         }
         self.renderer.stop_slot(slot);
+        self.refresh_broadcast_plan().await?;
+        self.publish_renderer_snapshot();
+        Ok(())
+    }
+
+    async fn stop_participant_renderer(&self, participant_id: &str) -> Result<()> {
+        self.renderer.stop_participant(participant_id);
+        // Renderer slots are also the authoritative commentator plan. Publish
+        // the cleared assignment immediately so remote OBS mirrors do not keep
+        // rendering a participant who left the racing roster.
         self.refresh_broadcast_plan().await?;
         self.publish_renderer_snapshot();
         Ok(())

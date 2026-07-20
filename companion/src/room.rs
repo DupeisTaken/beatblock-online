@@ -213,10 +213,41 @@ impl RoomEngine {
         self.require_role_capacity(session_id, role)?;
         let participant = self.participant_mut(session_id)?;
         participant.role = role;
-        participant.ready = false;
+        // A spectator has no chart obligation. Moving back into a racing role
+        // deliberately clears verification so stale verification cannot ready
+        // a participant for a different assignment.
+        participant.ready = role == ParticipantRole::Spectator;
+        participant.verified = role == ParticipantRole::Spectator;
         if role != ParticipantRole::Spectator {
             participant.commentator_access = false;
         }
+        self.refresh_ready_lifecycle();
+        self.touch();
+        Ok(())
+    }
+
+    /// Toggles whether the room owner races or directs the room as a
+    /// spectator. The dedicated mutation preserves the Host role when racing;
+    /// the generic role setter intentionally normalizes Host to Player.
+    pub fn set_host_participating(&mut self, participating: bool) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("host participation can only change before a race");
+        }
+        let host_session_id = self.snapshot.host_session_id.clone();
+        let role = if participating {
+            ParticipantRole::Host
+        } else {
+            ParticipantRole::Spectator
+        };
+        self.require_role_capacity(&host_session_id, role)?;
+        let participant = self.participant_mut(&host_session_id)?;
+        participant.role = role;
+        participant.ready = !participating;
+        participant.verified = !participating;
+        participant.commentator_access = false;
         self.refresh_ready_lifecycle();
         self.touch();
         Ok(())
@@ -273,6 +304,14 @@ impl RoomEngine {
         if index >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
         }
+        if self.snapshot.current_setlist_index == Some(index)
+            && matches!(
+                self.snapshot.lifecycle,
+                RoomLifecycle::Results | RoomLifecycle::SetComplete
+            )
+        {
+            bail!("the completed active chart cannot be removed before choosing what comes next");
+        }
         let active_id = self
             .snapshot
             .current_setlist_index
@@ -305,6 +344,16 @@ impl RoomEngine {
         self.require_setlist_editable()?;
         if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
+        }
+        if matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Results | RoomLifecycle::SetComplete
+        ) && self
+            .snapshot
+            .current_setlist_index
+            .is_some_and(|active| from <= active || to <= active)
+        {
+            bail!("completed setlist entries cannot be reordered");
         }
         let active_id = self
             .snapshot
@@ -450,6 +499,10 @@ impl RoomEngine {
                 self.snapshot.current_setlist_index = Some(0);
                 self.snapshot.chart = Some(self.snapshot.setlist[0].chart.clone());
                 self.reset_for_locked_chart();
+            } else if self.snapshot.lifecycle == RoomLifecycle::SetComplete {
+                // Extending a completed set makes the newly appended entry a
+                // valid "next chart" without discarding the visible results.
+                self.snapshot.lifecycle = RoomLifecycle::Results;
             }
             self.touch();
             return Ok(());
@@ -515,6 +568,16 @@ impl RoomEngine {
         }
         if self.snapshot.chart.is_none() {
             bail!("select a chart first");
+        }
+        if !self.snapshot.participants.iter().any(|participant| {
+            participant.admitted
+                && participant.connected
+                && matches!(
+                    participant.role,
+                    ParticipantRole::Player | ParticipantRole::Host
+                )
+        }) {
+            bail!("assign at least one player before starting");
         }
         if !force && !self.all_assigned_ready() {
             bail!("all assigned players must verify and ready; use Force Start to override");
@@ -741,15 +804,15 @@ impl RoomEngine {
     }
 
     fn all_assigned_ready(&self) -> bool {
-        self.snapshot
-            .participants
-            .iter()
-            .filter(|p| {
-                p.admitted
-                    && p.connected
-                    && matches!(p.role, ParticipantRole::Player | ParticipantRole::Host)
-            })
-            .all(|p| p.ready && p.verified)
+        let mut assigned = self.snapshot.participants.iter().filter(|p| {
+            p.admitted
+                && p.connected
+                && matches!(p.role, ParticipantRole::Player | ParticipantRole::Host)
+        });
+        let Some(first) = assigned.next() else {
+            return false;
+        };
+        first.ready && first.verified && assigned.all(|p| p.ready && p.verified)
     }
 
     fn refresh_ready_lifecycle(&mut self) {
@@ -1009,6 +1072,8 @@ mod tests {
         assert!(room.snapshot.setlist[0].completed);
         assert!(!room.snapshot.setlist[1].completed);
 
+        assert!(room.remove_setlist(0).is_err());
+        assert!(room.move_setlist(1, 0).is_err());
         room.advance_setlist().unwrap();
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
         assert_eq!(room.snapshot.current_setlist_index, Some(1));
@@ -1161,6 +1226,39 @@ mod tests {
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
         room.set_role(&player, ParticipantRole::Player).unwrap();
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
+        assert!(!room.player(&player).unwrap().verified);
+    }
+
+    #[test]
+    fn host_can_direct_without_consuming_a_racer_slot_and_rejoin_as_host() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(chart(), false).unwrap();
+
+        room.set_host_participating(false).unwrap();
+        assert_eq!(room.player(&host).unwrap().role, ParticipantRole::Spectator);
+        assert!(room.player(&host).unwrap().ready);
+        assert!(room.player(&host).unwrap().verified);
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
+        assert!(room.schedule_start(true, 2_000).is_err());
+
+        room.set_host_participating(true).unwrap();
+        assert_eq!(room.player(&host).unwrap().role, ParticipantRole::Host);
+        assert!(!room.player(&host).unwrap().ready);
+        assert!(!room.player(&host).unwrap().verified);
+    }
+
+    #[test]
+    fn host_participation_is_locked_once_countdown_begins() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(chart(), false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+
+        assert!(room.set_host_participating(false).is_err());
+        assert_eq!(room.player(&host).unwrap().role, ParticipantRole::Host);
     }
 
     #[test]
@@ -1255,5 +1353,23 @@ mod tests {
         assert!(room.advance_setlist().is_err());
         assert_eq!(room.snapshot.current_setlist_index, Some(0));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+    }
+
+    #[test]
+    fn appending_to_a_completed_set_restores_the_next_chart_transition() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(named_chart("First", 'a'), true).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+        room.finish_run(&host, "finished").unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::SetComplete);
+
+        room.lock_chart(named_chart("Encore", 'b'), true).unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Results);
+        room.advance_setlist().unwrap();
+        assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "Encore");
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
     }
 }

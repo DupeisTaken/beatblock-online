@@ -492,3 +492,51 @@ async fn renderer_reconfiguration_is_rejected_after_the_countdown_begins() {
     assert!(error.contains("before the synchronized start"));
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn host_play_command_preserves_host_identity_across_spectating() {
+    let root = temporary("host-play-command");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+    let host = app.room.read().await.snapshot.host_session_id.clone();
+    app.renderer
+        .configure(
+            "A",
+            RendererRequest {
+                participant_id: Some(host.clone()),
+                participant_name: Some("Host".into()),
+                mode: None,
+                width: None,
+                height: None,
+                fps: None,
+                delay_ms: None,
+                featured: None,
+            },
+        )
+        .unwrap();
+
+    let spectate = Envelope::new("room.host_play_set", 1, json!({"participating": false}));
+    assert!(game_commands::handle(&app, &spectate).await.unwrap());
+    assert_eq!(
+        app.room.read().await.player(&host).unwrap().role,
+        ParticipantRole::Spectator
+    );
+    assert!(!app.renderer.slot("A").unwrap().active);
+    assert!(
+        !app.broadcast_plan
+            .read()
+            .await
+            .slots
+            .iter()
+            .find(|slot| slot.id == "A")
+            .unwrap()
+            .active
+    );
+
+    let play = Envelope::new("room.host_play_set", 2, json!({"participating": true}));
+    assert!(game_commands::handle(&app, &play).await.unwrap());
+    assert_eq!(
+        app.room.read().await.player(&host).unwrap().role,
+        ParticipantRole::Host
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

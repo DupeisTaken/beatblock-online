@@ -19,6 +19,8 @@ The plugin exposes video sources only. Use OBS Application Audio Capture for the
 
 Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. The OBS competition view removes chart scenery, background images/video, and background noise while retaining the player, notes, hit feedback, chart-controlled HUD, online race HUD, palette/accessibility conversion, and screen-space effects. Backdrop suppression is scoped to the isolated renderer child and restored after every Game draw, so the host player's window is unchanged. Capturing occurs after the remaining gamestate composition, preventing raw palette-index artwork from appearing as a color mask. Optional Clean mode captures the same foreground-only gameplay canvas before final shading. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
 
+Choose **Advanced Export** in Broadcast to edit each Stream A-D independently. The complete visible controls are Full/Clean mode, 1280×720/1920×1080 output, 30/60 fps, and 250/500/1000/1500 ms delay. **Apply to Stream** stores those values even while the slot is unassigned; a later **Assign** uses that slot's saved configuration instead of resetting it to defaults. A 1080p60 selection is marked **High GPU Load**. Apply is disabled during countdown/gameplay.
+
 Renderer output canvases explicitly use a `1.0` DPI scale. OBS dimensions are
 physical pixels; allowing Windows display scaling to inflate a nominal
 1280×720 canvas would make readbacks fail their exact-size guard and leave OBS
@@ -65,10 +67,12 @@ discard superseded results. A capture exception is written to
 `stream-X.bbterror` and appears as the slot's dashboard error instead of
 crashing the child process.
 
-The host's normal Beatblock process remains available for play. Changing charts
+The host's normal Beatblock process remains available for play, or the host can
+choose **Direct Next Race** from its participant inspector. Changing charts
 relaunches every assigned slot against the new local chart path; stopping,
 kicking, disconnecting, or converting a target to spectator clears its slots
-and delayed telemetry buffers and causes OBS to clear stale video.
+and delayed telemetry buffers, republishes the Commentator plan, and causes OBS
+to clear stale video.
 
 ## Broadcast-host performance budget
 

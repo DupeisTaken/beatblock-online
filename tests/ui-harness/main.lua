@@ -51,7 +51,7 @@ local chart={
   variant='Expert',expectedMaxHits=842,official=false,transferMode='host_transfer',
 }
 local participants={
-  player('host-1','Host','player',true,true,1,99.82),
+  player('host-1','Host','host',true,true,1,99.82),
   player('request-1','New Challenger With A Very Long Name','player',false,false,nil,nil),
 }
 for index=2,11 do
@@ -99,8 +99,11 @@ function BBT.isOrganizer()
   return me and BBT.lastLobby and me.sessionId==BBT.lastLobby.hostSessionId
 end
 function BBT.startOnlineRuntime() end
+BBT.commandLog={}
 function BBT.command(kind,payload)
+  BBT.commandLog[#BBT.commandLog+1]={kind=kind,payload=payload}
   if kind=='broadcast.mirror_set' then BBT.mirrorEnabled=payload.enabled end
+  return 'harness-request-'..tostring(#BBT.commandLog)
 end
 function BBT.update() end
 function BBT.maybeLaunchScheduledChart() return false end
@@ -135,9 +138,13 @@ local function reset()
   BBT.lastLobby=roomFixture; BBT.context.sessionId='host-1'; BBT.context.lobbyId='visual-room'
   BBT.companionConnected=true; BBT.runtimeStarting=false; BBT.lastError=nil; BBT.chartTransfer=nil
   BBT.renderers=baseRenderers; BBT.mirrorEnabled=false
+  BBT.commandLog={}; BBT.pendingRequestId=nil; BBT.lastCompletedRequestId=nil
+  participants[1].role='host'; participants[1].ready=true; participants[1].verified=true
   roomFixture.lifecycle='ready'; participants[3].verified=true; participants[3].ready=true
   online.workspace='room'; online.rosterFilter='all'; online.selectedSessionId='host-1'
-  online.modal=nil; online.broadcastAdvanced=false; online.focusId='session_primary'
+  online.modal=nil; online.broadcastAdvanced=false; online.broadcastSlot='A'; online.broadcastDraft=nil
+  online.setlistSelection=1; online.setlistOffset=0
+  online.advanceRequestId=nil; online.advancePreviousHash=nil; online.focusId='session_primary'
 end
 local scenarios={
   {'connect',function() reset(); BBT.lastLobby=nil; BBT.context.lobbyId='offline' end},
@@ -155,13 +162,18 @@ local scenarios={
   {'transfer-progress',function() reset(); BBT.context.sessionId='player-2'; participants[3].verified=false; online.selectedSessionId='player-2'; BBT.chartTransfer={state='progress',percent=63} end},
   {'consent-warning',function() reset(); BBT.context.sessionId='player-2'; online.modal={kind='confirm',title='SCRIPT CONTENT',message='This package contains Lua or executable content and requires separate explicit confirmation.',label='ACCEPT',run=function() end} end},
   {'live-results',function() reset(); roomFixture.lifecycle='results'; participants[4].validity='dnf'; participants[5].validity='invalid' end},
+  {'host-directing',function() reset(); participants[1].role='spectator'; participants[1].ready=true; participants[1].verified=true; online.selectedSessionId='host-1' end},
   {'setlist',function() reset(); online.workspace='setlist' end},
+  {'setlist-results',function() reset(); roomFixture.lifecycle='results'; online.workspace='setlist'; online.setlistSelection=2 end},
   {'history',function() reset(); online.workspace='history' end},
   {'settings',function() reset(); online.workspace='settings' end},
   {'help',function() reset(); online.workspace='help' end},
   {'confirmation',function() reset(); online.modal={kind='confirm',title='CLOSE ROOM',message='Close this room and disconnect every participant?',label='CLOSE ROOM',run=function() end} end},
   {'broadcast-basic',function() reset(); online.workspace='broadcast' end},
-  {'broadcast-advanced',function() reset(); online.workspace='broadcast'; online.broadcastAdvanced=true end},
+  {'broadcast-advanced',function()
+    reset(); online.workspace='broadcast'; online.broadcastAdvanced=true; online.broadcastSlot='B'
+    online.broadcastDraft={mode='clean',width=1920,height=1080,fps=60,delayMs=1000}
+  end},
   {'broadcast-long-error',function() reset(); online.workspace='broadcast'; BBT.renderers[1].lastError=string.rep('Renderer could not resolve the selected package path. ',6) end},
   {'spectator',function() reset(); BBT.context.sessionId='viewer-1'; online.selectedSessionId='viewer-1' end},
   {'commentator-disabled',function() reset(); BBT.context.sessionId='caster-1'; online.workspace='broadcast'; online.selectedSessionId='player-2' end},
@@ -214,8 +226,50 @@ function love.load()
   online:init({workspace='setlist'})
   assert(online.workspace=='setlist','Chart selection must restore the Setlist workspace')
   assert(online.focusId=='nav_setlist','Setlist return must restore workspace focus')
+
+  local function findControl(id)
+    online:drawState()
+    for _,control in ipairs(online.controls or {}) do
+      if control.id==id then return control end
+    end
+    error('Missing UI control '..id)
+  end
+  local function activate(id)
+    local control=findControl(id)
+    assert(control.run,'Control '..id..' is unexpectedly disabled')
+    control.run()
+  end
+
+  reset()
+  activate('participant_host_play')
+  assert(BBT.commandLog[1].kind=='room.host_play_set','Host play toggle must use its dedicated runtime command')
+  assert(BBT.commandLog[1].payload.participating==false,'Playing host toggle must switch to directing')
+
+  reset(); online.workspace='setlist'; online.setlistSelection=2
+  activate('setlist_up')
+  assert(BBT.commandLog[1].kind=='setlist.move','Setlist Up must emit a move command')
+  assert(BBT.commandLog[1].payload.from==1 and BBT.commandLog[1].payload.to==0,'Setlist ordering must use zero-based runtime indexes')
+
+  reset(); online.workspace='broadcast'; online.broadcastAdvanced=true
+  online.broadcastDraft={mode='clean',width=1280,height=720,fps=60,delayMs=500}
+  activate('broadcast_mode_full'); activate('broadcast_size_1080')
+  activate('broadcast_fps_30'); activate('broadcast_delay_1000'); activate('broadcast_apply')
+  local exportCommand=BBT.commandLog[#BBT.commandLog]
+  assert(exportCommand.kind=='renderer.configure','Advanced export Apply must configure the selected renderer')
+  assert(exportCommand.payload.mode=='full' and exportCommand.payload.width==1920 and exportCommand.payload.height==1080,'Advanced export must preserve mode and resolution')
+  assert(exportCommand.payload.fps==30 and exportCommand.payload.delayMs==1000,'Advanced export must preserve FPS and delay')
+  roomFixture.lifecycle='playing'
+  assert(findControl('broadcast_apply').run==nil,'Advanced export Apply must lock during an active race')
+
+  reset(); roomFixture.lifecycle='results'
+  activate('session_primary')
+  assert(BBT.commandLog[1].kind=='setlist.advance','Results Next Chart must advance the authoritative set')
+  assert(online.workspace=='setlist','Results Next Chart must show chart selection progress in Setlist')
+
   online:leave()
+  roomFixture.lifecycle='results'
   online:init()
+  assert(online.workspace=='setlist','A host returning from native Results must land on Setlist')
   if autorun then
     auditFile=assert(io.open(output..'/layout-audit.txt','wb'))
     beginNext()

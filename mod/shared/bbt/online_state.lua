@@ -87,7 +87,11 @@ local function register(self,id,x,y,w,h,run)
 end
 
 local function button(self,id,x,y,w,h,label,run,color,enabled)
-  local focused=register(self,id,x,y,w,h,run)
+  -- Disabled controls remain visible and focusable for discoverability, but
+  -- cannot be activated by keyboard, mouse, or controller.
+  local action=run
+  if enabled==false then action=nil end
+  local focused=register(self,id,x,y,w,h,action)
   ui:button(id,x,y,w,h,label,focused,color,enabled)
 end
 
@@ -100,6 +104,7 @@ local function setWorkspace(self,name)
   self.workspace=name
   self.focusId='nav_'..name
   self.modal=nil
+  if name~='broadcast' then self.broadcastAdvanced=false end
 end
 
 local function selected(self)
@@ -186,7 +191,7 @@ end
 function runPrimary(self,item)
   if item.id=='host_room' then openForm(self,'host')
   elseif item.id=='open_installer' then BBT.openInstaller()
-  elseif item.id=='select_chart' then setWorkspace(self,'setlist')
+  elseif item.id=='select_chart' or item.id=='select_next_chart' then setWorkspace(self,'setlist')
   elseif item.id=='locate_chart' then
     local room=currentRoom()
     if room and room.chart then
@@ -194,7 +199,11 @@ function runPrimary(self,item)
     end
   elseif item.id=='ready' then BBT.command('room.ready_request',{ready=true})
   elseif item.id=='start_race' then BBT.command('room.start_request',{force=false})
-  elseif item.id=='advance_set' then BBT.command('setlist.advance',{})
+  elseif item.id=='advance_set' then
+    local room=currentRoom()
+    self.advancePreviousHash=room and room.chart and room.chart.hash
+    self.advanceRequestId=BBT.command('setlist.advance',{})
+    if self.advanceRequestId then setWorkspace(self,'setlist') end
   elseif item.id=='view_results' then setWorkspace(self,'room') end
 end
 
@@ -230,6 +239,14 @@ local function participantActionButtons(self,target,x,y,w)
       end)
     end,'red',room.lifecycle~='playing' and room.lifecycle~='countdown')
   elseif target.sessionId==(BBT.context and BBT.context.sessionId) then
+    if isHost() then
+      local participating=target.role~='spectator'
+      local editable=room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready'
+      button(self,'participant_host_play',x,y,w,24,participating and 'DIRECT NEXT RACE' or 'PLAY NEXT RACE',function()
+        BBT.command('room.host_play_set',{participating=not participating})
+      end,participating and 'yellow' or 'green',editable)
+      y=y+29
+    end
     local transfer=BBT.chartTransfer
     if transfer and (transfer.state=='offer' or transfer.state=='consent') then
       button(self,'participant_transfer_accept',x,y,w,24,'ACCEPT TRANSFER',function()
@@ -256,11 +273,14 @@ local function participantActionButtons(self,target,x,y,w)
         if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
       end,'cyan')
       y=y+29
-      button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()
-        BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
-      end,'yellow',not room.chart.official and room.chart.transferMode=='host_transfer')
-      y=y+29
-    elseif target.ready and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready') then
+      if not isHost() then
+        button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()
+          BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
+        end,'yellow',not room.chart.official and room.chart.transferMode=='host_transfer')
+        y=y+29
+      end
+    elseif target.role~='spectator' and target.ready
+      and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready') then
       button(self,'participant_unready',x,y,w,24,'UNREADY',function() BBT.command('room.ready_request',{ready=false}) end,'yellow')
       y=y+29
     end
@@ -301,7 +321,8 @@ local function drawRoster(self,results)
       self.selectedSessionId=participant.sessionId
     end)
     if focused then ui:color('raised'); love.graphics.rectangle('fill',18,rowY,346,20,2,2) end
-    local role=participant.role=='spectator' and (participant.commentatorAccess and '[C]' or '[S]') or '[P]'
+    local participantIsHost=room and participant.sessionId==room.hostSessionId
+    local role=participantIsHost and '[H]' or (participant.role=='spectator' and (participant.commentatorAccess and '[C]' or '[S]') or '[P]')
     ui:text(role..' '..participant.displayName,23,rowY+4,174,'left',focused and 'black' or 'white')
     if showScore then
       local score=Dashboard.score(participant,lifecycle)
@@ -324,11 +345,15 @@ local function drawInspector(self,target)
     return
   end
   ui:text(target.displayName,391,106,185,'left','cyan')
-  local role=target.role=='spectator' and (target.commentatorAccess and 'COMMENTATOR' or 'SPECTATOR') or 'PLAYER'
+  local targetIsHost=room and target.sessionId==room.hostSessionId
+  local role=targetIsHost and (target.role=='spectator' and 'HOST / DIRECTING' or 'HOST / PLAYING')
+    or (target.role=='spectator' and (target.commentatorAccess and 'COMMENTATOR' or 'SPECTATOR') or 'PLAYER')
   local labels={
     {'ROLE',role}, {'CONNECTION',target.connected==false and 'OFFLINE' or 'CONNECTED'},
     {'CHART',target.role=='spectator' and 'NOT REQUIRED' or (target.verified and 'VERIFIED' or 'MISMATCH')},
-    {'RUN',target.validity=='dnf' and 'DNF' or target.validity=='invalid' and 'INVALID' or target.ready and 'READY' or 'WAITING'},
+    {'RUN',target.validity=='dnf' and 'DNF' or target.validity=='invalid' and 'INVALID'
+      or target.role=='spectator' and (targetIsHost and 'DIRECTING' or 'WATCHING')
+      or target.ready and 'READY' or 'WAITING'},
   }
   if room and (room.lifecycle=='results' or room.lifecycle=='set_complete') and target.role~='spectator' then
     labels[#labels+1]={'SET TOTAL',target.setTotal and string.format('%.2f',target.setTotal) or '—'}
@@ -389,11 +414,21 @@ local function drawSetlist(self)
   ui:panel(383,78,205,225,'ACTIONS')
   if not room then ui:wrapped('Join or host a room before building a setlist.',24,111,340,3,'muted'); return end
   local entries=room.setlist or {}
-  for index,entry in ipairs(entries) do
-    if index>8 then break end
-    local y=105+(index-1)*22
+  self.setlistSelection,self.setlistOffset=Dashboard.scroll(
+    self.setlistSelection,self.setlistOffset,#entries,0,8
+  )
+  for visibleIndex=1,8 do
+    local index=self.setlistOffset+visibleIndex
+    local entry=entries[index]
+    if not entry then break end
+    local y=105+(visibleIndex-1)*22
     local active=room.currentSetlistIndex==index-1
+    local selected=self.setlistSelection==index
+    register(self,'setlist_entry_'..tostring(index),20,y,348,20,function()
+      self.setlistSelection=index
+    end)
     if active then ui:color('raised'); love.graphics.rectangle('fill',20,y,348,20,2,2) end
+    if selected then ui:color('cyan'); love.graphics.rectangle('line',20.5,y+.5,347,19,2,2) end
     ui:text(tostring(index)..'.  '..(entry.chart.songName or entry.chart.packageName or 'Chart'),25,y+4,249,'left',active and 'black' or 'white')
     ui:text(entry.chart.variant or '',281,y+4,78,'right',active and 'black' or 'muted')
   end
@@ -401,9 +436,41 @@ local function drawSetlist(self)
   local canEdit=isHost() and room.lifecycle~='playing' and room.lifecycle~='countdown'
   button(self,'setlist_official',395,105,181,25,'SELECT OFFICIAL',function() BBT.openOfficialSelect('host') end,'cyan',canEdit)
   button(self,'setlist_custom',395,136,181,25,'SELECT CUSTOM',function() BBT.openChartSelect('host') end,'cyan',canEdit)
-  button(self,'setlist_add_official',395,177,181,25,'ADD OFFICIAL',function() BBT.openOfficialSelect('setlist') end,'green',canEdit)
-  button(self,'setlist_add_custom',395,208,181,25,'ADD CUSTOM',function() BBT.openChartSelect('setlist') end,'green',canEdit)
-  ui:wrapped(isHost() and 'The host controls chart order. Custom locked packages can use host transfer.' or 'This setlist is controlled by the host.',395,246,181,4,'muted')
+  button(self,'setlist_add_official',395,167,86,25,'ADD OFF.',function() BBT.openOfficialSelect('setlist') end,'green',canEdit)
+  button(self,'setlist_add_custom',490,167,86,25,'ADD CUSTOM',function() BBT.openChartSelect('setlist') end,'green',canEdit)
+
+  local selection=self.setlistSelection or 1
+  local resultsLocked=room.lifecycle=='results' or room.lifecycle=='set_complete'
+  local activeSelection=(room.currentSetlistIndex or -1)+1
+  local canMoveSelection=not resultsLocked or selection>activeSelection
+  button(self,'setlist_up',395,198,55,25,'UP',function()
+    local target=selection-1
+    BBT.command('setlist.move',{from=selection-1,to=target-1})
+    self.setlistSelection=target
+  end,'white',canEdit and #entries>1 and selection>1 and canMoveSelection
+    and (not resultsLocked or selection-1>activeSelection))
+  button(self,'setlist_down',456,198,55,25,'DOWN',function()
+    local target=selection+1
+    BBT.command('setlist.move',{from=selection-1,to=target-1})
+    self.setlistSelection=target
+  end,'white',canEdit and #entries>1 and selection<#entries and canMoveSelection)
+  button(self,'setlist_remove',517,198,59,25,'REMOVE',function()
+    local entry=entries[selection]
+    openConfirm(self,'REMOVE CHART','Remove '..bounded(entry and (entry.chart.songName or entry.chart.packageName) or 'this chart',28)..' from the setlist?','REMOVE',function()
+      BBT.command('setlist.remove',{index=selection-1})
+      self.setlistSelection=math.max(1,math.min(selection,#entries-1))
+    end)
+  end,'red',canEdit and #entries>0 and not (
+    room.currentSetlistIndex==selection-1
+    and (room.lifecycle=='results' or room.lifecycle=='set_complete')
+  ))
+
+  local index=room.currentSetlistIndex
+  local canAdvance=(room.lifecycle=='results') and index~=nil and index+1<#entries
+  button(self,'setlist_next',395,229,181,25,'CONTINUE TO NEXT CHART',function()
+    runPrimary(self,{id='advance_set'})
+  end,'green',isHost() and canAdvance)
+  ui:wrapped(isHost() and 'Select a row, then reorder or remove it.' or 'The host controls this ordered set.',395,265,181,2,'muted')
 end
 
 local function rendererSlot(id)
@@ -415,6 +482,72 @@ local function planSlot(id)
   local plan=BBT.broadcastPlan or (BBT.runtimeSnapshot and BBT.runtimeSnapshot.broadcastPlan)
   for _,slot in ipairs(plan and plan.slots or {}) do if slot.id==id then return slot end end
   return rendererSlot(id)
+end
+
+local function loadBroadcastDraft(self,id)
+  local slot=rendererSlot(id or self.broadcastSlot or 'A')
+  self.broadcastSlot=slot.id
+  self.broadcastDraft={
+    mode=slot.mode or 'full',
+    width=slot.width or 1280,
+    height=slot.height or 720,
+    fps=slot.fps or 60,
+    delayMs=slot.delayMs or 500,
+  }
+end
+
+local function drawBroadcastAdvanced(self,room)
+  if not self.broadcastDraft then loadBroadcastDraft(self,'A') end
+  local draft=self.broadcastDraft
+  local editable=room and room.lifecycle~='playing' and room.lifecycle~='countdown'
+  ui:text('ADVANCED OBS EXPORT',24,105,220,'left','cyan')
+  ui:text('STREAM '..self.broadcastSlot,356,105,220,'right','white')
+
+  ui:text('STREAM',24,137,66,'left','muted')
+  for index,id in ipairs(STREAMS) do
+    chip(self,'broadcast_slot_'..id,96+(index-1)*60,132,54,id,self.broadcastSlot==id,function()
+      loadBroadcastDraft(self,id)
+    end,'cyan')
+  end
+  ui:text('MODE',24,169,66,'left','muted')
+  chip(self,'broadcast_mode_full',96,164,104,'FULL',draft.mode=='full',function() draft.mode='full' end,'cyan')
+  chip(self,'broadcast_mode_clean',206,164,104,'CLEAN',draft.mode=='clean',function() draft.mode='clean' end,'cyan')
+
+  ui:text('SIZE',24,201,66,'left','muted')
+  chip(self,'broadcast_size_720',96,196,128,'1280 x 720',draft.width==1280,function()
+    draft.width=1280; draft.height=720
+  end,'cyan')
+  chip(self,'broadcast_size_1080',230,196,128,'1920 x 1080',draft.width==1920,function()
+    draft.width=1920; draft.height=1080
+  end,'cyan')
+  ui:text('FPS',374,201,38,'left','muted')
+  chip(self,'broadcast_fps_30',416,196,72,'30',draft.fps==30,function() draft.fps=30 end,'cyan')
+  chip(self,'broadcast_fps_60',494,196,72,'60',draft.fps==60,function() draft.fps=60 end,'cyan')
+
+  ui:text('DELAY',24,233,66,'left','muted')
+  for index,value in ipairs({250,500,1000,1500}) do
+    chip(self,'broadcast_delay_'..tostring(value),96+(index-1)*78,228,72,tostring(value)..' MS',draft.delayMs==value,function()
+      draft.delayMs=value
+    end,'cyan')
+  end
+  local highLoad=draft.width==1920 and draft.fps==60
+  ui:text(highLoad and 'HIGH GPU LOAD' or 'EXPORT CLOCK LOCKED',416,237,150,'right',highLoad and 'yellow' or 'muted')
+
+  button(self,'broadcast_apply',24,267,172,25,'APPLY TO STREAM '..self.broadcastSlot,function()
+    local slot=rendererSlot(self.broadcastSlot)
+    BBT.command('renderer.configure',{
+      slot=self.broadcastSlot,
+      participantId=slot.participantId,
+      participantName=slot.participantName,
+      mode=draft.mode,width=draft.width,height=draft.height,
+      fps=draft.fps,delayMs=draft.delayMs,featured=slot.featured,
+    })
+  end,'green',editable)
+  ui:text(draft.mode:upper()..' / '..draft.width..'x'..draft.height..' / '..draft.fps..' FPS',205,274,225,'left','white')
+  button(self,'broadcast_advanced_back',446,267,120,25,'BACK',function()
+    self.broadcastAdvanced=false
+    self.focusId='broadcast_advanced'
+  end,'white')
 end
 
 local function drawBroadcast(self)
@@ -429,6 +562,10 @@ local function drawBroadcast(self)
   -- every other workspace. Keeping it local avoids an accidental lookup of a
   -- nonexistent global when hosts or commentators open the OBS menu.
   local room=currentRoom()
+  if authority=='host' and self.broadcastAdvanced then
+    drawBroadcastAdvanced(self,room)
+    return
+  end
   local target=selected(self)
   local rendererEditable=room and room.lifecycle~='playing' and room.lifecycle~='countdown'
   ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
@@ -447,7 +584,11 @@ local function drawBroadcast(self)
       button(self,'broadcast_assign_'..id,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
         if slot.active then BBT.command('renderer.stop',{slot=id})
         elseif target and target.role~='spectator' then
-          BBT.command('renderer.configure',{slot=id,participantId=target.sessionId,participantName=target.displayName,mode='full',width=1280,height=720,fps=60,delayMs=500,featured=slot.featured})
+          BBT.command('renderer.configure',{
+            slot=id,participantId=target.sessionId,participantName=target.displayName,
+            mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,
+            delayMs=slot.delayMs,featured=slot.featured,
+          })
         end
       end,slot.active and 'yellow' or 'cyan',slot.active or (rendererEditable and target and target.role~='spectator'))
       button(self,'broadcast_feature_'..id,x+68,196,57,25,'FEATURE',function()
@@ -468,7 +609,10 @@ local function drawBroadcast(self)
       end
     end,enabled and 'yellow' or 'cyan')
   else
-    button(self,'broadcast_advanced',398,238,178,27,self.broadcastAdvanced and 'HIDE ADVANCED' or 'ADVANCED',function() self.broadcastAdvanced=not self.broadcastAdvanced end,'white')
+    button(self,'broadcast_advanced',398,238,178,27,'ADVANCED EXPORT',function()
+      self.broadcastAdvanced=true
+      loadBroadcastDraft(self,self.broadcastSlot or 'A')
+    end,'white')
   end
   local detail
   for _,slot in ipairs(BBT.renderers or {}) do if slot.lastError then detail=slot.lastError break end end
@@ -477,8 +621,6 @@ local function drawBroadcast(self)
     button(self,'broadcast_details',496,270,80,24,'DETAILS',function()
       self.modal={kind='details',title='RENDERER DETAILS',message=detail,returnFocus=self.focusId}
     end,'white')
-  elseif self.broadcastAdvanced and authority=='host' then
-    ui:text('MODE FULL  /  1280x720  /  60 FPS  /  500 MS  /  FEATURED AUDIO ONLY',24,276,552,'left','muted')
   else
     ui:text('Featured video, text exports, and audio follow the same delayed clock.',24,276,552,'left','muted')
   end
@@ -627,6 +769,27 @@ local function focusIndex(self)
   return 1
 end
 
+local function continueAdvancedChart(self)
+  local requestId=self.advanceRequestId
+  if not requestId or BBT.pendingRequestId==requestId then return false end
+  self.advanceRequestId=nil
+  if BBT.lastCompletedRequestId~=requestId then
+    self.advancePreviousHash=nil
+    return false
+  end
+  local room=currentRoom()
+  local changed=room and room.chart and room.chart.hash~=self.advancePreviousHash
+  self.advancePreviousHash=nil
+  local me=BBT.currentPlayer()
+  if not changed or not isHost() or not me or me.role=='spectator' then return false end
+  -- Future setlist entries are chosen when the set is built, but the active
+  -- game selection remains on the completed chart. Re-open the appropriate
+  -- selector now so the host verifies and launches the newly active entry.
+  if room.chart.official then BBT.openOfficialSelect('verify')
+  else BBT.openChartSelect('verify') end
+  return true
+end
+
 local function update(self)
   local controls=self.controls or {}
   if #controls==0 then return end
@@ -648,6 +811,9 @@ local function update(self)
   if pressed('back') then
     if self.modal then
       closeModal(self)
+    elseif self.workspace=='broadcast' and self.broadcastAdvanced then
+      self.broadcastAdvanced=false
+      self.focusId='broadcast_advanced'
     elseif self.workspace~='room' then setWorkspace(self,'room')
     else
       openConfirm(self,'EXIT ONLINE','Stop the Online runtime and return to the main menu?','EXIT',function() BBT.exitOnline(); leaveToMenu(self) end)
@@ -693,9 +859,17 @@ return function()
     options=options or {}
     applyBeatblockPalette(false)
     applyBeatblockMenuFont()
-    self.workspace=options.workspace or 'room'; self.rosterFilter='all'; self.selectedSessionId=nil
+    local initialWorkspace=options.workspace
+    local room=currentRoom()
+    if not initialWorkspace and isHost() and room
+      and (room.lifecycle=='results' or room.lifecycle=='set_complete') then
+      initialWorkspace='setlist'
+    end
+    self.workspace=initialWorkspace or 'room'; self.rosterFilter='all'; self.selectedSessionId=nil
     self.focusId=self.workspace=='room' and 'session_primary' or 'nav_'..self.workspace
-    self.controls={}; self.broadcastAdvanced=false; self.modal=nil
+    self.controls={}; self.broadcastAdvanced=false; self.broadcastSlot='A'; self.broadcastDraft=nil
+    self.setlistSelection=1; self.setlistOffset=0
+    self.advanceRequestId=nil; self.advancePreviousHash=nil; self.modal=nil
     -- Online is a complete state, not a menu modal. Suppress the entity
     -- manager retained from Menu and clear those entities before Song Select
     -- can inherit them on the next transition.
@@ -733,6 +907,7 @@ return function()
     if self.menuMusicManager then self.menuMusicManager:update(dt) end
     BBT.update(dt)
     if BBT.maybeLaunchScheduledChart() then return end
+    if continueAdvancedChart(self) then return end
     update(self)
   end)
   st:setBgDraw(function(self)

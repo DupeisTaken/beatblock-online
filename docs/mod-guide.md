@@ -2,7 +2,7 @@
 
 Opening **Online** lazily starts the hidden runtime. The interface always uses Beatblock's `600×360` logical canvas and shows one workspace at a time. Only forms, destructive confirmations, transfer consent, and full error details use a modal.
 
-The header identifies the runtime and protocol. Beneath it, the pinned session strip shows the current room/chart, verification context, and exactly one next action: host, select chart, locate chart, ready, start, wait, advance set, or view results. Button labels use measured font metrics and every interactive control is at least 22 logical pixels high.
+The header identifies the runtime and protocol. Beneath it, the pinned session strip shows the current room/chart, verification context, and exactly one next action: host, select chart, locate chart, ready, start, wait, next chart, select next chart, or view results. Button labels use measured font metrics and every interactive control is at least 22 logical pixels high. Visually disabled controls have no activation callback, so mouse, keyboard, and controller cannot bypass lifecycle locks.
 
 Online resets Beatblock's fixed menu palette when it opens. Muted text uses the
 palette's neutral-gray source index, and modals use an opaque black focus veil
@@ -26,6 +26,7 @@ Before play the roster shows readiness/verification state and never fabricates a
 
 The terms are intentionally distinct:
 
+- **Host** owns room and Broadcast authority and can either Play or Direct the next race.
 - **Player** competes and must locally verify the locked chart.
 - **Spectator** follows room state and rankings without competing.
 - **Commentator** is a host-granted permission layered on an admitted Spectator. It does not change room capacity or make that participant a Player.
@@ -34,8 +35,8 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 
 ## Global workspaces
 
-- **Setlist** selects official/custom charts and builds the ordered room set.
-- **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; Advanced contains mode, resolution, FPS, delay, exports, and diagnostics.
+- **Setlist** selects official/custom charts, builds the ordered room set, and exposes Up/Down/Remove for the selected row. Results return the host here; advancing opens the correct selector for local verification.
+- **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; **Advanced Export** edits mode, resolution, FPS, and delay per stream and warns on 1080p60.
 - **History** lists saved match summaries.
 - **Settings** controls the gameplay HUD, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**.
 - **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
@@ -65,7 +66,7 @@ Long renderer failures are bounded in the workspace. **Details** opens the full 
 
 ## Screenshot verification
 
-`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 26 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
+`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 28 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
 
 If a review image is open and Windows locks it, set `BBT_UI_REPORTS` to a fresh
 workspace-relative report directory; the baselines and comparison thresholds
