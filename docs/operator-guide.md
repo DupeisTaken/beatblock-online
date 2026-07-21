@@ -19,7 +19,7 @@ public and local ports identical.
 1. Install the same Beatblock Online release as the host, then launch Beatblock.
 2. Open **Online** and wait for the header to show **ONLINE / PROTOCOL V3** and the session panel to show **READY TO CONNECT**.
 3. Choose **Join as Player**.
-4. Enter a display name. In **Host Address**, enter only the public IPv4 address or DNS name, such as `203.0.113.10` or `play.example.net`; do not include `http://`, `https://`, or a port.
+4. Enter a display name that is not already in use in the room. Names are compared without ASCII letter casing; a conflict is rejected with **username taken** rather than adding a numbered suffix. In **Host Address**, enter only the public IPv4 address or DNS name, such as `203.0.113.10` or `play.example.net`; do not include `http://`, `https://`, or a port.
 5. Enter the public **UDP Port** and room **Password**, then choose **Join**.
 6. In a host-approval room, **Waiting for Approval** is expected until the host accepts the request. In a password-only room, admission is immediate.
 7. Follow the highlighted session action. When a chart is locked, select or accept the exact matching chart, choose **Ready**, and wait for the host to start the race.

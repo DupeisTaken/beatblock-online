@@ -80,6 +80,12 @@ local function applyBeatblockMenuFont()
   end
 end
 
+-- Online owns no native Beatblock entities. Preserve its shared music manager,
+-- but release any Player or transition entity before another state takes over.
+local function clearNativeEntities(self)
+  if em and em.clear then em.clear({self.menuMusicManager}) end
+end
+
 local function leaveToMenu(self)
   local music=self.menuMusicManager
   if music then music:clearOnBeatHooks() end
@@ -896,7 +902,7 @@ return function()
     -- manager retained from Menu and clear those entities before Song Select
     -- can inherit them on the next transition.
     self.holdEntityDraw=true
-    if em and em.clear then em.clear({self.menuMusicManager}) end
+    clearNativeEntities(self)
     if mouse and mouse.disableGameplay then mouse:disableGameplay() end
     self.previousTextInput=love.textinput
     self.onlineTextInput=function(text)
@@ -919,6 +925,10 @@ return function()
     if love.textinput==self.onlineTextInput then love.textinput=self.previousTextInput end
     if love.keypressed==self.onlineKeyPressed then love.keypressed=self.previousKeyPressed end
     if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
+    -- State changes call leave before initializing the destination. Clear any
+    -- retained Player now so it cannot keep updating beside the next state's
+    -- newly created Player instance.
+    clearNativeEntities(self)
     -- Restore the native menu shader before any destination state draws. Some
     -- transitions reuse an already-loaded Menu state, so relying on Menu:init
     -- alone leaves its full-color artwork rendered as the bad-color pattern.
