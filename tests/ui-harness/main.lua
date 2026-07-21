@@ -150,6 +150,7 @@ local scenarios={
   {'connect',function() reset(); BBT.lastLobby=nil; BBT.context.lobbyId='offline' end},
   {'runtime-failure',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError='Runtime did not answer. Repair the installation or open logs for the complete diagnostic details.' end},
   {'host-form',function() reset(); BBT.lastLobby=nil; online:openForm('host') end},
+  {'host-form-directing',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online.modal.values.hostParticipating=false end},
   {'host-form-validation',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online:submitForm(); assert(online.modal and online.modal.error=='PASSWORD IS REQUIRED') end},
   {'join-form',function() reset(); BBT.lastLobby=nil; online:openForm('join',false) end},
   {'long-error',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError=string.rep('This runtime error is intentionally long and must stay bounded. ',8) end},
@@ -250,6 +251,14 @@ function love.load()
   activate('participant_host_play')
   assert(BBT.commandLog[1].kind=='room.host_play_set','Host play toggle must use its dedicated runtime command')
   assert(BBT.commandLog[1].payload.participating==false,'Playing host toggle must switch to directing')
+
+  reset(); BBT.lastLobby=nil; online:openForm('host')
+  assert(online.modal.values.hostParticipating==true,'Host room creation must default to playing for compatibility')
+  activate('form_host_direct')
+  online.modal.values.password='secret'
+  activate('form_submit')
+  assert(BBT.commandLog[1].kind=='room.host_request','Host form must submit a room creation request')
+  assert(BBT.commandLog[1].payload.hostParticipating==false,'Director choice must cross the game/runtime bridge')
 
   reset(); online.workspace='setlist'; online.setlistSelection=2
   activate('setlist_up')

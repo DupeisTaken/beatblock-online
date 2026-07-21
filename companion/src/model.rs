@@ -511,6 +511,7 @@ pub struct HostRoomRequest {
     pub password: String,
     pub port: Option<u16>,
     pub admission_mode: Option<AdmissionMode>,
+    pub host_participating: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

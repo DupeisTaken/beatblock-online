@@ -63,6 +63,11 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .get("hostApproval")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            let host_participating = message
+                .payload
+                .get("hostParticipating")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             if let Some(display_name) = message.payload.get("displayName").and_then(Value::as_str) {
                 state
                     .save_host_profile(display_name.to_owned(), port)
@@ -86,6 +91,7 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                     } else {
                         crate::model::AdmissionMode::PasswordOnly
                     },
+                    host_participating,
                 ),
             )
             .await

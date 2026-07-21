@@ -132,7 +132,7 @@ local function openForm(self,mode,spectator)
     values={
       displayName=tostring(BBT.context and BBT.context.playerName or 'Player'),
       name='Beatblock Room', address=tostring(settings.hostAddress or '127.0.0.1'),
-      port=tostring(settings.hostPort or 32145), password='',
+      port=tostring(settings.hostPort or 32145), password='', hostParticipating=true,
     },
     fields=mode=='host' and {'displayName','name','port','password'} or {'displayName','address','port','password'},
     index=1,
@@ -165,6 +165,7 @@ local function submitForm(self)
     BBT.command('room.host_request',{
       displayName=values.displayName,name=values.name,password=values.password,
       port=port,hostApproval=true,allowChartTransfers=true,
+      hostParticipating=values.hostParticipating~=false,
     })
   else
     BBT.command('room.join_request',{
@@ -717,17 +718,32 @@ local function drawModal(self)
   ui:veil()
   local modal=self.modal
   if modal.kind=='form' then
-    ui:panel(118,60,364,240,modal.title)
+    -- The host form reserves one explicit row for the owner's race role. Keep
+    -- it separate from editable fields so text input and deletion continue to
+    -- target only the last selected text box.
+    local isHostForm=modal.mode=='host'
+    ui:panel(118,isHostForm and 38 or 60,364,isHostForm and 280 or 240,modal.title)
     for index,key in ipairs(modal.fields) do
-      local y=96+(index-1)*38
+      local y=(isHostForm and 74 or 96)+(index-1)*(isHostForm and 34 or 38)
       local labels={displayName='DISPLAY NAME',name='ROOM NAME',address='HOST ADDRESS',port='UDP PORT',password='PASSWORD'}
       ui:text(labels[key],136,y,124,'left','muted')
       local value=key=='password' and string.rep('*',#modal.values[key]) or modal.values[key]
       button(self,'form_'..key,261,y-5,203,27,value,function() modal.index=index; self.focusId='form_'..key end,'white')
     end
-    button(self,'form_submit',261,252,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
-    button(self,'form_cancel',366,252,98,27,'CANCEL',function() closeModal(self) end,'white')
-    if modal.error then ui:text(modal.error,136,282,328,'center','red') end
+    if isHostForm then
+      ui:text('HOST ROLE',136,211,124,'left','muted')
+      chip(self,'form_host_play',261,207,96,'PLAY',modal.values.hostParticipating~=false,function()
+        modal.values.hostParticipating=true; modal.error=nil
+      end,'green')
+      chip(self,'form_host_direct',363,207,101,'DIRECT',modal.values.hostParticipating==false,function()
+        modal.values.hostParticipating=false; modal.error=nil
+      end,'green')
+      ui:text(modal.values.hostParticipating==false and 'ROOM CONTROL / NOT SCORED' or 'RACE AND ROOM CONTROL',261,235,203,'center','muted')
+    end
+    local actionY=isHostForm and 265 or 252
+    button(self,'form_submit',261,actionY,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
+    button(self,'form_cancel',366,actionY,98,27,'CANCEL',function() closeModal(self) end,'white')
+    if modal.error then ui:text(modal.error,136,isHostForm and 298 or 282,328,'center','red') end
   else
     ui:panel(126,99,348,162,modal.title)
     ui:wrapped(modal.message,146,133,308,5,modal.kind=='details' and 'red' or 'white')

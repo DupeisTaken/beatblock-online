@@ -42,6 +42,22 @@ fn validated_room_name(name: &str) -> Result<String> {
     Ok(name.to_owned())
 }
 
+/// Builds the first authoritative room image before networking exposes it.
+/// Keeping host participation in this constructor path prevents a transient
+/// playing-host snapshot when the owner chooses to direct the room.
+fn initial_host_room(
+    room_name: String,
+    host_name: String,
+    admission_mode: AdmissionMode,
+    host_participating: bool,
+) -> Result<RoomEngine> {
+    let mut room = RoomEngine::host(room_name, host_name, admission_mode);
+    if !host_participating {
+        room.set_host_participating(false)?;
+    }
+    Ok(room)
+}
+
 /// Persists settings through a same-directory, durable replacement so a
 /// crash cannot leave a truncated config file.
 pub(crate) fn write_config_atomically(data_dir: &Path, config: &CompanionConfig) -> Result<()> {
@@ -197,6 +213,36 @@ mod tests {
         assert_eq!(validated_room_name("  Finals  ").unwrap(), "Finals");
         assert!(validated_room_name("").is_err());
         assert!(validated_room_name(&"界".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn director_host_role_is_set_in_the_initial_room_image() {
+        let room = initial_host_room(
+            "Directed finals".into(),
+            "Operator".into(),
+            AdmissionMode::HostApproval,
+            false,
+        )
+        .unwrap();
+        let host = room
+            .snapshot
+            .participants
+            .iter()
+            .find(|participant| participant.session_id == room.snapshot.host_session_id)
+            .unwrap();
+        assert_eq!(host.role, ParticipantRole::Spectator);
+        assert!(host.ready);
+        assert!(host.verified);
+
+        let playing = initial_host_room(
+            "Playing finals".into(),
+            "Operator".into(),
+            AdmissionMode::HostApproval,
+            true,
+        )
+        .unwrap();
+        assert_eq!(playing.snapshot.participants[0].role, ParticipantRole::Host);
+        assert!(!playing.snapshot.participants[0].ready);
     }
 
     #[tokio::test]
@@ -1655,6 +1701,7 @@ impl AppState {
         password: String,
         port: u16,
         admission_mode: AdmissionMode,
+        host_participating: bool,
     ) -> Result<SocketAddr> {
         let room_name = validated_room_name(&room_name)?;
         self.cancel_reconnect();
@@ -1663,7 +1710,7 @@ impl AppState {
         *self.reconnect_request.write().await = None;
         *self.connection_status.write().await = "starting".into();
         let host_name = self.config.read().await.display_name.clone();
-        let room = RoomEngine::host(room_name, host_name, admission_mode);
+        let room = initial_host_room(room_name, host_name, admission_mode, host_participating)?;
         let session_id = room.snapshot.host_session_id.clone();
         let local_address = match self.network.start_host(port, password).await {
             Ok(address) => address,

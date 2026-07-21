@@ -91,10 +91,10 @@ for current proxy configuration syntax.
 ## Host a room
 
 1. Open **Online** and choose **Host a Room**.
-2. Enter a room name, UDP port, password, display name, and admission policy.
+2. Enter a room name, UDP port, password, and display name. Choose **Play** to race or **Direct** to host without joining the race.
 3. Share the `IP:port` or password-free `bbt://...?...v=3` link separately from the password.
 4. Select pending roster rows to approve/reject requests. Select admitted rows to change roles or remove a participant.
-5. Select the host's own roster row and choose **Direct Next Race** when the host should operate the room without playing; choose **Play Next Race** to rejoin the racing roster.
+5. The host's own roster row keeps **Direct Next Race** / **Play Next Race** available before later races, so the creation choice can be changed without rebuilding the room.
 6. Follow **Select Chart**, build an optional setlist, and wait for every assigned player's exact verification.
 7. When the dashboard reports all assigned players ready, choose **Start Race**. A directing host can start once at least one Player is assigned and ready.
 
