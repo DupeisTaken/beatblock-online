@@ -537,7 +537,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
   const packagedIcon = await readFile(resolve(root, `mod/${distribution}/assets/online.png`));
   if (hash(onlineIcon) !== hash(packagedIcon))
     throw new Error(`${distribution}/assets/online.png was not generated from the shared asset`);
-  const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.3.0-alpha.3.zip`);
+  const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.3.0-beta.1.zip`);
   const entries = new Set(
     listZipEntries(await readFile(archive), `${distribution} release ZIP`).map((entry) =>
       entry.replaceAll('\\', '/'),

@@ -43,7 +43,7 @@ executable for Explorer and taskbar rendering.
 
 - A manual **Run workflow** build validates and uploads a 14-day workflow artifact without publishing a release.
 - Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and generated release notes. A mismatched tag fails before the native build.
-- Tags containing `-` (for example, `v0.3.0-alpha.3`) publish as prereleases.
+- Tags containing `-` (for example, `v0.3.0-beta.1`) publish as prereleases.
 
 Third-party actions are pinned to full commit SHAs. The build job has read-only repository access plus the OIDC permissions needed to produce GitHub artifact attestations. A separate environment-gated publication job is the only job with `contents: write`; it downloads the reviewed workflow artifact and publishes those exact files. CI and release generation also regenerate the protocol schema and fail if the checked-in schema drifts from the TypeScript source.
 
@@ -59,8 +59,8 @@ The workflow produces GitHub artifact attestations for the installer, OBS plugin
 Create and push a release tag only after the normal CI checks pass:
 
 ```powershell
-git tag -a v0.3.0-alpha.3 -m "Beatblock Online v0.3.0-alpha.3"
-git push origin v0.3.0-alpha.3
+git tag -a v0.3.0-beta.1 -m "Beatblock Online v0.3.0-beta.1"
+git push origin v0.3.0-beta.1
 ```
 
 The GitHub Actions run is the source of published binaries. Do not commit generated executables or DLLs back into the repository.

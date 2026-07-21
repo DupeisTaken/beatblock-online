@@ -2,11 +2,11 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md),
-which introduces the redesigned Online workspace, Commentator broadcast
-controls, synchronized final-shaded OBS renderer output, authenticated room and
-local IPC boundaries, safer installer upgrades, bounded runtime resources, and
-reproducible native-artifact verification.
+The current prerelease candidate is [`v0.3.0-beta.1`](docs/releases/v0.3.0-beta.1.md),
+which promotes the redesigned Online workspace into beta with host Play/Direct
+selection, pause-safe online races, native-timed OBS output, authenticated room
+and local IPC boundaries, safer installer upgrades, bounded runtime resources,
+and reproducible native-artifact verification.
 
 ## Player quick start
 
@@ -68,7 +68,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the
 - [Installer/runtime architecture](docs/architecture.md)
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
-- [v0.3.0-alpha.3 release notes](docs/releases/v0.3.0-alpha.3.md)
+- [v0.3.0-beta.1 release notes](docs/releases/v0.3.0-beta.1.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
 
@@ -80,6 +80,6 @@ The latest automated gate is [full-capability-latest.md](reports/trial-runs/full
 - `protocol`: protocol v3 JSON Schema and TypeScript conformance implementation; archived v2 remains for compatibility diagnostics.
 - `reports/trial-runs`: machine-readable and Markdown acceptance evidence.
 
-## Current alpha scope
+## Current beta scope
 
 Windows 10 2004+ and Windows 11 x64 are supported. A room supports 16 players, 32 telemetry spectators, four stable host renderer slots, password admission, optional host approval, synchronized starts, chart verification, authoritative event-derived rankings, SQLite history, and atomic OBS text exports.

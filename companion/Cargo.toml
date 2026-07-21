@@ -1,6 +1,6 @@
 [package]
 name = "beatblock-online-companion"
-version = "0.3.0-alpha.3"
+version = "0.3.0-beta.1"
 edition = "2021"
 description = "Installer and hidden direct-room runtime for Beatblock Online"
 license = "MIT"

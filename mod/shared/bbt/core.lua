@@ -1,5 +1,5 @@
 local BBT = {
-  version = '0.3.0-alpha.3',
+  version = '0.3.0-beta.1',
   protocolVersion = 3,
   sequence = 0,
   runSequence = 0,

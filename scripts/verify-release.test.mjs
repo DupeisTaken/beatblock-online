@@ -41,7 +41,7 @@ test('release version metadata and generated asset names stay aligned', async ()
   const protocolPackage = JSON.parse(protocolPackageText);
   const version = rootPackage.version;
 
-  assert.match(version, /^\d+\.\d+\.\d+-alpha\.\d+$/);
+  assert.match(version, /^\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$/);
   assert.equal(protocolPackage.version, version);
   assert.equal(cargoManifest.match(/^version = "([^"]+)"$/m)?.[1], version);
   assert.equal(
@@ -67,21 +67,21 @@ test('release version metadata and generated asset names stay aligned', async ()
 
 test('tagged releases must exactly match the package version', () => {
   assert.deepEqual(
-    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-alpha.3', version: '0.3.0-alpha.3' }),
-    { tagged: true, expected: 'v0.3.0-alpha.3' },
+    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-beta.1', version: '0.3.0-beta.1' }),
+    { tagged: true, expected: 'v0.3.0-beta.1' },
   );
   assert.throws(
     () =>
       validateReleaseTag({
         refType: 'tag',
-        refName: 'v0.3.0-alpha.4',
-        version: '0.3.0-alpha.3',
+        refName: 'v0.3.0-beta.2',
+        version: '0.3.0-beta.1',
       }),
     /does not match package version/,
   );
   assert.deepEqual(
-    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-alpha.3' }),
-    { tagged: false, expected: 'v0.3.0-alpha.3' },
+    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-beta.1' }),
+    { tagged: false, expected: 'v0.3.0-beta.1' },
   );
 });
 
