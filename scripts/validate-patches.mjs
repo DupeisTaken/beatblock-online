@@ -55,6 +55,12 @@ for (const block of blocks) {
       ['-xOf', resolve(reference, 'states.zip'), target.slice('states/'.length)],
       { encoding: 'utf8' },
     );
+  } else if (target.startsWith('obj/')) {
+    source = execFileSync(
+      'tar',
+      ['-xOf', resolve(reference, 'obj.zip'), target.slice('obj/'.length)],
+      { encoding: 'utf8' },
+    );
   } else {
     continue;
   }

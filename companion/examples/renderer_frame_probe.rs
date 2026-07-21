@@ -99,12 +99,17 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     Ok(Some((sequence, width, height, pixels)))
 }
 
-fn push_playing_sample(manager: &RendererManager, started: &Instant) -> f32 {
+fn push_playing_sample(
+    manager: &RendererManager,
+    started: &Instant,
+    start_beat: f32,
+    beats_per_second: f32,
+) -> f32 {
     let now_us = unix_ms() * 1_000;
     // Tutorial begins at beat -8 and reaches its Play Song event at beat 0
     // using 150 BPM. Driving that real pre-roll prevents the probe itself from
     // collapsing sixteen beats of chart/VFX events into its first frame.
-    let beat = -8.0 + started.elapsed().as_secs_f32() * 2.5;
+    let beat = start_beat + started.elapsed().as_secs_f32() * beats_per_second;
     manager.push_sample(
         "physical-probe",
         RenderSample {
@@ -171,8 +176,18 @@ fn main() -> Result<()> {
     let capture_beat = env::var("BBT_PROBE_CAPTURE_BEAT")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| value.is_finite() && (-8.0..=256.0).contains(value))
+        .filter(|value| value.is_finite() && (-64.0..=4_096.0).contains(value))
         .unwrap_or(1.0);
+    let start_beat = env::var("BBT_PROBE_START_BEAT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(-8.0);
+    let beats_per_second = env::var("BBT_PROBE_BEATS_PER_SECOND")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0 && *value <= 32.0)
+        .unwrap_or(2.5);
     std::fs::create_dir_all(&root)?;
 
     let manager = RendererManager::new(root.clone())?;
@@ -197,10 +212,14 @@ fn main() -> Result<()> {
         "levels/Finished levels/tutorial/",
         "easy",
     )?;
+    // Tutorial's first scoring interaction is at beat 0. The production game
+    // publishes this once after parsing Event.hitCount; the probe supplies the
+    // same anchor explicitly so it exercises the first-note release barrier.
+    manager.push_render_anchor("physical-probe", 0.0, 0.0);
 
     let started = Instant::now();
     let frame = loop {
-        let beat = push_playing_sample(&manager, &started);
+        let beat = push_playing_sample(&manager, &started, start_beat, beats_per_second);
         if beat >= capture_beat {
             if let Some(frame) = read_committed_frame(&manager.frame_path("A"))? {
                 break frame;
@@ -270,7 +289,7 @@ fn main() -> Result<()> {
         .unwrap_or_default();
     let hold_started = Instant::now();
     while hold_started.elapsed() < Duration::from_secs(hold_seconds) {
-        push_playing_sample(&manager, &started);
+        push_playing_sample(&manager, &started, start_beat, beats_per_second);
         thread::sleep(Duration::from_millis(16));
     }
     manager.stop_all();

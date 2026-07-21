@@ -17,7 +17,9 @@ recover without recreating the OBS source.
 
 The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
 
-Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. The OBS competition view removes chart scenery, background images/video, and background noise while retaining the player, notes, hit feedback, chart-controlled HUD, online race HUD, palette/accessibility conversion, and screen-space effects. Backdrop suppression is scoped to the isolated renderer child and restored after every Game draw, so the host player's window is unchanged. Capturing occurs after the remaining gamestate composition, preventing raw palette-index artwork from appearing as a color mask. Optional Clean mode captures the same foreground-only gameplay canvas before final shading. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
+Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode publishes Beatblock's complete native composition: chart backgrounds and video, decorative entities, blocks, hit feedback, chart and Online HUDs, palette/accessibility conversion, and screen-space effects. Optional Clean mode uses the native base gameplay canvas without the final on-top composition, but still applies Beatblock's palette/accessibility shader; it no longer exposes red palette-index artwork or removes chart-authored scenery. Both modes preserve the source aspect ratio, and capture continues through Beatblock's native Results state.
+
+Renderer children preload the chart, then consume cached delayed samples during the chart pre-roll while OBS output remains gated. This invisible warm-up lets Beatblock advance its own background events, eases, blocks, and effects instead of reconstructing them synthetically or collapsing them into the first visible frame. Once every assigned source reaches its first scoring note, the runtime releases the cohort on a shared clock, seeds each paddle once, and enables capture. Later frames install the delayed remote beat inside `GameManager` after its local audio-clock read but before native event processing; the remote mouse vector is rebuilt before `Player:update`, so native paddle limits and history remain active without the hidden cursor snapping to the upper-left. Ordered raw tap edges carry the source player's already offset-adjusted judgement beat, with same-frame input flags as a bounded fallback.
 
 Choose **Advanced Export** in Broadcast to edit each Stream A-D independently. The complete visible controls are Full/Clean mode, 1280×720/1920×1080 output, 30/60 fps, and 250/500/1000/1500 ms delay. **Apply to Stream** stores those values even while the slot is unassigned; a later **Assign** uses that slot's saved configuration instead of resetting it to defaults. A 1080p60 selection is marked **High GPU Load**. Apply is disabled during countdown/gameplay.
 
@@ -46,7 +48,9 @@ physical probe at an isolated Beatblock test build. Run it once with
 transparent, uniformly black, or spatially empty frames and writes a BMP for
 visual review. The probe follows Tutorial's real pre-roll; set
 `BBT_PROBE_CAPTURE_BEAT` to inspect a later composed frame without skipping the
-intervening chart events:
+intervening chart events. `BBT_PROBE_BEATS_PER_SECOND` may accelerate a
+state-handoff smoke test, but an accelerated run is not evidence of visual
+timing fidelity:
 
 ```powershell
 $env:BBT_PROBE_GAME = 'C:\path\to\Beatblock.exe'

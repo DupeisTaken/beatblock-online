@@ -87,7 +87,7 @@ fn classify_peer_message(message: &Envelope) -> Result<PeerMessageClass> {
         | "chart.transfer_decision"
         | "broadcast.subscribe"
         | "broadcast.mirror_status" => (PeerMessageClass::State, MAX_PEER_STATE_PAYLOAD_BYTES),
-        "client.hello" | "input.tap" | "render.keyframe" => (
+        "client.hello" | "input.tap" | "render.anchor" | "render.keyframe" => (
             PeerMessageClass::Telemetry,
             MAX_PEER_TELEMETRY_PAYLOAD_BYTES,
         ),
@@ -355,6 +355,30 @@ mod tests {
         );
         assert!(classify_peer_message(&oversized).is_err());
         assert!(classify_peer_message(&Envelope::new("gameplay.snapshot", 1, json!({}),)).is_err());
+        assert_eq!(
+            classify_peer_message(&Envelope::new(
+                "render.anchor",
+                2,
+                json!({"firstNoteBeat":0}),
+            ))
+            .unwrap(),
+            PeerMessageClass::Telemetry
+        );
+        assert_eq!(
+            classify_peer_message(&Envelope::new(
+                "input.tap",
+                3,
+                json!({"beat":1,"pressed":true}),
+            ))
+            .unwrap(),
+            PeerMessageClass::Telemetry
+        );
+        assert!(classify_peer_message(&Envelope::new(
+            "render.tap",
+            4,
+            json!({"participantId":"forged"}),
+        ))
+        .is_err());
     }
 
     #[tokio::test]
@@ -692,6 +716,16 @@ impl AppState {
         }
         self.apply_common(&message).await?;
         let session = self.local_session_id.read().await.clone();
+        if matches!(message.kind.as_str(), "input.tap" | "render.anchor") {
+            if let Some(session_id) = session.as_deref() {
+                self.ingest_render_event(
+                    session_id,
+                    &message,
+                    self.is_host.load(Ordering::Relaxed),
+                )
+                .await?;
+            }
+        }
         if message.kind == "render.sample" {
             let sample = crate::model::RenderSample {
                 session_id: 0,
@@ -738,7 +772,7 @@ impl AppState {
             }
         } else if matches!(
             message.kind.as_str(),
-            "client.hello" | "input.tap" | "render.keyframe" | "chart.status"
+            "client.hello" | "input.tap" | "render.anchor" | "render.keyframe" | "chart.status"
         ) && !self.is_host.load(Ordering::Relaxed)
         {
             self.network.broadcast(message.clone()).await;
@@ -747,11 +781,118 @@ impl AppState {
         Ok(())
     }
 
+    /// Converts ordered, source-authored render events into the same cached
+    /// timeline as UDP motion samples. Hosts relay only these compact events to
+    /// authorized Commentators; ordinary spectators never receive 60 Hz state.
+    async fn ingest_render_event(
+        &self,
+        participant_id: &str,
+        message: &Envelope,
+        relay: bool,
+    ) -> Result<()> {
+        let relayed_kind = match message.kind.as_str() {
+            "input.tap" | "render.tap" => {
+                let beat = message
+                    .payload
+                    .get("beat")
+                    .and_then(Value::as_f64)
+                    .context("tap beat is required")? as f32;
+                let judgement_beat = message
+                    .payload
+                    .get("judgementBeat")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(beat as f64) as f32;
+                let pressed = message
+                    .payload
+                    .get("pressed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let released = message
+                    .payload
+                    .get("released")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.renderer.push_tap(
+                    participant_id,
+                    message.sequence,
+                    beat,
+                    judgement_beat,
+                    pressed,
+                    released,
+                );
+                Some("render.tap")
+            }
+            "render.anchor" => {
+                let first_note_beat = message
+                    .payload
+                    .get("firstNoteBeat")
+                    .and_then(Value::as_f64)
+                    .context("render anchor firstNoteBeat is required")?
+                    as f32;
+                let input_offset_ms = message
+                    .payload
+                    .get("inputOffsetMs")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as f32;
+                self.renderer
+                    .push_render_anchor(participant_id, first_note_beat, input_offset_ms);
+                Some("render.anchor")
+            }
+            _ => None,
+        };
+
+        if let (true, Some(relayed_kind)) = (relay, relayed_kind) {
+            let assigned =
+                self.broadcast_plan.read().await.slots.iter().any(|slot| {
+                    slot.active && slot.participant_id.as_deref() == Some(participant_id)
+                });
+            // Anchors are emitted once per run. Cache them on every authorized
+            // mirror so a later assignment does not wait for an event that has
+            // already passed.
+            if assigned || relayed_kind == "render.anchor" {
+                let subscribers = self
+                    .commentator_subscribers
+                    .read()
+                    .await
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut payload = message.payload.clone();
+                if let Some(payload) = payload.as_object_mut() {
+                    payload.insert("participantId".into(), json!(participant_id));
+                }
+                for subscriber in subscribers {
+                    let _ = self
+                        .network
+                        .send_to(
+                            &subscriber,
+                            Envelope::new(relayed_kind, message.sequence, payload.clone()),
+                        )
+                        .await;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn apply_host_message(&self, session_id: &str, mut message: Envelope) -> Result<()> {
         localize_host_schedule(&mut message, unix_ms());
         self.validate(&message)?;
         let mut publish_message = true;
-        if message.kind == "chart.transfer_offer" {
+        if message.kind == "room.start_scheduled" {
+            self.renderer.begin_run();
+        }
+        if matches!(message.kind.as_str(), "render.tap" | "render.anchor") {
+            let participant_id = message
+                .payload
+                .get("participantId")
+                .and_then(Value::as_str)
+                .context("relayed render event requires participantId")?
+                .to_owned();
+            self.ingest_render_event(&participant_id, &message, false)
+                .await?;
+            publish_message = false;
+        } else if message.kind == "chart.transfer_offer" {
             let offer: ChartTransferHeader = serde_json::from_value(message.payload.clone())?;
             offer.validate()?;
             *self.pending_inbound_transfer_offer.write().await =
@@ -897,9 +1038,12 @@ impl AppState {
                     };
                     self.require_admitted_peer(&session_id).await?;
                     if class == PeerMessageClass::Telemetry {
-                        // These messages currently have no authoritative host
-                        // consumer. Silently discard them rather than mutating
-                        // host-local state or publishing noisy no-op events.
+                        if matches!(envelope.kind.as_str(), "input.tap" | "render.anchor") {
+                            self.ingest_render_event(&session_id, &envelope, true)
+                                .await?;
+                        }
+                        // Other telemetry has no authoritative host consumer.
+                        // Keep it out of shared state and the UI event stream.
                         return Ok(());
                     }
                     if class == PeerMessageClass::Run {
@@ -2008,6 +2152,7 @@ impl AppState {
     pub async fn start_room(&self, force: bool) -> Result<u64> {
         self.require_host()?;
         let start = self.room.write().await.schedule_start(force, 5_000)?;
+        self.renderer.begin_run();
         self.network
             .broadcast(Envelope::new(
                 "room.start_scheduled",

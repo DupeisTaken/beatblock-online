@@ -72,6 +72,11 @@ the fastest configured 30/60 Hz stream. Game clients send 60 Hz render input
 during gameplay and five Hz while held on an Online screen. Renderer processes
 use a fixed three-frame memory-mapped ring, two asynchronous GPU readback
 canvases, and sequence-last publication so OBS never consumes a partial frame.
+Cached samples warm each isolated native game behind a closed capture gate.
+First-scoring-note anchors translate participant-local monotonic clocks into one
+cohort presentation epoch; the release sample seeds the paddle and enables OBS,
+then delayed beats drive Beatblock's own event and results lifecycle. Reliable
+tap edges retain the originating player's judgement beat and input offset.
 An async readback slot that receives no driver callback is reclaimed after one
 second with ticket validation for late callbacks. OBS releases stale CPU/GPU
 buffers and periodically reopens an idle mapping so atomic renderer-file

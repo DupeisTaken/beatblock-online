@@ -524,6 +524,7 @@ function BBT.installHooks()
   local handleMiss = GameManager.handleMiss
   local addMineToTotal = GameManager.addMineToTotal
   local getTapInputs = GameManager.getTapInputs
+  local updateTaps = GameManager.updateTaps
   if not addToScore or not handleMiss or not addMineToTotal then return end
   GameManager.addToScore = function(self, ...)
     local before = totals()
@@ -549,9 +550,45 @@ function BBT.installHooks()
       if BBTRenderer and BBTRenderer.active then return BBTRenderer.tapInputs() end
       local pressed, released = getTapInputs(self, ...)
       if pressed or released then
-        BBT.send('input.tap', { pressed = pressed == true, released = released == true, beat = cs and cs.cBeat or 0 })
+        local beat = cs and cs.cBeat or 0
+        local offset = savedata and savedata.options and savedata.options.game
+          and tonumber(savedata.options.game.inputOffset) or 0
+        local judgementBeat = beat
+        if self.msToBeat then judgementBeat = beat - self:msToBeat(offset) end
+        -- Keep the exact native edge and its already offset-adjusted judgement
+        -- position. The renderer must not reinterpret it using the host save.
+        BBT.send('input.tap', {
+          pressed = pressed == true, released = released == true,
+          beat = beat, judgementBeat = judgementBeat,
+        })
       end
       return pressed, released
+    end
+  end
+  if updateTaps then
+    GameManager.updateTaps = function(self, ...)
+      if not (BBTRenderer and BBTRenderer.active) then return updateTaps(self, ...) end
+      local args = {...}
+      local event = BBTRenderer.beginTapJudgement()
+      local gameOptions = savedata and savedata.options and savedata.options.game
+      local originalOffset = gameOptions and gameOptions.inputOffset
+      local originalBeat = cs and cs.cBeat
+      -- Reliable edges carry a source-side judgement beat. A raw 60 Hz edge
+      -- fallback instead uses the source player's input offset while the native
+      -- tap code runs. Either path preserves Beatblock's own scoring effects.
+      if gameOptions then
+        gameOptions.inputOffset = event and event.judgementBeat and 0
+          or BBTRenderer.inputOffsetMs
+      end
+      if event and event.judgementBeat and cs then cs.cBeat = event.judgementBeat end
+      local success, result = xpcall(function()
+        return {updateTaps(self, unpack(args))}
+      end, debug.traceback)
+      if cs and originalBeat ~= nil then cs.cBeat = originalBeat end
+      if gameOptions then gameOptions.inputOffset = originalOffset end
+      BBTRenderer.endTapJudgement()
+      if not success then error(result, 0) end
+      return unpack(result)
     end
   end
   BBT.installedHooks = true
@@ -753,6 +790,25 @@ function BBT.drawRaceHud()
   if player then love.graphics.printf(string.format('%.2f%%  %+.2f', player.accuracy or 100, (player.accuracy or 100) - 100), project.res.x - 168, 31, 154, 'left') end
 end
 
+local function firstScoringBeat()
+  if not (cs and type(cs.playEvents) == 'table' and Event and Event.hitCount) then return nil end
+  local first = nil
+  for _, event in ipairs(cs.playEvents) do
+    local beat = nil
+    if event.type == 'mine' then
+      beat = tonumber(event.time)
+    elseif event.type == 'mineHold' then
+      beat = (tonumber(event.time) or 0) + (tonumber(event.duration) or 0)
+    elseif Event.hitCount[event.type] then
+      local ok, count = pcall(Event.hitCount[event.type], event)
+      if ok and type(count) == 'number' and count > 0 then beat = tonumber(event.time) end
+    end
+    if beat and (not first or beat < first) then first = beat end
+  end
+  -- Decorative/no-score charts still need a deterministic release point.
+  return first or tonumber(cs.startBeat) or tonumber(cs.cBeat)
+end
+
 function BBT.update(dt)
   if BBT.disabled then return end
   BBT.installHooks()
@@ -786,6 +842,14 @@ function BBT.update(dt)
   BBT.keyframeTimer = BBT.keyframeTimer + dt
   BBT.heartbeatTimer = (BBT.heartbeatTimer or 0) + dt
   local inGame = cs and cs.level and not cs.results
+  if inGame and (not BBT.renderAnchorState or BBT.renderAnchorState.game ~= cs) then
+    BBT.renderAnchorState = {game=cs, firstNoteBeat=nil, sent=false}
+  elseif not inGame then
+    BBT.renderAnchorState = nil
+  end
+  if inGame and BBT.renderAnchorState and not BBT.renderAnchorState.firstNoteBeat then
+    BBT.renderAnchorState.firstNoteBeat = firstScoringBeat()
+  end
   if BBT.heartbeatTimer >= 2 then
     BBT.heartbeatTimer = BBT.heartbeatTimer - 2
     BBT.send('client.ping',{instanceId=CLIENT_INSTANCE_ID})
@@ -813,8 +877,42 @@ function BBT.update(dt)
     -- and paused. Publishing that as "playing" lets a delayed renderer start
     -- before the participant's real synchronized first frame.
     local renderPlaying = inGame and not cs.startPending and not cs.paused
+    local anchor = BBT.renderAnchorState
+    if renderPlaying and anchor and anchor.firstNoteBeat
+      and cs.cBeat >= anchor.firstNoteBeat and not anchor.sent then
+      local offset = savedata and savedata.options and savedata.options.game
+        and tonumber(savedata.options.game.inputOffset) or 0
+      anchor.sent = BBT.send('render.anchor', {
+        firstNoteBeat=anchor.firstNoteBeat, inputOffsetMs=offset,
+      }) == true
+    end
     if renderPlaying then flags = flags + 1 end
     if cs and cs.paused then flags = flags + 2 end
+    -- These bits are a same-frame fallback for the ordered input.tap event.
+    -- Reading input state is non-consuming, so native judgement still receives
+    -- the identical edge later in GameManager:updateTaps.
+    if maininput and maininput.pressed then
+      local ok1, pressed1 = pcall(maininput.pressed, maininput, 'tap1')
+      local ok2, pressed2 = pcall(maininput.pressed, maininput, 'tap2')
+      local ok3, mouse1 = pcall(maininput.pressed, maininput, 'mouse1')
+      local ok4, mouse2 = pcall(maininput.pressed, maininput, 'mouse2')
+      local click = savedata and savedata.options and savedata.options.game
+        and savedata.options.game.disableClick == false
+      if (ok1 and pressed1) or (ok2 and pressed2)
+        or (click and ((ok3 and mouse1) or (ok4 and mouse2))) then flags = flags + 4 end
+    end
+    if maininput and maininput.released then
+      local ok1, released1 = pcall(maininput.released, maininput, 'tap1')
+      local ok2, released2 = pcall(maininput.released, maininput, 'tap2')
+      local ok3, mouse1 = pcall(maininput.released, maininput, 'mouse1')
+      -- Match Beatblock's native getTapInputs contract, including its mouse2
+      -- press-as-release behavior, so fallback and authoritative judgement agree.
+      local ok4, mouse2 = pcall(maininput.pressed, maininput, 'mouse2')
+      local click = savedata and savedata.options and savedata.options.game
+        and savedata.options.game.disableClick == false
+      if (ok1 and released1) or (ok2 and released2)
+        or (click and ((ok3 and mouse1) or (ok4 and mouse2))) then flags = flags + 8 end
+    end
     BBT.send('render.sample', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, tapMask = tapMask, flags = flags })
   end
   if BBT.keyframeTimer >= 1 then

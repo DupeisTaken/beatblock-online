@@ -190,13 +190,12 @@ for (const contract of [
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
-  [renderer, 'function Renderer.applyState(advanceMotion)'],
+  [renderer, 'function Renderer.steerPaddle()'],
+  [renderer, 'function Renderer.applyClock()'],
   [renderer, 'function Renderer.afterGameUpdate()'],
-  [renderer, 'function Renderer.beginGameplayOnly(game)'],
-  [renderer, 'function Renderer.endGameplayOnly()'],
-  [renderer, "local entityList = rawget(_G, 'entities')"],
-  [renderer, 'player.circleX = math.cos(radians) * radius'],
-  [renderer, 'math.abs(sourceBeat - Renderer.beat) > .05'],
+  [renderer, "mouse.circleSnap = 'disabled'"],
+  [renderer, 'local circleX, circleY = math.cos(radians) * radius'],
+  [renderer, 'math.abs(sourceBeat - Renderer.beat) > .20'],
   [online, 'local initialWorkspace=options.workspace'],
   [online, "BBT.command('room.commentator_set'"],
   [online, "BBT.command('broadcast.mirror_set'"],
@@ -221,6 +220,8 @@ for (const contract of [
   if (!contract[0].includes(contract[1]))
     throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
 }
+if (!core.includes("anchor.sent = BBT.send('render.anchor'"))
+  throw new Error('First-note anchors do not retry after bounded IPC backpressure');
 if (ipc.includes('"version":2'))
   throw new Error('IPC worker still emits retired protocol-v2 local status envelopes');
 if (ipc.includes('launchCount >= 2'))
@@ -247,11 +248,10 @@ if (!hooks.includes(playerViewCapture))
   throw new Error('Renderer capture hook does not receive raw and final shaded gameplay');
 if (!hooks.includes('pattern = "cs:draw()"'))
   throw new Error('Renderer capture does not run after the complete gamestate composition');
-if (
-  !hooks.includes('BBTRenderer.beginGameplayOnly(self)') ||
-  !hooks.includes('BBTRenderer.endGameplayOnly()')
-)
-  throw new Error('Renderer does not bracket Game drawing with backdrop suppression');
+if (!hooks.includes("cs.name == 'Game' or cs.name == 'Results'"))
+  throw new Error('Renderer capture does not preserve the native Results screen');
+if (hooks.includes('BBTRenderer.beginGameplayOnly(self)'))
+  throw new Error('Renderer still suppresses chart scenery and background effects');
 if (hooks.includes('BBTRenderer.captureSafe(self.canv, shuv.canvas)'))
   throw new Error('Renderer still exposes Beatblock palette-index colors as the Full stream');
 if (!renderer.includes('chromatic and chromatic.enabled'))
@@ -260,10 +260,12 @@ if (renderer.includes('cs and cs.notes') || renderer.includes('local function dr
   throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))
   throw new Error('Renderer hold can block Beatblock before chart preloading completes');
-const nativeGameUpdate = hooks.indexOf('pattern = "self.gm:update(dt)"');
-const remotePostUpdate = hooks.indexOf('BBTRenderer.afterGameUpdate()');
-if (nativeGameUpdate < 0 || remotePostUpdate < nativeGameUpdate)
-  throw new Error('Renderer does not restore the delayed beat and paddle after native input');
+const nativeClockBoundary = hooks.indexOf('target = "obj/GameManager.lua"');
+const remoteClock = hooks.indexOf('BBTRenderer.applyClock()');
+if (nativeClockBoundary < 0 || remoteClock < nativeClockBoundary)
+  throw new Error(
+    "Renderer does not apply the delayed beat at GameManager's native event boundary",
+  );
 const broadcastBody = online.slice(
   online.indexOf('local function drawBroadcast(self)'),
   online.indexOf('local function drawHistory(self)'),

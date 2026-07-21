@@ -1,16 +1,20 @@
 local Renderer = {
   active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil,
-  mode = os.getenv('BBT_RENDERER_MODE') or 'clean',
+  -- Full is the fidelity-first default: it retains the native backdrop, HUD,
+  -- palette/accessibility pass, and chart-authored screen effects.
+  mode = os.getenv('BBT_RENDERER_MODE') or 'full',
   framePath = os.getenv('BBT_RENDERER_FRAME_PATH'),
   width = tonumber(os.getenv('BBT_RENDERER_WIDTH')) or 1280,
   height = tonumber(os.getenv('BBT_RENDERER_HEIGHT')) or 720,
   fps = tonumber(os.getenv('BBT_RENDERER_FPS')) or 60,
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
-  sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0, previousTapMask = 0,
+  sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0,
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
   readbackStartedAt = {nil,nil},
   playing = false, hasInput = false, droppedFrames = 0, nextFrameAt = nil,
-  previousAngle = nil, motionSequence = 0,
+  previousAngle = nil, captureEnabled = false, inputOffsetMs = 0,
+  tapQueue = {}, currentTapEvent = nil, seedPaddle = false,
+  pendingAudioSync = false, lastAudioCorrectionAt = -math.huge,
 }
 Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
@@ -69,10 +73,6 @@ local function reportError(message)
 end
 
 function Renderer.shutdown()
-  -- A draw failure can terminate the child between the pre/post draw hooks.
-  -- Restore chart state before releasing resources in case Beatblock's normal
-  -- error path attempts one final draw.
-  if Renderer.endGameplayOnly then Renderer.endGameplayOnly() end
   unmapFile(Renderer.inputs)
   unmapFile(Renderer.frames)
   -- Drop pending GPU readbacks and canvases when initialization fails. Normal
@@ -164,6 +164,22 @@ function Renderer.start()
     Renderer.originalSave = Renderer.originalSave or sdfunc.save
     sdfunc.save = function() end
   end
+  -- Results writes played-level data directly instead of going through
+  -- sdfunc.save. A renderer is a disposable replay process and must never
+  -- mutate the player's progress or unlock files.
+  if dpf and dpf.saveJson then
+    Renderer.originalDpfSaveJson = Renderer.originalDpfSaveJson or dpf.saveJson
+    dpf.saveJson = function() end
+  end
+  if savedata and savedata.options and savedata.options.game then
+    -- The remote angle already contains circle-snap and April Fools offsets.
+    -- Reapplying either in the hidden child produces a second, false motion.
+    savedata.options.game.forceMouseKeyboard = true
+    savedata.options.game.circleSnap = 'disabled'
+  end
+  if savedata and savedata.options and savedata.options.aprilFools then
+    savedata.options.aprilFools.randomPaddleOffset = false
+  end
   -- Gameplay's Play Song event expects preloadSoundData to be a table even
   -- when it has no matching preloaded track. Zero the disposable child's audio
   -- settings before that event takes the normal synchronous-load fallback.
@@ -189,158 +205,126 @@ end
 function Renderer.update()
   if not Renderer.active or not Renderer.inputs then return end
   local sequence = tonumber(ffi.cast('uint32_t*', Renderer.inputs.pointer + 8)[0])
-  if sequence == 0 or sequence == Renderer.lastInputSequence then return end
+  if sequence == 0 then return end
   local beat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 20)[0])
   local angle = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 24)[0])
-  if beat ~= beat or angle ~= angle or beat == math.huge or beat == -math.huge
-    or angle == math.huge or angle == -math.huge then return end
+  local tapMask = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 28)[0])
   local flags = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 30)[0])
-  Renderer.lastInputSequence = sequence
-  Renderer.previousTapMask = Renderer.tapMask
-  Renderer.tapMask = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 28)[0])
-  Renderer.beat = beat
-  Renderer.previousAngle = Renderer.angle
-  Renderer.angle = angle % 360
-  Renderer.playing = flags % 2 == 1
-  Renderer.hasInput = true
-  Renderer.applyState(false)
+  local judgementBeat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 12)[0])
+  local inputOffsetMs = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 16)[0])
+  -- The writer commits sequence last. Reject a sample that changed while its
+  -- remaining fields were being copied instead of steering from a torn frame.
+  if sequence ~= tonumber(ffi.cast('uint32_t*', Renderer.inputs.pointer + 8)[0]) then
+    Renderer.steerPaddle()
+    return
+  end
+  if beat ~= beat or angle ~= angle or beat == math.huge or beat == -math.huge
+    or angle == math.huge or angle == -math.huge then
+    Renderer.steerPaddle()
+    return
+  end
+  if sequence ~= Renderer.lastInputSequence then
+    Renderer.lastInputSequence = sequence
+    Renderer.tapMask = tapMask
+    Renderer.beat = beat
+    Renderer.previousAngle = Renderer.angle
+    Renderer.angle = angle % 360
+    Renderer.playing = flags % 2 == 1
+    Renderer.captureEnabled = math.floor(flags / 16) % 2 == 1
+    Renderer.inputOffsetMs = inputOffsetMs == inputOffsetMs and inputOffsetMs or 0
+    Renderer.hasInput = true
+    if math.floor(flags / 32) % 2 == 1 then
+      Renderer.seedPaddle = true
+      Renderer.pendingAudioSync = true
+      Renderer.tapQueue = {}
+      Renderer.currentTapEvent = nil
+    end
+    local pressed = math.floor(flags / 64) % 2 == 1
+    local released = math.floor(flags / 128) % 2 == 1
+    if pressed or released then
+      if #Renderer.tapQueue >= 256 then table.remove(Renderer.tapQueue, 1) end
+      Renderer.tapQueue[#Renderer.tapQueue + 1] = {
+        pressed=pressed,
+        released=released,
+        judgementBeat=judgementBeat == judgementBeat and judgementBeat or nil,
+      }
+    end
+  end
+  -- Gamestate updates the hidden OS mouse before this hook on every frame, even
+  -- when no new network sample arrived. Rebuild the same absolute vector each
+  -- frame so Player:update never sees the hidden window's upper-left position.
+  Renderer.steerPaddle()
 end
 
--- Beatblock's hidden window still runs its native mouse/controller update,
--- which otherwise replaces the remote paddle with a vector toward (0, 0).
--- Apply once before simulation for event timing and once after it for the
--- exact draw state, including the circle-snap coordinates used next frame.
-function Renderer.applyState(advanceMotion)
-  if not Renderer.hasInput or not cs then return end
-  -- The featured child owns delayed audio. Correct only material drift so the
-  -- song clock, chart events, and published frame share one timeline without
-  -- seeking the track for harmless sub-frame jitter.
-  if not advanceMotion and cs.source and cs.source.getBeat and cs.source.setBeat then
-    local readOk, sourceBeat = pcall(cs.source.getBeat, cs.source)
-    if readOk and type(sourceBeat) == 'number' and sourceBeat == sourceBeat
-      and math.abs(sourceBeat - Renderer.beat) > .05 then
-      pcall(cs.source.setBeat, cs.source, Renderer.beat)
-    end
-  end
-  cs.cBeat = Renderer.beat
+function Renderer.steerPaddle()
+  if not Renderer.hasInput or not cs or not cs.p or not Renderer.angle then return end
   local player = cs.p
-  if not player then return end
   local angle = Renderer.angle
-  local newMotion = Renderer.motionSequence ~= Renderer.lastInputSequence
-  local previous = newMotion and (Renderer.previousAngle or angle) or angle
-  player.anglePrevFrame = previous
-  -- On a new sample, leave the player at the previous remote angle before
-  -- GameManager:update. The reconstructed mouse vector below then advances
-  -- Beatblock through the same native paddle transition during simulation.
-  player.angle = advanceMotion and angle or previous
-  if advanceMotion and newMotion then
-    local delta = helpers and helpers.angdelta and helpers.angdelta(previous, angle) or 0
-    player.angleDelta = delta
-    Renderer.motionSequence = Renderer.lastInputSequence
+  if Renderer.seedPaddle then
+    -- Seed exactly once at the first-note barrier. Subsequent movement flows
+    -- through Player:update, retaining native angle caps, history and feedback.
+    player.angle = angle
+    player.anglePrevFrame = angle
+    player.angleDelta = 0
+    player.cumulativeAngle = angle
+    Renderer.seedPaddle = false
   end
-  local radius = tonumber(player.radius) or 0
-  if radius > 0 then
-    local radians = math.rad(angle - 90)
-    player.circleX = math.cos(radians) * radius
-    player.circleY = math.sin(radians) * radius
-    player.snapX, player.snapY = player.circleX, player.circleY
-    if mouse then
-      mouse.rx = (player.x or 0) + player.circleX
-      mouse.ry = (player.y or 0) + player.circleY
-      mouse.dx, mouse.dy = 0, 0
-    end
+  local radius = math.max(tonumber(player.radius) or 0, 64)
+  local radians = math.rad(angle - 90)
+  local circleX, circleY = math.cos(radians) * radius, math.sin(radians) * radius
+  player.circleX, player.circleY = circleX, circleY
+  player.snapX, player.snapY = circleX, circleY
+  if mouse then
+    mouse.circleSnap = 'disabled'
+    mouse.rx = (player.x or 0) + circleX
+    mouse.ry = (player.y or 0) + circleY
+    mouse.dx, mouse.dy = 0, 0
   end
+end
+
+-- This hook runs inside GameManager after its local audio clock assignment but
+-- before chart events, taps, notes and eases. The remote beat therefore becomes
+-- the sole simulation clock instead of a cosmetic correction after the fact.
+function Renderer.applyClock()
+  if Renderer.hasInput and Renderer.playing and cs then cs.cBeat = Renderer.beat end
 end
 
 function Renderer.afterGameUpdate()
-  Renderer.applyState(true)
-end
-
-function Renderer.shouldHold()
-  return Renderer.active and (not Renderer.hasInput or not Renderer.playing)
-end
-
-function Renderer.tapInputs()
-  return Renderer.tapMask ~= 0 and Renderer.previousTapMask == 0,
-    Renderer.tapMask == 0 and Renderer.previousTapMask ~= 0
-end
-
--- OBS is a competition view, not a second copy of the chart's decorative
--- artwork. Keep notes, the player, hit feedback, HUD, and screen-space VFX,
--- while temporarily hiding scenery only inside the isolated renderer child.
-local gameplayEntityNames = {
-  player=true, block=true, bounce=true, extratap=true, hold=true,
-  mine=true, minehold=true, side=true, trace=true, tapeffect=true,
-  hitparticle=true, missparticle=true, sideparticle=true, mineexplosion=true,
-}
-
-local function className(entity)
-  local class = entity and entity.class
-  local value = type(class) == 'table' and class.name or class
-  return string.lower(tostring(value or ''))
-end
-
-local function isGameplayEntity(entity, game)
-  if not entity then return false end
-  if game and entity == game.p then return true end
-  if type(entity.isInstanceOf) == 'function' then
-    if Player and entity:isInstanceOf(Player) then return true end
-    if Block and entity:isInstanceOf(Block) then return true end
-  end
-  return gameplayEntityNames[className(entity)] == true
-end
-
-function Renderer.beginGameplayOnly(game)
-  if not Renderer.active or Renderer.backgroundState then return end
-  game = game or cs
-  if not game then return end
-  local vfx = game.vfx
-  local state = {
-    game=game,
-    bgColor=game.bgColor,
-    bg=game.bg,
-    drawVideoBG=game.drawVideoBG,
-    entities={},
-    vfx=vfx,
-    bgNoise=vfx and vfx.bgNoise,
-    bgNoiseOld=vfx and vfx.bgNoise_OLD and vfx.bgNoise_OLD.enable,
-  }
-  Renderer.backgroundState = state
-  game.bgColor = 0
-  game.bg = nil
-  game.drawVideoBG = false
-  if vfx then
-    vfx.bgNoise = 0
-    if vfx.bgNoise_OLD then vfx.bgNoise_OLD.enable = false end
-  end
-  local entityList = rawget(_G, 'entities')
-  if type(entityList) == 'table' then
-    for _, entity in ipairs(entityList) do
-      if not isGameplayEntity(entity, game) then
-        state.entities[#state.entities + 1] = {entity=entity, skipRender=entity.skipRender}
-        entity.skipRender = true
-      end
+  if not Renderer.hasInput or not cs or not cs.source then return end
+  if not (cs.source.getBeat and cs.source.setBeat) then return end
+  local now = love.timer.getTime()
+  local okBeat, sourceBeat = pcall(cs.source.getBeat, cs.source)
+  local materialDrift = okBeat and type(sourceBeat) == 'number'
+    and math.abs(sourceBeat - Renderer.beat) > .20
+    and now - Renderer.lastAudioCorrectionAt >= 2
+  if Renderer.pendingAudioSync or materialDrift then
+    local corrected = pcall(cs.source.setBeat, cs.source, Renderer.beat)
+    if corrected then
+      Renderer.pendingAudioSync = false
+      Renderer.lastAudioCorrectionAt = now
     end
   end
 end
 
-function Renderer.endGameplayOnly()
-  local state = Renderer.backgroundState
-  if not state then return end
-  Renderer.backgroundState = nil
-  local game = state.game
-  if game then
-    game.bgColor = state.bgColor
-    game.bg = state.bg
-    game.drawVideoBG = state.drawVideoBG
-  end
-  if state.vfx then
-    state.vfx.bgNoise = state.bgNoise
-    if state.vfx.bgNoise_OLD then state.vfx.bgNoise_OLD.enable = state.bgNoiseOld end
-  end
-  for _, saved in ipairs(state.entities) do
-    saved.entity.skipRender = saved.skipRender
-  end
+function Renderer.shouldHold()
+  -- Cached delayed samples warm the native game before OBS is allowed to see
+  -- it. Holding only until a playing sample arrives preserves chart-authored
+  -- pre-roll events while captureEnabled remains the first-note output gate.
+  return Renderer.active and (not Renderer.hasInput or not Renderer.playing)
+end
+
+function Renderer.beginTapJudgement()
+  Renderer.currentTapEvent = table.remove(Renderer.tapQueue, 1)
+  return Renderer.currentTapEvent
+end
+
+function Renderer.tapInputs()
+  local event = Renderer.currentTapEvent
+  return event and event.pressed or false, event and event.released or false
+end
+
+function Renderer.endTapJudgement()
+  Renderer.currentTapEvent = nil
 end
 
 local function drawSource(source, finalShader)
@@ -450,7 +434,7 @@ local function finishReadbacks()
 end
 
 function Renderer.capture(cleanSource, shadedSource, finalShader)
-  if not Renderer.active or not Renderer.frames then return end
+  if not Renderer.active or not Renderer.frames or not Renderer.captureEnabled then return end
   local now = love.timer.getTime()
   -- LÖVE 12 returns a GraphicsReadback object; it does not accept a callback.
   -- Poll completed requests before reserving an output canvas for this frame.
@@ -477,7 +461,9 @@ function Renderer.capture(cleanSource, shadedSource, finalShader)
   -- red palette-index artwork as a full-screen mask instead of the player view.
   local source = Renderer.mode == 'full' and shadedSource or cleanSource
   output:renderTo(function()
-    drawSource(source, Renderer.mode == 'full' and finalShader or nil)
+    -- `capturePlayerView` selects the appropriate final shader for both modes:
+    -- chromatic composition in Full, palette/accessibility mapping in Clean.
+    drawSource(source, finalShader)
   end)
   Renderer.captureSequence = Renderer.captureSequence + 1
   local ticket=Renderer.captureSequence
@@ -518,6 +504,12 @@ function Renderer.capturePlayerView(cleanSource, shadedSource)
   local chromatic=cs and cs.vfx and cs.vfx.chromaticAberration
   if Renderer.mode=='full' and chromatic and chromatic.enabled and shaders then
     finalShader=shaders.chromaticAberration
+  elseif Renderer.mode=='clean' and shaders then
+    -- Clean mode omits the on-top canvas, but its base canvas still contains
+    -- palette indices. Apply the same palette/accessibility shader configured
+    -- by shuv.finish so it can never regress to the red raw-index output.
+    finalShader=(shuv and shuv.usePalette) and shaders.palshader
+      or shaders.accessibilityshader
   end
   Renderer.captureSafe(cleanSource, shadedSource, finalShader)
 end

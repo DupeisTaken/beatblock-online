@@ -2080,7 +2080,8 @@ fn validate_online_recovery_contract(directory: &Path) -> Result<()> {
         ("bbt/renderer.lua", "dpiscale=1"),
         ("bbt/renderer.lua", "Renderer.frames.pointer + 32"),
         ("bbt/renderer.lua", "capturePlayerView"),
-        ("bbt/renderer.lua", "beginGameplayOnly"),
+        ("bbt/renderer.lua", "function Renderer.applyClock()"),
+        ("bbt/renderer.lua", "function Renderer.steerPaddle()"),
     ];
     for (relative, marker) in contracts {
         let source = std::fs::read_to_string(directory.join(relative))

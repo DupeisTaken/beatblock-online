@@ -7,12 +7,12 @@
   "patchPatterns": [
     "st:setUpdate(function(self,dt)",
     "self.gm:update(dt)",
+    "  -- read the level",
     "self:pauseGame()",
     "function st:restartLevel()",
     "function st:quitLevel()",
     "function st:goToResults(forceScore,scoreMax,fadeTime)",
     "if self.pauseTimer <= 0 then",
-    "self.gm:draw()",
     "love.graphics.setCanvas(self.canv)",
     "self.gm:endOnTopShader()",
     "cs:draw()",

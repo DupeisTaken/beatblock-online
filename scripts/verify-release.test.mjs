@@ -310,22 +310,21 @@ test('OBS build and installer stages enforce native source provenance', async ()
   );
 });
 
-test('installer builds keep one canonical local review copy', async () => {
+test('installer builds keep one canonical release directory', async () => {
   const [buildWindows, gitignore, prettierignore] = await Promise.all([
     readFile(resolve(root, 'scripts/build-windows.mjs'), 'utf8'),
     readFile(resolve(root, '.gitignore'), 'utf8'),
     readFile(resolve(root, '.prettierignore'), 'utf8'),
   ]);
 
-  assert.match(buildWindows, /const localReleases = resolve\(root, 'releases'\)/);
+  assert.doesNotMatch(buildWindows, /localReleases|resolve\(root, 'releases'\)/);
   assert.match(
     buildWindows,
-    /copyFile\(installer, resolve\(localReleases, 'BeatblockOnlineInstaller\.exe'\)\)/,
+    /copyFile\(installer, resolve\(release, 'BeatblockOnlineInstaller\.exe'\)\)/,
   );
   assert.doesNotMatch(buildWindows, /BeatblockOnlineInstaller-[^']+\.exe/);
   for (const ignoreFile of [gitignore, prettierignore]) {
     assert.match(ignoreFile, /^\/release\/$/m);
-    assert.match(ignoreFile, /^\/releases\/$/m);
-    assert.doesNotMatch(ignoreFile, /^releases\/$/m);
+    assert.doesNotMatch(ignoreFile, /^\/?releases\/$/m);
   }
 });

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
+const mode = (process.argv[2] ?? 'full').toLowerCase();
+assert.ok(mode === 'full' || mode === 'clean', 'renderer mode must be full or clean');
 const fixture = resolve(process.env.BBT_UI_FIXTURE ?? resolve(root, '.test/ui-harness'));
 const stage = await mkdtemp(resolve(tmpdir(), 'bbt-renderer-'));
 const framePath = resolve(stage, 'stream-A.bbtframe');
@@ -46,7 +48,7 @@ try {
       PATH: `${fixture};${process.env.PATH}`,
       BBT_RENDERER_FRAME_PATH: framePath,
       BBT_RENDERER_ERROR_PATH: errorPath,
-      BBT_RENDERER_MODE: 'full',
+      BBT_RENDERER_MODE: mode,
       BBT_RENDERER_WIDTH: '320',
       BBT_RENDERER_HEIGHT: '180',
       BBT_RENDERER_FPS: '60',
@@ -109,17 +111,18 @@ try {
   const offset = 64 + (sequence % frameCount) * frameSize;
   const center = offset + (Math.floor(height / 2) * width + Math.floor(width / 2)) * 4;
   const centerPixel = [...frame.subarray(center, center + 4)];
+  const expectedCenter = mode === 'full' ? [153, 102, 51, 255] : [0, 255, 0, 255];
   assert.deepEqual(
     centerPixel,
-    [153, 102, 51, 255],
-    `Full mode omitted the shaded player view or its final screen-space effect`,
+    expectedCenter,
+    mode === 'full'
+      ? 'Full mode omitted the shaded player view or its final screen-space effect'
+      : 'Clean mode omitted the palette/accessibility conversion of its base canvas',
   );
   const leftPixel = [...frame.subarray(offset, offset + 4)];
   assert.deepEqual(leftPixel, [0, 0, 0, 255], 'aspect-ratio pillarbox must remain opaque black');
 
-  console.log(
-    `Verified final shaded OBS frame at 320x180 (${sequence} published, ${dropped} dropped).`,
-  );
+  console.log(`Verified ${mode} OBS frame at 320x180 (${sequence} published, ${dropped} dropped).`);
 } finally {
   await rm(stage, { recursive: true, force: true });
 }

@@ -47,7 +47,6 @@ compile_commands.json
 # Generated release outputs. GitHub Actions publishes these instead of Git.
 artifacts/
 /release/
-/releases/
 obs-plugin/artifacts/
 mod/releases/
 
