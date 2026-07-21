@@ -11,6 +11,7 @@ const fixture = resolve(process.env.BBT_UI_FIXTURE ?? resolve(root, '.test/ui-ha
 const stage = await mkdtemp(resolve(tmpdir(), 'bbt-renderer-'));
 const framePath = resolve(stage, 'stream-A.bbtframe');
 const statePath = resolve(stage, 'stream-A.bbtstate');
+const scorePath = resolve(stage, 'stream-A.bbtscore');
 const errorPath = resolve(stage, 'stream-A.bbterror');
 const mappedSize = 64 + 1920 * 1080 * 4 * 3;
 
@@ -19,6 +20,23 @@ try {
   await copyFile(resolve(root, 'tests/renderer-harness/main.lua'), resolve(stage, 'main.lua'));
   await copyFile(resolve(root, 'mod/shared/bbt/renderer.lua'), resolve(stage, 'bbt/renderer.lua'));
   await writeFile(statePath, Buffer.alloc(32));
+  const score = Buffer.alloc(48);
+  score.writeUInt32LE(1, 0);
+  score.writeUInt32LE(1, 4);
+  score.writeFloatLE(97.75, 8);
+  score.writeFloatLE(-10.25, 12);
+  for (const [offset, value] of [
+    [16, 97],
+    [20, 2],
+    [24, 1],
+    [28, 0],
+    [32, 75],
+    [36, 100],
+    [40, 100],
+    [44, 2],
+  ])
+    score.writeUInt32LE(value, offset);
+  await writeFile(scorePath, score);
   const header = Buffer.alloc(64);
   header.write('BBTFRAME', 0, 'ascii');
   header.writeUInt32LE(2, 8);

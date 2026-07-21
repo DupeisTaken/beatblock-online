@@ -8,7 +8,7 @@ use crate::{
         RendererRequest, RoomSnapshot, PROTOCOL_VERSION,
     },
     network::{ChartTransferHeader, NetworkEvent, NetworkHub},
-    renderer::RendererManager,
+    renderer::{RenderScoreState, RendererManager},
     room::{unix_ms, RoomEngine},
     storage::Storage,
 };
@@ -419,9 +419,18 @@ mod tests {
             .unwrap(),
             PeerMessageClass::Telemetry
         );
+        assert_eq!(
+            classify_peer_message(&Envelope::new(
+                "render.keyframe",
+                4,
+                json!({"accuracy":99.25,"totals":{"maxHits":100}}),
+            ))
+            .unwrap(),
+            PeerMessageClass::Telemetry
+        );
         assert!(classify_peer_message(&Envelope::new(
             "render.tap",
-            4,
+            5,
             json!({"participantId":"forged"}),
         ))
         .is_err());
@@ -762,7 +771,10 @@ impl AppState {
         }
         self.apply_common(&message).await?;
         let session = self.local_session_id.read().await.clone();
-        if matches!(message.kind.as_str(), "input.tap" | "render.anchor") {
+        if matches!(
+            message.kind.as_str(),
+            "input.tap" | "render.anchor" | "render.keyframe"
+        ) {
             if let Some(session_id) = session.as_deref() {
                 self.ingest_render_event(
                     session_id,
@@ -884,6 +896,47 @@ impl AppState {
                     .push_render_anchor(participant_id, first_note_beat, input_offset_ms);
                 Some("render.anchor")
             }
+            "render.keyframe" => {
+                let totals = serde_json::from_value(
+                    message
+                        .payload
+                        .get("totals")
+                        .cloned()
+                        .context("render keyframe totals are required")?,
+                )?;
+                let accuracy = message
+                    .payload
+                    .get("accuracy")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_else(|| crate::model::ScoreTotals::accuracy(&totals));
+                let average_offset = message
+                    .payload
+                    .get("averageOffset")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                if !accuracy.is_finite()
+                    || !(0.0..=100.0).contains(&accuracy)
+                    || !average_offset.is_finite()
+                {
+                    anyhow::bail!("render keyframe contains invalid score values");
+                }
+                self.renderer.push_score_state(
+                    participant_id,
+                    RenderScoreState {
+                        sequence: message.sequence,
+                        run_time_us: message.run_time_us,
+                        accuracy: accuracy as f32,
+                        average_offset: average_offset as f32,
+                        totals,
+                        results: message
+                            .payload
+                            .get("results")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    },
+                );
+                Some("render.keyframe")
+            }
             _ => None,
         };
 
@@ -908,13 +961,12 @@ impl AppState {
                     payload.insert("participantId".into(), json!(participant_id));
                 }
                 for subscriber in subscribers {
-                    let _ = self
-                        .network
-                        .send_to(
-                            &subscriber,
-                            Envelope::new(relayed_kind, message.sequence, payload.clone()),
-                        )
-                        .await;
+                    let mut relayed =
+                        Envelope::new(relayed_kind, message.sequence, payload.clone());
+                    // Renderer keyframes are aligned against compact samples in
+                    // the source player's monotonic clock, not the relay host's.
+                    relayed.run_time_us = message.run_time_us;
+                    let _ = self.network.send_to(&subscriber, relayed).await;
                 }
             }
         }
@@ -928,7 +980,10 @@ impl AppState {
         if message.kind == "room.start_scheduled" {
             self.renderer.begin_run();
         }
-        if matches!(message.kind.as_str(), "render.tap" | "render.anchor") {
+        if matches!(
+            message.kind.as_str(),
+            "render.tap" | "render.anchor" | "render.keyframe"
+        ) {
             let participant_id = message
                 .payload
                 .get("participantId")
@@ -1084,7 +1139,10 @@ impl AppState {
                     };
                     self.require_admitted_peer(&session_id).await?;
                     if class == PeerMessageClass::Telemetry {
-                        if matches!(envelope.kind.as_str(), "input.tap" | "render.anchor") {
+                        if matches!(
+                            envelope.kind.as_str(),
+                            "input.tap" | "render.anchor" | "render.keyframe"
+                        ) {
                             self.ingest_render_event(&session_id, &envelope, true)
                                 .await?;
                         }

@@ -9,6 +9,8 @@ local Renderer = {
   fps = tonumber(os.getenv('BBT_RENDERER_FPS')) or 60,
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0,
+  lastScoreSequence = 0, sourceAccuracy = nil, sourceOffset = 0,
+  sourceScore = nil, resultsReady = false,
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
   readbackStartedAt = {nil,nil},
   playing = false, hasInput = false, droppedFrames = 0, nextFrameAt = nil,
@@ -18,6 +20,7 @@ local Renderer = {
   lastAppliedPaddleSequence = nil, paddleCumulativeAngle = nil,
 }
 Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
+Renderer.scorePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtscore')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
   or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbterror')
 
@@ -75,6 +78,7 @@ end
 
 function Renderer.shutdown()
   unmapFile(Renderer.inputs)
+  unmapFile(Renderer.scores)
   unmapFile(Renderer.frames)
   -- Drop pending GPU readbacks and canvases when initialization fails. Normal
   -- renderer termination is process-scoped, but this path must not retain
@@ -82,7 +86,7 @@ function Renderer.shutdown()
   Renderer.readbackPending = {false,false}
   Renderer.readbackRequests = {nil,nil}
   Renderer.readbackStartedAt = {nil,nil}
-  Renderer.inputs, Renderer.frames, Renderer.outputs = nil, nil, nil
+  Renderer.inputs, Renderer.scores, Renderer.frames, Renderer.outputs = nil, nil, nil, nil
   Renderer.active = false
 end
 
@@ -117,7 +121,8 @@ function Renderer.init()
   Renderer.frameInterval = 1 / math.max(1, Renderer.fps)
   Renderer.frames = mapFile(Renderer.framePath, 64 + 1920 * 1080 * 4 * 3)
   Renderer.inputs = mapFile(Renderer.statePath, 32)
-  if not Renderer.frames or not Renderer.inputs then
+  Renderer.scores = mapFile(Renderer.scorePath, 48)
+  if not Renderer.frames or not Renderer.inputs or not Renderer.scores then
     return failInitialization('renderer shared-memory files could not be mapped')
   end
   -- Two canvases keep one GPU readback from forcing an avoidable 60 Hz drop.
@@ -149,6 +154,13 @@ function Renderer.clearPreviousState()
   if flux and flux.tweens and flux.remove then
     while #flux.tweens > 0 do flux.remove(#flux.tweens) end
   end
+end
+
+function Renderer.useDefaultCostume()
+  if not (savedata and savedata.costumes) then return end
+  -- Renderer profiles are disposable and must never inherit a host save's
+  -- selected costume. `none` is Beatblock's built-in default Cranky look.
+  savedata.costumes.currentCostume='none'
 end
 
 function Renderer.start()
@@ -192,6 +204,7 @@ function Renderer.start()
   if savedata and savedata.options and savedata.options.aprilFools then
     savedata.options.aprilFools.randomPaddleOffset = false
   end
+  Renderer.useDefaultCostume()
   -- Gameplay's Play Song event expects preloadSoundData to be a table even
   -- when it has no matching preloaded track. Zero the disposable child's audio
   -- settings before that event takes the normal synchronous-load fallback.
@@ -215,8 +228,94 @@ function Renderer.start()
   if not Renderer.audioEnabled and cs.source and cs.source.setVolume then cs.source:setVolume(0) end
 end
 
+function Renderer.applySourceScore(target)
+  local score=Renderer.sourceScore
+  if not score or not target then return end
+  target.hits=score.hits
+  target.misses=score.misses
+  target.barelies=score.barelies
+  target.combo=score.combo
+  target.maxCombo=score.maxCombo
+  target.currentMaxHits=score.currentMaxHits
+  target.maxHits=score.maxHits
+end
+
+local function applySourceResults(target)
+  if not target or not Renderer.sourceScore then return end
+  Renderer.applySourceScore(target)
+  target.offset=Renderer.sourceOffset
+  target.pctGrade=Renderer.sourceAccuracy
+  target.pctGradeRender=string.format('%.2f',Renderer.sourceAccuracy)
+  if GameManager and GameManager.gradeCalc then
+    target.lGrade,target.lGradePM=GameManager:gradeCalc(Renderer.sourceAccuracy)
+    if target.barelies+target.misses==1 then
+      target.lGrade='almost'
+      target.lGradePM='none'
+    end
+  end
+end
+
+function Renderer.shouldShowResults()
+  return Renderer.resultsReady
+end
+
+local function enterSourceResults()
+  if not Renderer.resultsReady or not cs then return end
+  if cs.name=='Game' and cs.goToResults and not cs.results then
+    -- Install the final source totals before Beatblock transfers Game state into
+    -- Results. The Lovely guard only permits this source-authorized transition.
+    Renderer.applySourceScore(cs)
+    cs:goToResults()
+  end
+  if cs and cs.name=='Results' then applySourceResults(cs) end
+end
+
+local function updateSourceScore()
+  if not Renderer.scores then return end
+  local sequence=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer)[0])
+  if sequence==0 then
+    if Renderer.lastScoreSequence~=0 then
+      -- The runtime zeros this page between runs. Drop every prior source field
+      -- so the next run cannot inherit an old HUD or final Results marker, and
+      -- allow its commit counter to safely restart from one.
+      Renderer.lastScoreSequence=0
+      Renderer.sourceAccuracy=nil
+      Renderer.sourceOffset=0
+      Renderer.sourceScore=nil
+      Renderer.resultsReady=false
+    end
+    return
+  end
+  if sequence==Renderer.lastScoreSequence then return end
+  local flags=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+4)[0])
+  local sourceAccuracy=tonumber(ffi.cast('float*',Renderer.scores.pointer+8)[0])
+  local sourceOffset=tonumber(ffi.cast('float*',Renderer.scores.pointer+12)[0])
+  local score={
+    hits=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+16)[0]),
+    misses=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+20)[0]),
+    barelies=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+24)[0]),
+    combo=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+28)[0]),
+    maxCombo=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+32)[0]),
+    currentMaxHits=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+36)[0]),
+    maxHits=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+40)[0]),
+    mineHits=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+44)[0]),
+  }
+  -- The score writer commits sequence last. Do not combine fields from two
+  -- source keyframes if the runtime advances the slot during this read.
+  if sequence~=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer)[0]) then return end
+  if sourceAccuracy~=sourceAccuracy or sourceAccuracy<0 or sourceAccuracy>100
+    or sourceOffset~=sourceOffset or sourceOffset==math.huge or sourceOffset==-math.huge then return end
+  Renderer.lastScoreSequence=sequence
+  Renderer.sourceAccuracy=sourceAccuracy
+  Renderer.sourceOffset=sourceOffset
+  Renderer.sourceScore=score
+  Renderer.resultsReady=flags%2==1
+  enterSourceResults()
+end
+
 function Renderer.update()
   if not Renderer.active or not Renderer.inputs then return end
+  updateSourceScore()
   local sequence = tonumber(ffi.cast('uint32_t*', Renderer.inputs.pointer + 8)[0])
   if sequence == 0 then return end
   local beat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 20)[0])
@@ -338,6 +437,10 @@ function Renderer.applyClock()
 end
 
 function Renderer.afterGameUpdate()
+  -- Native simulation remains responsible for visual feedback, but its score
+  -- mutations can diverge when a packet is skipped. Restore the delayed source
+  -- totals at the final gameplay boundary before HUD drawing and Results.
+  Renderer.applySourceScore(cs)
   if not Renderer.hasInput or not cs or not cs.source then return end
   if not (cs.source.getBeat and cs.source.setBeat) then return end
   local now = love.timer.getTime()

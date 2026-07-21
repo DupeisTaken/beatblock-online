@@ -1,6 +1,6 @@
 use crate::mod_payload::SHARED_MOD_PAYLOAD;
 use crate::model::{
-    GameplayState, RenderSample, RendererRequest, RendererSlot, MAX_RENDER_STREAMS,
+    GameplayState, RenderSample, RendererRequest, RendererSlot, ScoreTotals, MAX_RENDER_STREAMS,
 };
 use anyhow::{bail, Context, Result};
 use memmap2::MmapMut;
@@ -20,6 +20,8 @@ const MAX_FRAME_SIZE: usize = 1920 * 1080 * 4;
 // a delayed cohort retain the first-note origin through ordinary long charts.
 const MAX_RENDER_SAMPLES: usize = 60 * 60 * 10;
 const MAX_RENDER_TAPS: usize = 4_096;
+const MAX_RENDER_SCORES: usize = 4_096;
+const SCORE_STATE_SIZE: usize = 48;
 
 const FLAG_PLAYING: u16 = 1;
 const FLAG_RAW_TAP_PRESSED: u16 = 1 << 2;
@@ -50,6 +52,16 @@ struct RenderTap {
     judgement_beat: f32,
     pressed: bool,
     released: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RenderScoreState {
+    pub sequence: u64,
+    pub run_time_us: u64,
+    pub accuracy: f32,
+    pub average_offset: f32,
+    pub totals: ScoreTotals,
+    pub results: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -89,12 +101,16 @@ pub struct RendererManager {
     render_samples: Mutex<HashMap<String, VecDeque<BufferedRenderSample>>>,
     render_anchors: Mutex<HashMap<String, RenderAnchor>>,
     render_taps: Mutex<HashMap<String, VecDeque<RenderTap>>>,
+    render_scores: Mutex<HashMap<String, VecDeque<RenderScoreState>>>,
     player_states: Mutex<HashMap<String, VecDeque<GameplayState>>>,
     input_maps: Mutex<HashMap<String, MmapMut>>,
+    score_maps: Mutex<HashMap<String, MmapMut>>,
     input_sequences: Mutex<HashMap<String, u32>>,
+    score_sequences: Mutex<HashMap<String, u32>>,
     input_sources: Mutex<HashMap<String, String>>,
     tap_cursors: Mutex<HashMap<String, u64>>,
     sample_cursors: Mutex<HashMap<String, u32>>,
+    score_cursors: Mutex<HashMap<String, u64>>,
     sync_epoch: Mutex<Option<SyncEpoch>>,
     frame_observations: Mutex<HashMap<String, (u64, u64, u64)>>,
 }
@@ -126,6 +142,37 @@ fn publish_input(
     map[8..12].copy_from_slice(&bytes[8..12]);
 }
 
+/// Publishes source-authored score state beside the compact motion input. A
+/// separate commit counter keeps this richer reliable state out of the stable
+/// 32-byte network datagram while giving the hidden Lua child a torn-read guard.
+fn publish_score(
+    map: &mut MmapMut,
+    score_sequences: &mut HashMap<String, u32>,
+    slot_id: &str,
+    state: &RenderScoreState,
+) {
+    let sequence = score_sequences.entry(slot_id.to_owned()).or_insert(0);
+    *sequence = sequence.wrapping_add(1).max(1);
+    let count = |value: u64| value.min(u32::MAX as u64) as u32;
+    map[4..8].copy_from_slice(&(state.results as u32).to_le_bytes());
+    map[8..12].copy_from_slice(&state.accuracy.to_le_bytes());
+    map[12..16].copy_from_slice(&state.average_offset.to_le_bytes());
+    for (offset, value) in [
+        (16, state.totals.hits),
+        (20, state.totals.misses),
+        (24, state.totals.barelies),
+        (28, state.totals.combo),
+        (32, state.totals.max_combo),
+        (36, state.totals.current_max_hits),
+        (40, state.totals.max_hits),
+        (44, state.totals.mine_hits),
+    ] {
+        map[offset..offset + 4].copy_from_slice(&count(value).to_le_bytes());
+    }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    map[..4].copy_from_slice(&sequence.to_le_bytes());
+}
+
 impl RendererManager {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(data_dir.join("render-streams"))?;
@@ -141,12 +188,16 @@ impl RendererManager {
             render_samples: Mutex::new(HashMap::new()),
             render_anchors: Mutex::new(HashMap::new()),
             render_taps: Mutex::new(HashMap::new()),
+            render_scores: Mutex::new(HashMap::new()),
             player_states: Mutex::new(HashMap::new()),
             input_maps: Mutex::new(HashMap::new()),
+            score_maps: Mutex::new(HashMap::new()),
             input_sequences: Mutex::new(HashMap::new()),
+            score_sequences: Mutex::new(HashMap::new()),
             input_sources: Mutex::new(HashMap::new()),
             tap_cursors: Mutex::new(HashMap::new()),
             sample_cursors: Mutex::new(HashMap::new()),
+            score_cursors: Mutex::new(HashMap::new()),
             sync_epoch: Mutex::new(None),
             frame_observations: Mutex::new(HashMap::new()),
         })
@@ -266,6 +317,10 @@ impl RendererManager {
                 .lock()
                 .expect("renderer sample cursors poisoned")
                 .remove(&configured.id);
+            self.score_cursors
+                .lock()
+                .expect("renderer score cursors poisoned")
+                .remove(&configured.id);
             *self
                 .sync_epoch
                 .lock()
@@ -277,6 +332,7 @@ impl RendererManager {
             // Windows rejects truncating a file with a user-mapped section, so
             // reset the stable pages in place when assigning or unassigning.
             self.reset_input_map(&configured.id)?;
+            self.reset_score_map(&configured.id)?;
             self.frame_observations
                 .lock()
                 .expect("renderer observations poisoned")
@@ -413,6 +469,27 @@ impl RendererManager {
         }
     }
 
+    pub(crate) fn push_score_state(&self, participant_id: &str, state: RenderScoreState) {
+        if !state.accuracy.is_finite()
+            || !(0.0..=100.0).contains(&state.accuracy)
+            || !state.average_offset.is_finite()
+        {
+            return;
+        }
+        let mut scores = self.render_scores.lock().expect("renderer scores poisoned");
+        let buffer = scores.entry(participant_id.into()).or_default();
+        if buffer
+            .back()
+            .is_some_and(|current| state.sequence <= current.sequence)
+        {
+            return;
+        }
+        buffer.push_back(state);
+        while buffer.len() > MAX_RENDER_SCORES {
+            buffer.pop_front();
+        }
+    }
+
     /// Clears only run-relative clocks and inputs. Renderer processes remain
     /// loaded so every chart event still starts from the normal pre-roll path.
     pub fn begin_run(&self) {
@@ -428,6 +505,10 @@ impl RendererManager {
             .lock()
             .expect("renderer taps poisoned")
             .clear();
+        self.render_scores
+            .lock()
+            .expect("renderer scores poisoned")
+            .clear();
         self.tap_cursors
             .lock()
             .expect("renderer tap cursors poisoned")
@@ -435,6 +516,10 @@ impl RendererManager {
         self.sample_cursors
             .lock()
             .expect("renderer sample cursors poisoned")
+            .clear();
+        self.score_cursors
+            .lock()
+            .expect("renderer score cursors poisoned")
             .clear();
         self.input_sources
             .lock()
@@ -444,6 +529,10 @@ impl RendererManager {
             .lock()
             .expect("renderer input sequences poisoned")
             .clear();
+        self.score_sequences
+            .lock()
+            .expect("renderer score sequences poisoned")
+            .clear();
         // A renderer process may already be preloading the next chart. Remove
         // the previous run's committed playing/capture flags so that child can
         // only advance again after this run supplies delayed samples.
@@ -451,6 +540,14 @@ impl RendererManager {
             .input_maps
             .lock()
             .expect("input maps poisoned")
+            .values_mut()
+        {
+            map.fill(0);
+        }
+        for map in self
+            .score_maps
+            .lock()
+            .expect("score maps poisoned")
             .values_mut()
         {
             map.fill(0);
@@ -496,6 +593,12 @@ impl RendererManager {
         self.data_dir
             .join("render-streams")
             .join(format!("stream-{}.bbtstate", slot_id.to_ascii_uppercase()))
+    }
+
+    pub fn score_path(&self, slot_id: &str) -> PathBuf {
+        self.data_dir
+            .join("render-streams")
+            .join(format!("stream-{}.bbtscore", slot_id.to_ascii_uppercase()))
     }
 
     pub fn error_path(&self, slot_id: &str) -> PathBuf {
@@ -643,6 +746,8 @@ impl RendererManager {
         }
 
         let mut maps = self.input_maps.lock().expect("input maps poisoned");
+        let scores = self.render_scores.lock().expect("renderer scores poisoned");
+        let mut score_maps = self.score_maps.lock().expect("score maps poisoned");
         let taps = self.render_taps.lock().expect("renderer taps poisoned");
         let mut tap_cursors = self
             .tap_cursors
@@ -652,6 +757,10 @@ impl RendererManager {
             .sample_cursors
             .lock()
             .expect("renderer sample cursors poisoned");
+        let mut score_cursors = self
+            .score_cursors
+            .lock()
+            .expect("renderer score cursors poisoned");
         let mut input_sources = self
             .input_sources
             .lock()
@@ -660,6 +769,10 @@ impl RendererManager {
             .input_sequences
             .lock()
             .expect("renderer input sequences poisoned");
+        let mut score_sequences = self
+            .score_sequences
+            .lock()
+            .expect("renderer score sequences poisoned");
 
         for slot in slots {
             let Some(participant) = slot.participant_id.as_deref() else {
@@ -690,6 +803,7 @@ impl RendererManager {
             if source_changed {
                 input_sources.insert(slot.id.clone(), participant.to_owned());
                 sample_cursors.remove(&slot.id);
+                score_cursors.remove(&slot.id);
                 let baseline = taps
                     .get(participant)
                     .and_then(|events| {
@@ -763,6 +877,20 @@ impl RendererManager {
                 judgement_beat,
                 input_offset_ms,
             );
+            if let (Some(score_map), Some(score)) = (
+                score_maps.get_mut(&slot.id),
+                scores.get(participant).and_then(|states| {
+                    states
+                        .iter()
+                        .rev()
+                        .find(|state| state.run_time_us <= sample.run_time_us)
+                }),
+            ) {
+                if score_cursors.get(&slot.id).copied() != Some(score.sequence) {
+                    publish_score(score_map, &mut score_sequences, &slot.id, score);
+                    score_cursors.insert(slot.id.clone(), score.sequence);
+                }
+            }
         }
         if first_release {
             let mut epoch = self
@@ -801,6 +929,7 @@ impl RendererManager {
         // place: Windows rejects truncating a file while this process still
         // owns its mapping, and the new child will observe these same pages.
         self.reset_input_map(&slot.id)?;
+        self.reset_score_map(&slot.id)?;
         let mut command = self.renderer_command(
             &slot,
             game_executable,
@@ -919,6 +1048,10 @@ impl RendererManager {
             .lock()
             .expect("renderer sample cursors poisoned")
             .remove(&reset.id);
+        self.score_cursors
+            .lock()
+            .expect("renderer score cursors poisoned")
+            .remove(&reset.id);
         *self
             .sync_epoch
             .lock()
@@ -943,7 +1076,7 @@ impl RendererManager {
             self.stop_slot(&slot);
         }
         // A disconnected participant can never supply another delayed frame.
-        // Release both bounded history queues instead of retaining one pair for
+        // Release all bounded renderer history instead of retaining one set for
         // every session id seen over the lifetime of the runtime.
         self.render_samples
             .lock()
@@ -956,6 +1089,10 @@ impl RendererManager {
         self.render_taps
             .lock()
             .expect("renderer taps poisoned")
+            .remove(participant_id);
+        self.render_scores
+            .lock()
+            .expect("renderer scores poisoned")
             .remove(participant_id);
         self.player_states
             .lock()
@@ -1078,14 +1215,23 @@ impl RendererManager {
             .lock()
             .expect("renderer taps poisoned")
             .clear();
+        self.render_scores
+            .lock()
+            .expect("renderer scores poisoned")
+            .clear();
         self.player_states
             .lock()
             .expect("player state buffers poisoned")
             .clear();
         self.input_maps.lock().expect("input maps poisoned").clear();
+        self.score_maps.lock().expect("score maps poisoned").clear();
         self.input_sequences
             .lock()
             .expect("renderer input sequences poisoned")
+            .clear();
+        self.score_sequences
+            .lock()
+            .expect("renderer score sequences poisoned")
             .clear();
         self.input_sources
             .lock()
@@ -1098,6 +1244,10 @@ impl RendererManager {
         self.sample_cursors
             .lock()
             .expect("renderer sample cursors poisoned")
+            .clear();
+        self.score_cursors
+            .lock()
+            .expect("renderer score cursors poisoned")
             .clear();
         *self
             .sync_epoch
@@ -1162,6 +1312,24 @@ impl RendererManager {
         Ok(())
     }
 
+    fn create_score_map(&self, slot_id: &str) -> Result<()> {
+        let path = self.score_path(slot_id);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.set_len(SCORE_STATE_SIZE as u64)?;
+        let mut map = unsafe { MmapMut::map_mut(&file)? };
+        map.fill(0);
+        self.score_maps
+            .lock()
+            .expect("score maps poisoned")
+            .insert(slot_id.to_ascii_uppercase(), map);
+        Ok(())
+    }
+
     fn reset_input_map(&self, slot_id: &str) -> Result<()> {
         let key = slot_id.to_ascii_uppercase();
         {
@@ -1173,6 +1341,19 @@ impl RendererManager {
             }
         }
         self.create_input_map(&key)
+    }
+
+    fn reset_score_map(&self, slot_id: &str) -> Result<()> {
+        let key = slot_id.to_ascii_uppercase();
+        {
+            let mut maps = self.score_maps.lock().expect("score maps poisoned");
+            if let Some(map) = maps.get_mut(&key) {
+                map.fill(0);
+                map.flush()?;
+                return Ok(());
+            }
+        }
+        self.create_score_map(&key)
     }
 }
 
@@ -1434,6 +1615,17 @@ mod tests {
             },
         );
         manager.push_player_state("old-session", GameplayState::default());
+        manager.push_score_state(
+            "old-session",
+            RenderScoreState {
+                sequence: 1,
+                run_time_us: 0,
+                accuracy: 99.0,
+                average_offset: 0.0,
+                totals: ScoreTotals::default(),
+                results: false,
+            },
+        );
         manager
             .configure(
                 "A",
@@ -1461,6 +1653,11 @@ mod tests {
             .lock()
             .unwrap()
             .contains_key("old-session"));
+        assert!(!manager
+            .render_scores
+            .lock()
+            .unwrap()
+            .contains_key("old-session"));
 
         manager.push_sample(
             "next-session",
@@ -1479,6 +1676,7 @@ mod tests {
         assert!(manager.render_samples.lock().unwrap().is_empty());
         assert!(manager.player_states.lock().unwrap().is_empty());
         assert!(manager.input_maps.lock().unwrap().is_empty());
+        assert!(manager.score_maps.lock().unwrap().is_empty());
         assert!(manager.frame_observations.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1540,6 +1738,117 @@ mod tests {
         assert_eq!(sample.beat, 10.25);
         assert_eq!(sample.paddle_angle, 21.0);
         assert_eq!(sample.tap_mask, 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_scores_and_results_follow_the_same_delayed_sample_as_video() {
+        let root = std::env::temp_dir().join(format!(
+            "bbt-renderer-source-score-{}",
+            rand::random::<u64>()
+        ));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(500),
+                    featured: None,
+                },
+            )
+            .unwrap();
+        manager.push_render_anchor("player-1", 10.0, 0.0);
+        for (sequence, source_time, receipt, flags) in [
+            (1, 1_000_000, 2_000_000, FLAG_PLAYING),
+            (2, 1_016_667, 2_016_667, FLAG_PLAYING),
+            (3, 1_033_334, 2_033_334, 0),
+        ] {
+            manager.push_sample_at(
+                "player-1",
+                RenderSample {
+                    session_id: 0,
+                    sequence,
+                    run_time_us: source_time,
+                    beat: 10.0 + sequence as f32 / 4.0,
+                    paddle_angle: 90.0,
+                    tap_mask: 0,
+                    flags,
+                },
+                receipt,
+            );
+        }
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 41,
+                run_time_us: 1_010_000,
+                accuracy: 98.75,
+                average_offset: -12.5,
+                totals: ScoreTotals {
+                    hits: 80,
+                    misses: 1,
+                    barelies: 1,
+                    combo: 20,
+                    max_combo: 50,
+                    current_max_hits: 82,
+                    max_hits: 100,
+                    mine_hits: 2,
+                },
+                results: false,
+            },
+        );
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 42,
+                run_time_us: 1_030_000,
+                accuracy: 97.75,
+                average_offset: -10.25,
+                totals: ScoreTotals {
+                    hits: 97,
+                    misses: 2,
+                    barelies: 1,
+                    combo: 0,
+                    max_combo: 75,
+                    current_max_hits: 100,
+                    max_hits: 100,
+                    mine_hits: 2,
+                },
+                results: true,
+            },
+        );
+
+        manager.write_aligned_inputs(2_500_000);
+        assert!(std::fs::read(manager.score_path("A"))
+            .unwrap()
+            .iter()
+            .all(|byte| *byte == 0));
+
+        manager.write_aligned_inputs(2_516_667);
+        let live = std::fs::read(manager.score_path("A")).unwrap();
+        assert_eq!(u32::from_le_bytes(live[4..8].try_into().unwrap()), 0);
+        assert_eq!(f32::from_le_bytes(live[8..12].try_into().unwrap()), 98.75);
+        assert_eq!(u32::from_le_bytes(live[20..24].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(live[36..40].try_into().unwrap()), 82);
+
+        manager.write_aligned_inputs(2_533_334);
+        let results = std::fs::read(manager.score_path("A")).unwrap();
+        assert_eq!(u32::from_le_bytes(results[4..8].try_into().unwrap()), 1);
+        assert_eq!(
+            f32::from_le_bytes(results[8..12].try_into().unwrap()),
+            97.75
+        );
+        assert_eq!(
+            f32::from_le_bytes(results[12..16].try_into().unwrap()),
+            -10.25
+        );
+        assert_eq!(u32::from_le_bytes(results[40..44].try_into().unwrap()), 100);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1674,8 +1983,23 @@ mod tests {
             },
             2_000_000,
         );
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 1,
+                run_time_us: 1_000_000,
+                accuracy: 99.5,
+                average_offset: 1.25,
+                totals: ScoreTotals::default(),
+                results: false,
+            },
+        );
         manager.write_aligned_inputs(2_250_000);
         assert!(std::fs::read(manager.state_path("A"))
+            .unwrap()
+            .iter()
+            .any(|byte| *byte != 0));
+        assert!(std::fs::read(manager.score_path("A"))
             .unwrap()
             .iter()
             .any(|byte| *byte != 0));
@@ -1696,9 +2020,15 @@ mod tests {
             .unwrap()
             .iter()
             .all(|byte| *byte == 0));
+        assert!(std::fs::read(manager.score_path("A"))
+            .unwrap()
+            .iter()
+            .all(|byte| *byte == 0));
         assert!(manager.input_sequences.lock().unwrap().is_empty());
+        assert!(manager.score_sequences.lock().unwrap().is_empty());
         assert!(manager.input_sources.lock().unwrap().is_empty());
         assert!(manager.render_samples.lock().unwrap().is_empty());
+        assert!(manager.render_scores.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

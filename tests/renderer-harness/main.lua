@@ -4,7 +4,7 @@
 package.path=package.path..';./?.lua;./?/init.lua'
 
 project={res={x=600,y=360}}
-savedata={options={accessibility={vfx='full'}}}
+savedata={options={accessibility={vfx='full'}},costumes={currentCostume='pirate'}}
 shaders={}
 shuv={usePalette=true}
 cs={
@@ -53,6 +53,9 @@ function love.load()
   cs.vfx.chromaticAberration.enabled=true
   Renderer.init()
   assert(Renderer.active,'renderer fixture did not initialize')
+  Renderer.useDefaultCostume()
+  assert(savedata.costumes.currentCostume=='none',
+    'renderer did not force Beatblock default Cranky costume')
   -- A graphics driver may never complete an async readback. Verify the public
   -- reclamation path frees both canvases and invalidates their old tickets.
   Renderer.readbackPending={true,true}
@@ -123,6 +126,54 @@ function love.load()
   Renderer.applyPaddleState(playerEntity)
   assert(playerEntity.angleDelta==0 and playerEntity.anglePrevFrame==180,
     'renderer reapplied angle delta for a repeated input sample')
+  -- Native replay scoring can diverge after a skipped sample. The delayed
+  -- source keyframe must win at the final post-GameManager boundary used by
+  -- HUD rendering and the Results transition.
+  Renderer.sourceAccuracy=98.75
+  Renderer.sourceScore={
+    hits=80,misses=1,barelies=1,combo=20,maxCombo=50,currentMaxHits=82,maxHits=100,
+  }
+  cs.hits=0; cs.misses=4; cs.barelies=0; cs.combo=0; cs.maxCombo=10
+  cs.currentMaxHits=75; cs.maxHits=100
+  Renderer.afterGameUpdate()
+  assert(cs.hits==80 and cs.misses==1 and cs.barelies==1 and cs.combo==20
+    and cs.maxCombo==50 and cs.currentMaxHits==82 and cs.maxHits==100,
+    'renderer did not restore source-authored score state after native simulation')
+  -- Read the final source keyframe through the production mmap path and verify
+  -- that it alone authorizes Results, including the player's exact displayed
+  -- accuracy and average timing offset.
+  local gameplayState=cs
+  GameManager={gradeCalc=function(_,pct)
+    assert(pct==97.75,'renderer graded a locally reconstructed accuracy')
+    return 's','none'
+  end}
+  function gameplayState:goToResults()
+    assert(self.hits==97 and self.misses==2 and self.barelies==1 and self.maxCombo==75,
+      'renderer entered Results before installing final source totals')
+    self.results=true
+    cs={name='Results'}
+  end
+  Renderer.update()
+  assert(cs.name=='Results' and cs.hits==97 and cs.misses==2 and cs.barelies==1
+    and cs.maxCombo==75 and cs.pctGrade==97.75 and cs.pctGradeRender=='97.75'
+    and cs.offset==-10.25 and cs.lGrade=='s',
+    'renderer Results did not come from the final player keyframe')
+  cs=gameplayState
+  local ffi=require('ffi')
+  local scoreWords=ffi.cast('uint32_t*',Renderer.scores.pointer)
+  scoreWords[0]=0
+  Renderer.update()
+  assert(Renderer.lastScoreSequence==0 and Renderer.sourceScore==nil
+    and Renderer.sourceAccuracy==nil and not Renderer.resultsReady,
+    'renderer retained source score state after the runtime reset its page')
+  scoreWords[1]=0
+  ffi.cast('float*',Renderer.scores.pointer+8)[0]=99.5
+  ffi.cast('float*',Renderer.scores.pointer+12)[0]=2.5
+  scoreWords[0]=1
+  Renderer.update()
+  assert(Renderer.lastScoreSequence==1 and Renderer.sourceAccuracy==99.5
+    and Renderer.sourceOffset==2.5 and not Renderer.resultsReady,
+    'renderer ignored a new run whose score commit counter restarted at one')
   Renderer.captureEnabled=true
   -- Use the production synchronous fallback for deterministic completion before
   -- the short-lived fixture exits; the QA LÖVE build predates readbackTexture,
