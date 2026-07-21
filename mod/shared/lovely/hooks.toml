@@ -56,6 +56,28 @@ match_indent = true
 
 [[patches]]
 [patches.pattern]
+target = "main.lua"
+# Game:update returns while a renderer is held, but Beatblock normally advances
+# global eases and EntityManager immediately afterward. Keep both native systems
+# on the same pause boundary so hidden shader objects and Player canvases cannot
+# drift before the delayed participant stream begins.
+pattern = "prof.push(\"flux update\")"
+position = "before"
+payload = "if not (BBTRenderer and BBTRenderer.active and BBTRenderer.shouldFreezeSimulation()) then"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = "prof.pop(\"entityman update\")"
+position = "after"
+payload = "end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
 target = "states/Game.lua"
 # The remote input vector is installed before entity updates. This post-manager
 # hook only corrects material audio drift after Play Song has created a track.
@@ -74,6 +96,18 @@ target = "obj/GameManager.lua"
 pattern = "  -- read the level"
 position = "before"
 payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.applyClock() end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
+target = "obj/Player.lua"
+# The transmitted paddle angle is the source Player's final native state. Apply
+# it after the hidden Player's local input/cap pass and before note entities (at
+# higher update layers) perform collision, avoiding a second source-angle cap.
+pattern = 'prof.pop("player update")'
+position = "before"
+payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.applyPaddleState(self) end"
 match_indent = true
 times = 1
 

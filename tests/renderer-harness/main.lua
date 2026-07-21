@@ -71,6 +71,28 @@ function love.load()
   assert(cs.vfx.bgNoise==1 and cs.vfx.bgNoise_OLD.enable==true,'renderer changed background VFX')
   assert(not playerEntity.skipRender and not noteEntity.skipRender and not hitEntity.skipRender
     and not sceneryEntity.skipRender,'renderer suppressed a native chart entity')
+  -- The renderer enters Game directly instead of traversing SongSelect's grow
+  -- callback. Menu:leave deliberately retains its animated background, so the
+  -- direct handoff must explicitly release both entities and their old eases.
+  local clearedEntities=0
+  em={clear=function() clearedEntities=clearedEntities+1 end}
+  flux={tweens={{fixture=1},{fixture=2}}}
+  flux.remove=function(index) table.remove(flux.tweens,index) end
+  Renderer.clearPreviousState()
+  assert(clearedEntities==1 and #flux.tweens==0,
+    'renderer retained pre-game menu entities or eases in the chart state')
+  -- A Game-state early return is insufficient because Beatblock's outer loop
+  -- updates flux and EntityManager afterward. The renderer must expose one
+  -- shared freeze predicate for the Lovely wrapper around both systems.
+  Renderer.hasInput=false
+  Renderer.playing=false
+  cs.startPending=false
+  assert(Renderer.shouldFreezeSimulation(),
+    'renderer did not freeze native eases and entities while awaiting input')
+  cs.startPending=true
+  assert(not Renderer.shouldFreezeSimulation(),
+    'renderer froze the threaded chart preload before it completed')
+  cs.startPending=false
   -- The hidden OS cursor sits in the upper-left. Verify that the remote vector
   -- is rebuilt in chart coordinates and only seeds native Player state once.
   Renderer.hasInput=true
@@ -82,11 +104,25 @@ function love.load()
   assert(playerEntity.angle==90 and playerEntity.anglePrevFrame==90
     and playerEntity.angleDelta==0,'renderer did not seed the paddle consistently')
   playerEntity.angle=80
+  Renderer.previousAngle=90
   Renderer.angle=180
+  Renderer.lastInputSequence=2
   Renderer.steerPaddle()
   assert(playerEntity.angle==80,'renderer bypassed native paddle motion after its initial seed')
   assert(math.abs(mouse.rx-300)<.001 and math.abs(mouse.ry-280)<.001,
     'renderer did not refresh the remote mouse vector for the next native update')
+  -- Player:update may cap the replayed cursor vector when a 60 Hz sample is
+  -- repeated or skipped. The post-update boundary must restore the already
+  -- capped source angle before higher-layer note collision runs.
+  Renderer.applyPaddleState(playerEntity)
+  assert(playerEntity.angle==180 and playerEntity.anglePrevFrame==90,
+    'renderer did not apply the authoritative source paddle angle')
+  assert(math.abs(playerEntity.angleDelta-90)<.001
+    and math.abs(playerEntity.cumulativeAngle-180)<.001,
+    'renderer did not preserve authoritative paddle motion state')
+  Renderer.applyPaddleState(playerEntity)
+  assert(playerEntity.angleDelta==0 and playerEntity.anglePrevFrame==180,
+    'renderer reapplied angle delta for a repeated input sample')
   Renderer.captureEnabled=true
   -- Use the production synchronous fallback for deterministic completion before
   -- the short-lived fixture exits; the QA LÖVE build predates readbackTexture,
@@ -115,7 +151,19 @@ function love.load()
 end
 
 function love.draw()
+  -- A chart can finish its native composition with a dither stencil and clip
+  -- rectangle still active. The spectator copy must treat the already shaded
+  -- canvas as final pixels, never reuse those masks on its output ring.
+  love.graphics.stencil(function()
+    love.graphics.rectangle('fill',0,0,32,32)
+  end,'replace',1,true)
+  love.graphics.setStencilTest('equal',1)
+  love.graphics.setScissor(0,0,32,32)
+  love.graphics.setColorMask(false,false,false,true)
   Renderer.capturePlayerView(rawCanvas,shadedCanvas)
+  love.graphics.setColorMask(true,true,true,true)
+  love.graphics.setScissor()
+  love.graphics.setStencilTest()
   frames=frames+1
   if frames>=45 and love.timer.getTime()-startedAt>=.75 then
     print(string.format(

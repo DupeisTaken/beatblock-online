@@ -178,6 +178,7 @@ for (const contract of [
   [renderer, "reportError('renderer crashed:\\n'"],
   [renderer, 'function Renderer.captureSafe(cleanSource, shadedSource, finalShader)'],
   [renderer, 'function Renderer.capturePlayerView(cleanSource, shadedSource)'],
+  [renderer, 'function Renderer.clearPreviousState()'],
   [renderer, "local source = Renderer.mode == 'full' and shadedSource or cleanSource"],
   [renderer, "love.graphics.push('all')"],
   [renderer, 'love.graphics.setShader(finalShader)'],
@@ -260,6 +261,15 @@ if (renderer.includes('cs and cs.notes') || renderer.includes('local function dr
   throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))
   throw new Error('Renderer hold can block Beatblock before chart preloading completes');
+if (
+  !renderer.includes('function Renderer.shouldFreezeSimulation()') ||
+  !hooks.includes('BBTRenderer.shouldFreezeSimulation()') ||
+  !hooks.includes('pattern = "prof.push(\\\"flux update\\\")"') ||
+  !hooks.includes('pattern = "prof.pop(\\\"entityman update\\\")"')
+)
+  throw new Error('Renderer hold does not freeze Beatblock flux and EntityManager together');
+if (!renderer.includes('Renderer.clearPreviousState()\n  cs.bbtRenderer = true'))
+  throw new Error('Renderer enters Game without releasing menu entities and eases');
 const nativeClockBoundary = hooks.indexOf('target = "obj/GameManager.lua"');
 const remoteClock = hooks.indexOf('BBTRenderer.applyClock()');
 if (nativeClockBoundary < 0 || remoteClock < nativeClockBoundary)

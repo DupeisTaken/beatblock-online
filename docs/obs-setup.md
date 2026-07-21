@@ -19,7 +19,14 @@ The plugin exposes video sources only. Use OBS Application Audio Capture for the
 
 Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode publishes Beatblock's complete native composition: chart backgrounds and video, decorative entities, blocks, hit feedback, chart and Online HUDs, palette/accessibility conversion, and screen-space effects. Optional Clean mode uses the native base gameplay canvas without the final on-top composition, but still applies Beatblock's palette/accessibility shader; it no longer exposes red palette-index artwork or removes chart-authored scenery. Both modes preserve the source aspect ratio, and capture continues through Beatblock's native Results state.
 
-Renderer children preload the chart, then consume cached delayed samples during the chart pre-roll while OBS output remains gated. This invisible warm-up lets Beatblock advance its own background events, eases, blocks, and effects instead of reconstructing them synthetically or collapsing them into the first visible frame. Once every assigned source reaches its first scoring note, the runtime releases the cohort on a shared clock, seeds each paddle once, and enables capture. Later frames install the delayed remote beat inside `GameManager` after its local audio-clock read but before native event processing; the remote mouse vector is rebuilt before `Player:update`, so native paddle limits and history remain active without the hidden cursor snapping to the upper-left. Ordered raw tap edges carry the source player's already offset-adjusted judgement beat, with same-frame input flags as a bounded fallback.
+The copy into the reusable OBS output canvas explicitly disables any stencil,
+scissor, depth, or color-write mask left by the chart. Those masks have already
+been applied to Beatblock's shaded source; applying them a second time would
+leave pixels from older frames behind and create dithered VFX ghosts.
+
+Renderer children finish Beatblock's threaded chart preload and then freeze the complete native simulation while they await source input. The Game state, global `flux` eases, and EntityManager share that pause boundary; hidden Player stencil canvases and procedural VFX therefore cannot age independently before playback. Cached delayed samples then advance the authored chart pre-roll while OBS output remains gated. This invisible warm-up lets Beatblock advance its own background events, eases, blocks, and effects instead of reconstructing them synthetically or collapsing them into the first visible frame. Once every assigned source reaches its first scoring note, the runtime releases the cohort on a shared clock, seeds each paddle once, and enables capture. Later frames install the delayed remote beat inside `GameManager` after its local audio-clock read but before native event processing. The remote mouse vector is rebuilt before `Player:update`; after that local input pass, the renderer restores the source Player's already snapped, offset, and native-capped angle before higher-layer notes perform collision. This prevents a repeated or skipped telemetry sample from applying the native angle cap twice, lagging the paddle, and leaving missed-note ghosts over authored VFX. Ordered raw tap edges carry the source player's already offset-adjusted judgement beat, with same-frame input flags as a bounded fallback.
+
+Beatblock's native render stack is preserved rather than reimplemented: entities first draw by numeric layer into the base gameplay canvas or a chart-defined custom canvas; effect canvases collect recolor, displacement, and halftone masks; the on-top shader composites those masks plus waves, glitch, fisheye, and pixelation; HUD and on-top decorations follow; finally `shuv.finish()` applies palette/accessibility conversion and optional chromatic aberration. Full export copies that final shaded canvas. Keygen's white `noisetexture.png` is intentional shader carrier geometry for `Plasma`, not a missing-resource placeholder; the chart keeps Plasma and Spiral hidden until their authored reveal events. The isolated renderer releases the initial menu's retained entities and eases before Game initialization, matching SongSelect's native ownership handoff and preventing `MenuBackground` geometry from being composited over the chart as a false mask.
 
 Choose **Advanced Export** in Broadcast to edit each Stream A-D independently. The complete visible controls are Full/Clean mode, 1280×720/1920×1080 output, 30/60 fps, and 250/500/1000/1500 ms delay. **Apply to Stream** stores those values even while the slot is unassigned; a later **Assign** uses that slot's saved configuration instead of resetting it to defaults. A 1080p60 selection is marked **High GPU Load**. Apply is disabled during countdown/gameplay.
 
@@ -48,14 +55,21 @@ physical probe at an isolated Beatblock test build. Run it once with
 transparent, uniformly black, or spatially empty frames and writes a BMP for
 visual review. The probe follows Tutorial's real pre-roll; set
 `BBT_PROBE_CAPTURE_BEAT` to inspect a later composed frame without skipping the
-intervening chart events. `BBT_PROBE_BEATS_PER_SECOND` may accelerate a
-state-handoff smoke test, but an accelerated run is not evidence of visual
-timing fidelity:
+intervening chart events. Set `BBT_PROBE_CHART`, `BBT_PROBE_VARIANT`, and
+`BBT_PROBE_FIRST_NOTE_BEAT` to inspect another installed chart. The optional
+`BBT_PROBE_TIMEOUT_SECS` bounds longer captures. `BBT_PROBE_BEATS_PER_SECOND`
+may accelerate a state-handoff smoke test, but an accelerated run is not
+evidence of visual timing fidelity. Set `BBT_PROBE_PRESTART_HOLD_SECS` to
+reproduce a renderer parked after preload and confirm that a delayed assignment
+does not age hidden chart entities before playback:
 
 ```powershell
 $env:BBT_PROBE_GAME = 'C:\path\to\Beatblock.exe'
 $env:BBT_PROBE_MODE = 'full'
-$env:BBT_PROBE_CAPTURE_BEAT = '8'
+$env:BBT_PROBE_CHART = 'levels/Finished levels/whatsakeygen/'
+$env:BBT_PROBE_VARIANT = 'Easy'
+$env:BBT_PROBE_FIRST_NOTE_BEAT = '0'
+$env:BBT_PROBE_CAPTURE_BEAT = '100.5'
 cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 ```
 
@@ -70,6 +84,12 @@ independent requests and commits only completed image data. Per-slot tickets
 discard superseded results. A capture exception is written to
 `stream-X.bbterror` and appears as the slot's dashboard error instead of
 crashing the child process.
+
+For resource diagnosis, inspect the renderer-profile Lovely log under the local
+runtime data directory. A mounted chart archive, loaded `initObject` class, and
+absence of playback/resource errors rule out an asset-loading failure. If the
+authored procedural background is visible but old note shapes accumulate over
+it, diagnose paddle/collision replay before copying or replacing chart assets.
 
 The host's normal Beatblock process remains available for play, or the host can
 choose **Direct Next Race** from its participant inspector. Changing charts

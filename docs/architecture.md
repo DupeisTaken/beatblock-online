@@ -72,7 +72,13 @@ the fastest configured 30/60 Hz stream. Game clients send 60 Hz render input
 during gameplay and five Hz while held on an Online screen. Renderer processes
 use a fixed three-frame memory-mapped ring, two asynchronous GPU readback
 canvases, and sequence-last publication so OBS never consumes a partial frame.
-Cached samples warm each isolated native game behind a closed capture gate.
+Each isolated native game completes threaded preload, then freezes its Game
+callback, global `flux` eases, and EntityManager at one boundary until source
+input is available. Cached samples subsequently warm the authored pre-roll
+behind a closed capture gate without letting hidden VFX age while parked.
+Before Game initialization, the direct renderer handoff clears the initial
+menu's deliberately retained entities and eases; native menu-to-menu reuse must
+not leak `MenuBackground` into a chart renderer.
 First-scoring-note anchors translate participant-local monotonic clocks into one
 cohort presentation epoch; the release sample seeds the paddle and enables OBS,
 then delayed beats drive Beatblock's own event and results lifecycle. Reliable

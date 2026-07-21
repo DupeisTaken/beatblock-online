@@ -15,6 +15,7 @@ local Renderer = {
   previousAngle = nil, captureEnabled = false, inputOffsetMs = 0,
   tapQueue = {}, currentTapEvent = nil, seedPaddle = false,
   pendingAudioSync = false, lastAudioCorrectionAt = -math.huge,
+  lastAppliedPaddleSequence = nil, paddleCumulativeAngle = nil,
 }
 Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
@@ -139,6 +140,17 @@ function Renderer.init()
   return Renderer
 end
 
+function Renderer.clearPreviousState()
+  -- Renderer startup bypasses SongSelect's grow-transition callback, where the
+  -- normal game flow deletes its menu Player and other retained UI entities.
+  -- Menu:leave intentionally preserves MenuBackground for sibling menus, so a
+  -- direct jump to Game must establish the native gameplay ownership boundary.
+  if em and em.clear then em.clear() end
+  if flux and flux.tweens and flux.remove then
+    while #flux.tweens > 0 do flux.remove(#flux.tweens) end
+  end
+end
+
 function Renderer.start()
   if not Renderer.active then return end
   local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
@@ -194,6 +206,7 @@ function Renderer.start()
   cs = bs.load('Game')
   if GameManager and GameManager.transferStateData and previous then GameManager:transferStateData(cs, previous) end
   if previous and previous.leave then previous:leave() end
+  Renderer.clearPreviousState()
   cs.bbtRenderer = true
   -- Freeplay normally supplies a table with `path` and `data`. An empty table
   -- preserves that shape and lets Beatblock load the song without attempting
@@ -238,6 +251,11 @@ function Renderer.update()
       Renderer.pendingAudioSync = true
       Renderer.tapQueue = {}
       Renderer.currentTapEvent = nil
+      -- A release/source-change starts a new authoritative motion history.
+      -- Do not join the new participant to the previous paddle's angle delta.
+      Renderer.previousAngle = Renderer.angle
+      Renderer.lastAppliedPaddleSequence = nil
+      Renderer.paddleCumulativeAngle = Renderer.angle
     end
     local pressed = math.floor(flags / 64) % 2 == 1
     local released = math.floor(flags / 128) % 2 == 1
@@ -282,6 +300,36 @@ function Renderer.steerPaddle()
   end
 end
 
+function Renderer.applyPaddleState(player)
+  if not Renderer.hasInput or not player or not Renderer.angle then return end
+
+  -- `render.sample.paddleAngle` is captured after the source Player has already
+  -- applied circle snap, controller offsets, and its native per-frame cap. If
+  -- the hidden Player caps that value again, one skipped/repeated 60 Hz sample
+  -- leaves its collision angle behind the source and turns hits into persistent
+  -- miss ghosts. Install the sampled state after Player:update and before the
+  -- higher-layer notes update instead.
+  local angle = Renderer.angle
+  local advanced = Renderer.lastAppliedPaddleSequence ~= Renderer.lastInputSequence
+  local previous = advanced and (Renderer.previousAngle or angle) or angle
+  local delta = 0
+  if advanced then
+    if helpers and helpers.angdelta then
+      delta = helpers.angdelta(previous, angle)
+    else
+      delta = (angle - previous + 180) % 360 - 180
+    end
+    Renderer.paddleCumulativeAngle = (Renderer.paddleCumulativeAngle or previous) + delta
+    Renderer.lastAppliedPaddleSequence = Renderer.lastInputSequence
+  end
+
+  player.anglePrevFrame = previous
+  player.angle = angle
+  player.angleDelta = delta
+  player.cumulativeAngle = Renderer.paddleCumulativeAngle or angle
+  Renderer.steerPaddle()
+end
+
 -- This hook runs inside GameManager after its local audio clock assignment but
 -- before chart events, taps, notes and eases. The remote beat therefore becomes
 -- the sole simulation clock instead of a cosmetic correction after the fact.
@@ -313,6 +361,14 @@ function Renderer.shouldHold()
   return Renderer.active and (not Renderer.hasInput or not Renderer.playing)
 end
 
+function Renderer.shouldFreezeSimulation()
+  -- Returning from Game:update alone is not a complete pause: Beatblock's
+  -- outer Gamestate loop still advances flux eases and every Entity. Freeze
+  -- those systems after threaded preload so hidden Player canvases and VFX do
+  -- not age for an arbitrary amount of time while waiting for source input.
+  return Renderer.shouldHold() and cs and cs.name == 'Game' and not cs.startPending
+end
+
 function Renderer.beginTapJudgement()
   Renderer.currentTapEvent = table.remove(Renderer.tapQueue, 1)
   return Renderer.currentTapEvent
@@ -336,9 +392,14 @@ local function drawSource(source, finalShader)
   love.graphics.push('all')
   local success, message = xpcall(function()
     -- Beatblock leaves draw state behind for the rest of its own composition.
-    -- Reset it inside the output canvas so shader, transform, blend, or tint
-    -- state cannot turn a valid gameplay canvas into a black OBS frame.
+    -- The source is already the final shaded frame. Disable every mask/clip
+    -- that can survive a chart draw before clearing the reused output canvas;
+    -- otherwise untouched pixels from older frames produce dithered ghosts.
     love.graphics.origin()
+    love.graphics.setScissor()
+    love.graphics.setStencilTest()
+    if love.graphics.setDepthMode then love.graphics.setDepthMode() end
+    if love.graphics.setColorMask then love.graphics.setColorMask(true,true,true,true) end
     love.graphics.setShader(finalShader)
     love.graphics.setBlendMode('alpha', 'alphamultiply')
     love.graphics.setColor(1, 1, 1, 1)

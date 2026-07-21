@@ -273,7 +273,10 @@ impl RendererManager {
         }
         if render_changed || !self.frame_path(&configured.id).is_file() {
             self.create_frame_ring(&configured)?;
-            self.create_input_map(&configured.id)?;
+            // The manager and renderer child can both retain this file mapping.
+            // Windows rejects truncating a file with a user-mapped section, so
+            // reset the stable pages in place when assigning or unassigning.
+            self.reset_input_map(&configured.id)?;
             self.frame_observations
                 .lock()
                 .expect("renderer observations poisoned")
@@ -1302,6 +1305,60 @@ mod tests {
             u64::from_le_bytes(std::fs::read(&path).unwrap()[32..40].try_into().unwrap()),
             0
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unassign_resets_the_existing_input_mapping_without_recreating_it() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-unassign-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(500),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        {
+            let mut maps = manager.input_maps.lock().unwrap();
+            maps.get_mut("A").unwrap().fill(0xA5);
+        }
+
+        let unassigned = manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some(String::new()),
+                    participant_name: Some(String::new()),
+                    mode: None,
+                    width: None,
+                    height: None,
+                    fps: None,
+                    delay_ms: None,
+                    featured: None,
+                },
+            )
+            .unwrap();
+
+        assert!(!unassigned.active);
+        assert!(unassigned.participant_id.is_none());
+        assert!(manager
+            .input_maps
+            .lock()
+            .unwrap()
+            .get("A")
+            .unwrap()
+            .iter()
+            .all(|byte| *byte == 0));
         let _ = std::fs::remove_dir_all(root);
     }
 

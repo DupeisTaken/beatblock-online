@@ -6,6 +6,8 @@
   },
   "patchPatterns": [
     "st:setUpdate(function(self,dt)",
+    "prof.push(\"flux update\")",
+    "prof.pop(\"entityman update\")",
     "self.gm:update(dt)",
     "  -- read the level",
     "self:pauseGame()",

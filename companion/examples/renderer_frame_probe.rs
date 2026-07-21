@@ -106,9 +106,8 @@ fn push_playing_sample(
     beats_per_second: f32,
 ) -> f32 {
     let now_us = unix_ms() * 1_000;
-    // Tutorial begins at beat -8 and reaches its Play Song event at beat 0
-    // using 150 BPM. Driving that real pre-roll prevents the probe itself from
-    // collapsing sixteen beats of chart/VFX events into its first frame.
+    // Advance from the selected chart's authored pre-roll instead of jumping
+    // directly to the capture beat, which would collapse timed VFX events.
     let beat = start_beat + started.elapsed().as_secs_f32() * beats_per_second;
     manager.push_sample(
         "physical-probe",
@@ -188,6 +187,26 @@ fn main() -> Result<()> {
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value > 0.0 && *value <= 32.0)
         .unwrap_or(2.5);
+    // Keep the default tutorial smoke test terse, while allowing a reported
+    // chart/variant to exercise its real authored VFX timeline unchanged.
+    let chart =
+        env::var("BBT_PROBE_CHART").unwrap_or_else(|_| "levels/Finished levels/tutorial/".into());
+    let variant = env::var("BBT_PROBE_VARIANT").unwrap_or_else(|_| "easy".into());
+    let first_note_beat = env::var("BBT_PROBE_FIRST_NOTE_BEAT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+    let timeout_seconds = env::var("BBT_PROBE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (5..=300).contains(value))
+        .unwrap_or(30);
+    let prestart_hold_seconds = env::var("BBT_PROBE_PRESTART_HOLD_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value <= 60)
+        .unwrap_or(0);
     std::fs::create_dir_all(&root)?;
 
     let manager = RendererManager::new(root.clone())?;
@@ -205,17 +224,16 @@ fn main() -> Result<()> {
         },
     )?;
     let profile = prepare_renderer_profile(&root)?;
-    manager.launch_slot(
-        "A",
-        &game,
-        &profile,
-        "levels/Finished levels/tutorial/",
-        "easy",
-    )?;
-    // Tutorial's first scoring interaction is at beat 0. The production game
-    // publishes this once after parsing Event.hitCount; the probe supplies the
-    // same anchor explicitly so it exercises the first-note release barrier.
-    manager.push_render_anchor("physical-probe", 0.0, 0.0);
+    manager.launch_slot("A", &game, &profile, &chart, &variant)?;
+    // Production publishes this after parsing Event.hitCount. Supplying the
+    // chart's real value exercises the same first-note release barrier.
+    manager.push_render_anchor("physical-probe", first_note_beat, 0.0);
+    // Reproduce a participant waiting in the room after the hidden chart has
+    // loaded. The parked process must not advance Player canvases, eases, or
+    // procedural VFX before the first delayed source sample arrives.
+    if prestart_hold_seconds > 0 {
+        thread::sleep(Duration::from_secs(prestart_hold_seconds));
+    }
 
     let started = Instant::now();
     let frame = loop {
@@ -228,8 +246,8 @@ fn main() -> Result<()> {
         if let Ok(error) = std::fs::read_to_string(manager.error_path("A")) {
             bail!("renderer reported: {error}");
         }
-        if started.elapsed() > Duration::from_secs(30) {
-            bail!("renderer did not publish three frames within 30 seconds");
+        if started.elapsed() > Duration::from_secs(timeout_seconds) {
+            bail!("renderer did not publish three frames within {timeout_seconds} seconds");
         }
         thread::sleep(Duration::from_millis(50));
     };
