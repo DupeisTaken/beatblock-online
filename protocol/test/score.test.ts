@@ -10,10 +10,97 @@ import {
   isEnvelope,
   PROTOCOL_VERSION,
   rankPlayers,
+  RoomSnapshotSchema,
+  RunFinishedSchema,
+  RunInvalidSchema,
+  RunStartedSchema,
+  ValidityChecksCommandSchema,
 } from '../src/index.js';
 import { Value } from '@sinclair/typebox/value';
 
 describe('Beatblock score derivation', () => {
+  it('keeps run-check policy optional for protocol-v3 compatibility', () => {
+    const room = {
+      id: 'room',
+      name: 'Room',
+      hostSessionId: 'host',
+      lifecycle: 'forming',
+      admissionMode: 'host_approval',
+      allowChartTransfers: true,
+      participants: [],
+      forceStart: false,
+      setlist: [],
+      currentSetlistIndex: null,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    expect(Value.Check(RoomSnapshotSchema, room)).toBe(true);
+    expect(Value.Check(RoomSnapshotSchema, { ...room, validityChecksEnabled: false })).toBe(true);
+  });
+
+  it('accepts Rust-shaped snapshots with absent optional result fields', () => {
+    const room = {
+      id: 'room',
+      name: 'Room',
+      hostSessionId: 'host',
+      lifecycle: 'playing',
+      admissionMode: 'host_approval',
+      allowChartTransfers: true,
+      validityChecksEnabled: true,
+      participants: [
+        {
+          sessionId: 'host',
+          displayName: 'Host',
+          role: 'host',
+          admitted: true,
+          connected: true,
+          ready: true,
+          verified: true,
+          progress: 0,
+          accuracy: 100,
+          setTotal: 0,
+          totals: { ...EMPTY_TOTALS, maxHits: 100 },
+          validity: 'pending',
+          commentatorAccess: false,
+        },
+      ],
+      scheduledStartTimeMs: 1000,
+      forceStart: false,
+      setlist: [],
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    expect(Value.Check(RoomSnapshotSchema, room)).toBe(true);
+  });
+
+  it('validates run lifecycle and validity-policy payloads strictly', () => {
+    expect(
+      Value.Check(RunStartedSchema, {
+        lobbyId: 'room',
+        runId: 'run-1',
+        maxHits: 100,
+        chartHash: 'a'.repeat(64),
+        variant: 'Hard',
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(RunInvalidSchema, {
+        lobbyId: 'room',
+        runId: 'run-1',
+        reason: 'Sequence gap',
+        dnf: false,
+      }),
+    ).toBe(true);
+    expect(Value.Check(RunInvalidSchema, { runId: 'run-1', reason: '', dnf: 'no' })).toBe(false);
+    expect(Value.Check(RunFinishedSchema, { lobbyId: 'room', runId: 'run-1', quit: false })).toBe(
+      true,
+    );
+    expect(
+      Value.Check(ValidityChecksCommandSchema, { requestId: 'request-1', enabled: false }),
+    ).toBe(true);
+    expect(Value.Check(ValidityChecksCommandSchema, { requestId: 'request-1' })).toBe(false);
+  });
+
   it('matches perfect, barely, and miss scoring', () => {
     expect(calculateAccuracy({ currentMaxHits: 100, misses: 0, barelies: 0 })).toBe(100);
     expect(calculateAccuracy({ currentMaxHits: 100, misses: 0, barelies: 1 })).toBe(99.75);

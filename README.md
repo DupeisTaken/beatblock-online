@@ -4,7 +4,8 @@ Beatblock Online is a Windows direct-IP competition mod. One player hosts a pass
 
 The current prerelease candidate is [`v0.3.0-beta.1`](docs/releases/v0.3.0-beta.1.md),
 which promotes the redesigned Online workspace into beta with host Play/Direct
-selection, pause-safe online races, native-timed OBS output, authenticated room
+selection, host-selectable competitive run checks, pause-safe online races,
+native-timed OBS output, authenticated room
 and local IPC boundaries, safer installer upgrades, bounded runtime resources,
 and reproducible native-artifact verification.
 
@@ -15,7 +16,7 @@ and reproducible native-artifact verification.
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
 5. Open **Online**, then host a room or follow the [Player joining guide](docs/operator-guide.md#join-a-room-as-a-player) with the host's public address, UDP port, and password. When the host uses frp, Players enter the frp server's public address and UDP `remotePort`.
-6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; the host can Play or Direct, Setlist supports ordered commands and next-chart continuation, and Broadcast exposes per-stream advanced export settings. A Spectator only receives Broadcast when the host grants Commentator access.
+6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; the host can Play or Direct, choose competitive or casual Run Checks, Setlist supports ordered commands and next-chart continuation, and Broadcast exposes per-stream advanced export settings. A Spectator only receives Broadcast when the host grants Commentator access.
 7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
 
 ![Concentrated host dashboard](tests/ui-baselines/host-lobby.png)

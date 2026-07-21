@@ -91,7 +91,7 @@ for current proxy configuration syntax.
 ## Host a room
 
 1. Open **Online** and choose **Host a Room**.
-2. Enter a room name, UDP port, password, and display name. Choose **Play** to race or **Direct** to host without joining the race.
+2. Enter a room name, UDP port, password, and display name. Choose **Play** to race or **Direct** to host without joining the race. Keep **Run Checks** on for competitive scoring, or turn it off for a casual room that permits retries and tolerates missing ordered score events.
 3. Share the `IP:port` or password-free `bbt://...?...v=3` link separately from the password.
 4. Select pending roster rows to approve/reject requests. Select admitted rows to change roles or remove a participant.
 5. The host's own roster row keeps **Direct Next Race** / **Play Next Race** available before later races, so the creation choice can be changed without rebuilding the room.
@@ -118,6 +118,8 @@ Password-only rooms admit valid clients immediately. Host-approval rooms place t
 Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Escape and controller pause inputs are ignored during online gameplay, while offline practice retains the native pause menu. Complete valid journals rank normally; missing, mismatched, paused, retried, incomplete, or disconnected runs become visible DNF and add `0.00` to the set total. Players stay in the room for later charts.
 
 Host participation is also locked during countdown/gameplay. Directing keeps room and Broadcast authority but excludes the host from readiness, scoring, and renderer assignment; returning to Play clears stale readiness and requires fresh chart verification.
+
+**Run Checks** is a host-only room policy and can be changed from **Settings** before countdown. **On / Competitive** rejects missing ordered score events and honors client integrity/retry invalidations. **Off / Casual** accepts the next cumulative score update after an event gap and treats a retry as a fresh attempt. Both modes still reject malformed or impossible counters, require exact chart verification, and mark incomplete, launch-timeout, or disconnected runs DNF. Select an INVALID or DNF participant at Results and choose **Run Details** to see the authoritative reason.
 
 ## Networking
 

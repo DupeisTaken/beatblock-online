@@ -95,12 +95,16 @@ function Components.new(palette)
     if height < 22 then self.audit.issues[#self.audit.issues+1] = 'undersized_control:'..tostring(id) end
   end
 
-  function ui:chip(id, x, y, width, label, selected, color)
+  function ui:chip(id, x, y, width, label, selected, color, focused)
     self:color(selected and (color or 'cyan') or 'raised')
     love.graphics.rectangle(selected and 'fill' or 'line',x+.5,y+.5,width-1,21,2,2)
+    if focused then
+      self:color('white')
+      love.graphics.rectangle('line',x+2.5,y+2.5,width-5,17,2,2)
+    end
     local textColor = selected and 'black' or (color or 'white')
     self:text(label,x+3,y+5,width-6,'center',textColor)
-    self.audit.controls[#self.audit.controls+1] = {id=id,x=x,y=y,w=width,h=22,focused=selected}
+    self.audit.controls[#self.audit.controls+1] = {id=id,x=x,y=y,w=width,h=22,focused=focused==true}
   end
 
   function ui:status(x, y, label, color)

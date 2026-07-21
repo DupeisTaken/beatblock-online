@@ -50,11 +50,13 @@ fn initial_host_room(
     host_name: String,
     admission_mode: AdmissionMode,
     host_participating: bool,
+    validity_checks_enabled: bool,
 ) -> Result<RoomEngine> {
     let mut room = RoomEngine::host(room_name, host_name, admission_mode);
     if !host_participating {
         room.set_host_participating(false)?;
     }
+    room.set_validity_checks(validity_checks_enabled)?;
     Ok(room)
 }
 
@@ -117,7 +119,7 @@ fn classify_peer_message(message: &Envelope) -> Result<PeerMessageClass> {
             .payload
             .get("reason")
             .and_then(Value::as_str)
-            .is_some_and(|reason| reason.len() > 512)
+            .is_some_and(|reason| reason.chars().count() > 512)
     {
         anyhow::bail!("run invalidation reason exceeds its safety limit");
     }
@@ -222,6 +224,7 @@ mod tests {
             "Operator".into(),
             AdmissionMode::HostApproval,
             false,
+            false,
         )
         .unwrap();
         let host = room
@@ -233,16 +236,19 @@ mod tests {
         assert_eq!(host.role, ParticipantRole::Spectator);
         assert!(host.ready);
         assert!(host.verified);
+        assert!(!room.snapshot.validity_checks_enabled);
 
         let playing = initial_host_room(
             "Playing finals".into(),
             "Operator".into(),
             AdmissionMode::HostApproval,
             true,
+            true,
         )
         .unwrap();
         assert_eq!(playing.snapshot.participants[0].role, ParticipantRole::Host);
         assert!(!playing.snapshot.participants[0].ready);
+        assert!(playing.snapshot.validity_checks_enabled);
     }
 
     #[tokio::test]
@@ -267,6 +273,66 @@ mod tests {
             .admit(&pending, true, ParticipantRole::Player)
             .unwrap();
         assert!(state.require_admitted_peer(&pending).await.is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rejected_score_marks_invalid_without_failing_local_ipc_ingest() {
+        let root = temporary("nonfatal-invalid-score");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room =
+            RoomEngine::host("Strict".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        room.lock_chart(
+            ChartLock {
+                hash: "a".repeat(64),
+                package_name: "Chart".into(),
+                song_name: "Signal".into(),
+                variant: "Hard".into(),
+                expected_max_hits: 100,
+                official: false,
+                transfer_mode: ChartTransferMode::VerifyOnly,
+            },
+            false,
+        )
+        .unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+        *state.local_session_id.write().await = Some(host.clone());
+        *state.room.write().await = room;
+        state.is_host.store(true, Ordering::Release);
+
+        state
+            .ingest(Envelope::new(
+                "run.started",
+                1,
+                json!({"runId":"strict-run","maxHits":100}),
+            ))
+            .await
+            .unwrap();
+        state
+            .ingest(Envelope::new(
+                "run.score_delta",
+                2,
+                json!({
+                    "runId":"strict-run",
+                    "runSequence":0,
+                    "totals":{"hits":101,"misses":0,"barelies":0,"combo":101,"maxCombo":101,"currentMaxHits":100,"maxHits":100,"mineHits":0}
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let room = state.room.read().await;
+        let participant = room.player(&host).unwrap();
+        assert_eq!(participant.validity, crate::model::RunValidity::Invalid);
+        assert!(participant
+            .invalid_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Rejected run.score_delta")));
+        drop(room);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1616,48 +1682,60 @@ impl AppState {
 
     async fn apply_run_to_room(&self, session_id: &str, message: &Envelope) -> Result<()> {
         let mut room = self.room.write().await;
-        match message.kind.as_str() {
-            "run.started" => {
-                let max_hits = message
-                    .payload
-                    .get("maxHits")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                room.start_run(session_id, max_hits)?;
-            }
-            "run.score_delta" | "score.mutation" => {
-                let sequence = message
-                    .payload
-                    .get("runSequence")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(message.sequence);
-                room.ingest_score(session_id, sequence, &message.payload)?;
-            }
-            "run.invalid" => {
-                room.invalidate(
-                    session_id,
-                    message
+        let run_id = message
+            .run_id
+            .as_deref()
+            .or_else(|| message.payload.get("runId").and_then(Value::as_str));
+        let result = (|| -> Result<()> {
+            match message.kind.as_str() {
+                "run.started" => {
+                    let run_id = run_id.context("run.started requires a runId")?;
+                    let max_hits = message
+                        .payload
+                        .get("maxHits")
+                        .and_then(Value::as_u64)
+                        .context("run.started requires an integer maxHits")?;
+                    room.start_run(session_id, run_id, max_hits)
+                }
+                "run.score_delta" | "score.mutation" => {
+                    let run_id = run_id.context("score update requires a runId")?;
+                    let sequence = message
+                        .payload
+                        .get("runSequence")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(message.sequence);
+                    room.ingest_score(session_id, run_id, sequence, &message.payload)
+                }
+                "run.invalid" => {
+                    let run_id = run_id.context("run.invalid requires a runId")?;
+                    let reason = message
                         .payload
                         .get("reason")
                         .and_then(Value::as_str)
-                        .unwrap_or("Run invalidated")
-                        .into(),
-                    message
+                        .context("run.invalid requires a string reason")?;
+                    let dnf = message
                         .payload
                         .get("dnf")
                         .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                )?;
+                        .context("run.invalid requires a boolean dnf field")?;
+                    room.invalidate(session_id, run_id, reason.into(), dnf)
+                }
+                "run.finished" => {
+                    let run_id = run_id.context("run.finished requires a runId")?;
+                    room.finish_run(session_id, run_id)
+                }
+                _ => Ok(()),
             }
-            "run.finished" => {
-                let run_id = message
-                    .run_id
-                    .as_deref()
-                    .or_else(|| message.payload.get("runId").and_then(Value::as_str))
-                    .unwrap_or("unassigned");
-                room.finish_run(session_id, run_id)?;
-            }
-            _ => {}
+        })();
+        if let Err(error) = result {
+            let recorded = room.reject_run_event(session_id, &message.kind, &error.to_string());
+            tracing::warn!(
+                kind = %message.kind,
+                %session_id,
+                %error,
+                invalidated = recorded,
+                "run event rejected without disconnecting IPC"
+            );
         }
         Ok(())
     }
@@ -1702,6 +1780,7 @@ impl AppState {
         port: u16,
         admission_mode: AdmissionMode,
         host_participating: bool,
+        validity_checks_enabled: bool,
     ) -> Result<SocketAddr> {
         let room_name = validated_room_name(&room_name)?;
         self.cancel_reconnect();
@@ -1710,7 +1789,13 @@ impl AppState {
         *self.reconnect_request.write().await = None;
         *self.connection_status.write().await = "starting".into();
         let host_name = self.config.read().await.display_name.clone();
-        let room = initial_host_room(room_name, host_name, admission_mode, host_participating)?;
+        let room = initial_host_room(
+            room_name,
+            host_name,
+            admission_mode,
+            host_participating,
+            validity_checks_enabled,
+        )?;
         let session_id = room.snapshot.host_session_id.clone();
         let local_address = match self.network.start_host(port, password).await {
             Ok(address) => address,
@@ -1919,6 +2004,12 @@ impl AppState {
             // slot after leaving the race roster.
             self.stop_participant_renderer(&host_session_id).await?;
         }
+        self.broadcast_room().await
+    }
+
+    pub async fn set_validity_checks(&self, enabled: bool) -> Result<()> {
+        self.require_host()?;
+        self.room.write().await.set_validity_checks(enabled)?;
         self.broadcast_room().await
     }
 

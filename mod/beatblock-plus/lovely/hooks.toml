@@ -210,7 +210,7 @@ times = 1
 target = "states/Results.lua"
 pattern = "self.options:addOption('retry',function()"
 position = "after"
-payload = "if BBT and BBT.context.lobbyId ~= 'offline' then BBT.lastError = 'Retry is disabled during online races'; return end"
+payload = "if BBT and BBT.shouldBlockRetry() then BBT.lastError = 'Retry is disabled while competitive Run Checks are enabled'; return end"
 match_indent = true
 times = 1
 

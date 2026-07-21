@@ -25,6 +25,7 @@ local FILTERS = {
   {id='spectators',label='SPECTATORS'}, {id='pending',label='PENDING'},
 }
 local STREAMS = {'A','B','C','D'}
+local ROSTER_PAGE_SIZE = 6
 
 local function pressed(name)
   if not maininput or not maininput.pressed then return false end
@@ -102,8 +103,8 @@ local function button(self,id,x,y,w,h,label,run,color,enabled)
 end
 
 local function chip(self,id,x,y,w,label,selected,run,color)
-  register(self,id,x,y,w,22,run)
-  ui:chip(id,x,y,w,label,selected,color)
+  local focused=register(self,id,x,y,w,22,run)
+  ui:chip(id,x,y,w,label,selected,color,focused)
 end
 
 local function setWorkspace(self,name)
@@ -133,6 +134,7 @@ local function openForm(self,mode,spectator)
       displayName=tostring(BBT.context and BBT.context.playerName or 'Player'),
       name='Beatblock Room', address=tostring(settings.hostAddress or '127.0.0.1'),
       port=tostring(settings.hostPort or 32145), password='', hostParticipating=true,
+      validityChecksEnabled=true,
     },
     fields=mode=='host' and {'displayName','name','port','password'} or {'displayName','address','port','password'},
     index=1,
@@ -161,19 +163,22 @@ local function submitForm(self)
   if not port or port<1 or port>65535 or port%1~=0 then modal.error='UDP PORT MUST BE 1-65535'; return end
   if missing(values.password) then modal.error='PASSWORD IS REQUIRED'; return end
   modal.error=nil
+  local requestId
   if modal.mode=='host' then
-    BBT.command('room.host_request',{
+    requestId=BBT.command('room.host_request',{
       displayName=values.displayName,name=values.name,password=values.password,
       port=port,hostApproval=true,allowChartTransfers=true,
       hostParticipating=values.hostParticipating~=false,
+      validityChecksEnabled=values.validityChecksEnabled~=false,
     })
   else
-    BBT.command('room.join_request',{
+    requestId=BBT.command('room.join_request',{
       displayName=values.displayName,address=values.address..':'..values.port,
       password=values.password,spectator=modal.spectator,
     })
   end
-  closeModal(self)
+  if requestId then closeModal(self)
+  else modal.error=bounded(BBT.lastError or 'ONLINE ACTION COULD NOT START',48) end
 end
 
 local function header(self)
@@ -308,21 +313,33 @@ local function drawRoster(self,results)
     local width=filter.id=='spectators' and 87 or 65
     chip(self,'filter_'..filter.id,x,104,width,filter.label,self.rosterFilter==filter.id,function()
       self.rosterFilter=filter.id
+      self.rosterOffset=0
       local selectedPlayer=Dashboard.selectedParticipant(context(),filter.id,self.selectedSessionId)
       self.selectedSessionId=selectedPlayer and selectedPlayer.sessionId or nil
     end,filter.id=='pending' and 'yellow' or 'cyan')
     x=x+width+5
   end
   local target,list=selected(self)
+  local selectedIndex=1
+  for index,participant in ipairs(list) do
+    if participant.sessionId==self.selectedSessionId then selectedIndex=index; break end
+  end
+  local maxOffset=math.max(0,(math.ceil(#list/ROSTER_PAGE_SIZE)-1)*ROSTER_PAGE_SIZE)
+  self.rosterOffset=math.max(0,math.min(maxOffset,self.rosterOffset or 0))
+  if selectedIndex<=self.rosterOffset or selectedIndex>self.rosterOffset+ROSTER_PAGE_SIZE then
+    self.rosterOffset=math.floor((selectedIndex-1)/ROSTER_PAGE_SIZE)*ROSTER_PAGE_SIZE
+  end
   local lifecycle=room.lifecycle
   local showScore=lifecycle=='playing' or lifecycle=='results' or lifecycle=='set_complete'
   ui:text('NAME',20,132,142,'left','muted')
   if showScore then
     ui:text('RANK',205,132,48,'right','muted'); ui:text('ACCURACY',267,132,92,'right','muted')
   else ui:text('STATE',238,132,121,'right','muted') end
-  for index,participant in ipairs(list) do
-    if index>7 then break end
-    local rowY=146+(index-1)*21
+  for row=1,ROSTER_PAGE_SIZE do
+    local index=self.rosterOffset+row
+    local participant=list[index]
+    if not participant then break end
+    local rowY=146+(row-1)*21
     local focused=self.selectedSessionId==participant.sessionId
     register(self,'participant_'..participant.sessionId,18,rowY,346,20,function()
       self.selectedSessionId=participant.sessionId
@@ -341,6 +358,21 @@ local function drawRoster(self,results)
     end
   end
   if #list==0 then ui:text('NO PARTICIPANTS IN THIS FILTER',30,178,324,'center','muted') end
+  if #list>ROSTER_PAGE_SIZE then
+    local page=math.floor(self.rosterOffset/ROSTER_PAGE_SIZE)+1
+    local pages=math.ceil(#list/ROSTER_PAGE_SIZE)
+    button(self,'roster_previous',20,275,34,22,'<',function()
+      self.rosterOffset=math.max(0,self.rosterOffset-ROSTER_PAGE_SIZE)
+      local participant=list[self.rosterOffset+1]
+      if participant then self.selectedSessionId=participant.sessionId end
+    end,'white',self.rosterOffset>0)
+    ui:text('PAGE '..page..' / '..pages,60,280,259,'center','muted')
+    button(self,'roster_next',325,275,34,22,'>',function()
+      self.rosterOffset=math.min(maxOffset,self.rosterOffset+ROSTER_PAGE_SIZE)
+      local participant=list[self.rosterOffset+1]
+      if participant then self.selectedSessionId=participant.sessionId end
+    end,'white',self.rosterOffset<maxOffset)
+  end
   return target
 end
 
@@ -371,14 +403,24 @@ local function drawInspector(self,target)
     ui:text(item[2],469,y,107,'right',(item[2]=='MISMATCH' or item[2]=='INVALID' or item[2]=='DNF') and 'red' or 'white')
   end
   local transfer=BBT.chartTransfer
+  local actionY=#labels>4 and 216 or 199
   if transfer and target.sessionId==(BBT.context and BBT.context.sessionId) then
     local copy=transfer.state=='progress' and ('TRANSFER '..tostring(transfer.percent or 0)..'%')
       or transfer.state=='offer' and 'TRANSFER OFFER AVAILABLE'
       or transfer.state=='consent' and 'CONSENT REQUIRED'
       or nil
-    if copy then ui:text(copy,391,193,185,'left',transfer.state=='progress' and 'cyan' or 'yellow') end
+    if copy then
+      ui:text(copy,391,193,185,'left',transfer.state=='progress' and 'cyan' or 'yellow')
+      actionY=216
+    end
   end
-  participantActionButtons(self,target,391,199,185)
+  if target.validity=='invalid' or target.validity=='dnf' then
+    button(self,'participant_run_details',391,actionY,185,24,'RUN DETAILS',function()
+      self.modal={kind='details',title=target.validity=='invalid' and 'INVALID RUN' or 'DID NOT FINISH',message=target.invalidReason or 'The runtime did not provide a detailed reason for this result.',returnFocus=self.focusId}
+    end,'white')
+    actionY=actionY+29
+  end
+  participantActionButtons(self,target,391,actionY,185)
 end
 
 local function drawConnect(self)
@@ -657,20 +699,34 @@ local function drawSettings(self)
   ui:panel(12,78,360,225,'SETTINGS')
   ui:panel(379,78,209,225,'RUNTIME')
   local settings=BBT.settings or {}
+  local room=currentRoom()
+  local checksEnabled=not room or room.validityChecksEnabled~=false
+  local checksEditable=isHost() and room and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready')
+  local checksStatus=not room and 'NO ACTIVE ROOM'
+    or (not isHost() and ((checksEnabled and 'ON' or 'OFF')..' / HOST CONTROLLED'))
+    or (not checksEditable and ((checksEnabled and 'ON' or 'OFF')..' / LOCKED'))
+    or (checksEnabled and 'ON / COMPETITIVE' or 'OFF / CASUAL')
   local rows={
     {'GAMEPLAY HUD',settings.hudEnabled==false and 'OFF' or 'ON'},
-    {'CHART TRANSFERS','HOST DEFAULT: ON'},
+    {'CHART TRANSFERS',room and (room.allowChartTransfers==false and 'OFF' or 'ON') or 'HOST DEFAULT: ON'},
+    {'RUN CHECKS',checksStatus},
     {'TRANSFER CACHE',tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB')},
     {'PROTOCOL','V3 ONLY'},
   }
   for index,row in ipairs(rows) do
-    local y=108+(index-1)*26
+    local y=104+(index-1)*22
     ui:text(row[1],24,y,145,'left','muted'); ui:text(row[2],169,y,189,'right','white')
   end
-  button(self,'settings_hud',24,218,160,25,'TOGGLE HUD',function()
+  button(self,'settings_hud',24,218,104,25,'HUD',function()
     BBT.command('settings.update',{hudEnabled=not (settings.hudEnabled~=false)})
   end,'cyan')
-  button(self,'settings_clear_cache',194,218,164,25,'CLEAR CACHE',function()
+  button(self,'settings_validity',134,218,108,25,checksEnabled and 'DISABLE' or 'ENABLE',function()
+    local run=function() BBT.command('room.validity_checks_set',{enabled=not checksEnabled}) end
+    if checksEnabled then
+      openConfirm(self,'DISABLE RUN CHECKS','Retries and missing score events will not invalidate plays. Counter bounds and DNF completion rules remain active.','DISABLE',run)
+    else run() end
+  end,checksEnabled and 'yellow' or 'green',checksEditable)
+  button(self,'settings_clear_cache',248,218,110,25,'CLEAR CACHE',function()
     openConfirm(self,'CLEAR TRANSFER CACHE','Remove inactive BBT-managed chart packages? The active chart is protected.','CLEAR',function()
       BBT.command('chart.cache_clear',{})
     end)
@@ -709,8 +765,10 @@ local function drawNavigation(self)
     chip(self,'nav_'..workspace.id,x,306,width,workspace.label,self.workspace==workspace.id,function() setWorkspace(self,workspace.id) end,'cyan')
     x=x+width+gap
   end
-  local hint=self.modal and 'ESC: CLOSE  /  ENTER: SELECT' or 'ARROWS: NAVIGATE  /  ENTER: SELECT  /  ESC: BACK'
-  ui:text(hint,12,333,576,'center','muted')
+  local problem=BBT.lastError
+  local hint=problem and bounded(problem,110)
+    or (self.modal and 'ESC: CLOSE  /  ENTER: SELECT' or 'ARROWS: NAVIGATE  /  ENTER: SELECT  /  ESC: BACK')
+  ui:text(hint,12,333,576,'center',problem and 'red' or 'muted')
 end
 
 local function drawModal(self)
@@ -722,28 +780,41 @@ local function drawModal(self)
     -- it separate from editable fields so text input and deletion continue to
     -- target only the last selected text box.
     local isHostForm=modal.mode=='host'
-    ui:panel(118,isHostForm and 38 or 60,364,isHostForm and 280 or 240,modal.title)
+    ui:panel(118,isHostForm and 16 or 60,364,isHostForm and 322 or 240,modal.title)
     for index,key in ipairs(modal.fields) do
-      local y=(isHostForm and 74 or 96)+(index-1)*(isHostForm and 34 or 38)
+      local y=(isHostForm and 52 or 96)+(index-1)*(isHostForm and 32 or 38)
       local labels={displayName='DISPLAY NAME',name='ROOM NAME',address='HOST ADDRESS',port='UDP PORT',password='PASSWORD'}
       ui:text(labels[key],136,y,124,'left','muted')
       local value=key=='password' and string.rep('*',#modal.values[key]) or modal.values[key]
       button(self,'form_'..key,261,y-5,203,27,value,function() modal.index=index; self.focusId='form_'..key end,'white')
     end
     if isHostForm then
-      ui:text('HOST ROLE',136,211,124,'left','muted')
-      chip(self,'form_host_play',261,207,96,'PLAY',modal.values.hostParticipating~=false,function()
+      ui:text('HOST ROLE',136,180,124,'left','muted')
+      chip(self,'form_host_play',261,176,96,'PLAY',modal.values.hostParticipating~=false,function()
         modal.values.hostParticipating=true; modal.error=nil
       end,'green')
-      chip(self,'form_host_direct',363,207,101,'DIRECT',modal.values.hostParticipating==false,function()
+      chip(self,'form_host_direct',363,176,101,'DIRECT',modal.values.hostParticipating==false,function()
         modal.values.hostParticipating=false; modal.error=nil
       end,'green')
-      ui:text(modal.values.hostParticipating==false and 'ROOM CONTROL / NOT SCORED' or 'RACE AND ROOM CONTROL',261,235,203,'center','muted')
+      ui:text('RUN CHECKS',136,210,124,'left','muted')
+      chip(self,'form_checks_on',261,206,96,'ON',modal.values.validityChecksEnabled~=false,function()
+        modal.values.validityChecksEnabled=true; modal.error=nil
+      end,'green')
+      chip(self,'form_checks_off',363,206,101,'OFF',modal.values.validityChecksEnabled==false,function()
+        modal.values.validityChecksEnabled=false; modal.error=nil
+      end,'yellow')
+      local note=modal.values.validityChecksEnabled==false and 'CASUAL / RETRIES ALLOWED'
+        or (modal.values.hostParticipating==false and 'COMPETITIVE / HOST DIRECTS' or 'COMPETITIVE / HOST PLAYS')
+      ui:text(note,261,235,203,'center','muted')
     end
     local actionY=isHostForm and 265 or 252
     button(self,'form_submit',261,actionY,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
     button(self,'form_cancel',366,actionY,98,27,'CANCEL',function() closeModal(self) end,'white')
     if modal.error then ui:text(modal.error,136,isHostForm and 298 or 282,328,'center','red') end
+  elseif modal.kind=='details' then
+    ui:panel(94,60,412,240,modal.title)
+    ui:wrapped(bounded(modal.message,512),114,95,372,10,'red')
+    button(self,'modal_cancel',331,265,155,27,'CLOSE',function() closeModal(self) end,'white')
   else
     ui:panel(126,99,348,162,modal.title)
     ui:wrapped(modal.message,146,133,308,5,modal.kind=='details' and 'red' or 'white')
@@ -890,7 +961,7 @@ return function()
     self.workspace=initialWorkspace or 'room'; self.rosterFilter='all'; self.selectedSessionId=nil
     self.focusId=self.workspace=='room' and 'session_primary' or 'nav_'..self.workspace
     self.controls={}; self.broadcastAdvanced=false; self.broadcastSlot='A'; self.broadcastDraft=nil
-    self.setlistSelection=1; self.setlistOffset=0
+    self.setlistSelection=1; self.setlistOffset=0; self.rosterOffset=0
     self.advanceRequestId=nil; self.advancePreviousHash=nil; self.modal=nil
     -- Online is a complete state, not a menu modal. Suppress the entity
     -- manager retained from Menu and clear those entities before Song Select

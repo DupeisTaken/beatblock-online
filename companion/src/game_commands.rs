@@ -68,6 +68,11 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .get("hostParticipating")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            let validity_checks_enabled = message
+                .payload
+                .get("validityChecksEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             if let Some(display_name) = message.payload.get("displayName").and_then(Value::as_str) {
                 state
                     .save_host_profile(display_name.to_owned(), port)
@@ -92,6 +97,7 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                         crate::model::AdmissionMode::PasswordOnly
                     },
                     host_participating,
+                    validity_checks_enabled,
                 ),
             )
             .await
@@ -195,6 +201,14 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
             state.set_host_participating(participating).await
+        }
+        "room.validity_checks_set" => {
+            let enabled = message
+                .payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .context("room.validity_checks_set requires a boolean enabled field")?;
+            state.set_validity_checks(enabled).await
         }
         "room.commentator_set" => {
             let id = required(&message.payload, "sessionId")?;
@@ -376,6 +390,7 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "room.admission_set"
             | "room.role_set"
             | "room.host_play_set"
+            | "room.validity_checks_set"
             | "room.commentator_set"
             | "room.kick"
             | "setlist.remove"
