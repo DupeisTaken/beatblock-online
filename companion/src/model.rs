@@ -328,10 +328,6 @@ pub struct RendererSlot {
     pub delay_ms: u32,
     pub featured: bool,
     pub active: bool,
-    /// A live child detached during an active race. Parked children keep
-    /// advancing chart VFX and can be rebound without a lossy mid-chart launch.
-    #[serde(default)]
-    pub parked: bool,
     pub frame_sequence: u64,
     pub dropped_frames: u64,
     #[serde(default)]
@@ -449,7 +445,6 @@ impl RendererSlot {
             delay_ms: 500,
             featured,
             active: false,
-            parked: false,
             frame_sequence: 0,
             dropped_frames: 0,
             healthy: false,
