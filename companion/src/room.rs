@@ -127,6 +127,20 @@ impl RoomEngine {
         ) {
             bail!("a race is in progress; retry joining after results");
         }
+        let normalized = display_name.trim();
+        if normalized.is_empty() || normalized.chars().count() > 48 {
+            bail!("display name must contain 1-48 characters");
+        }
+        // Names identify players throughout the room UI and exported results.
+        // Reject collisions instead of manufacturing ambiguous `Name (2)` rows.
+        if self
+            .snapshot
+            .participants
+            .iter()
+            .any(|participant| participant.display_name.eq_ignore_ascii_case(normalized))
+        {
+            bail!("username taken");
+        }
         let role = if requested == ParticipantRole::Host {
             ParticipantRole::Player
         } else {
@@ -151,14 +165,9 @@ impl RoomEngine {
             bail!("room has reached its 32 spectator limit");
         }
 
-        let normalized = display_name.trim();
-        if normalized.is_empty() || normalized.chars().count() > 48 {
-            bail!("display name must contain 1-48 characters");
-        }
-        let display_name = self.unique_name(normalized);
         self.snapshot.participants.push(Participant {
             session_id: session_id.clone(),
-            display_name,
+            display_name: normalized.into(),
             role,
             admitted: self.snapshot.admission_mode == AdmissionMode::PasswordOnly,
             connected: true,
@@ -1135,29 +1144,6 @@ impl RoomEngine {
         }
     }
 
-    fn unique_name(&self, name: &str) -> String {
-        if !self
-            .snapshot
-            .participants
-            .iter()
-            .any(|p| p.display_name.eq_ignore_ascii_case(name))
-        {
-            return name.into();
-        }
-        for suffix in 2..=999 {
-            let candidate = format!("{name} ({suffix})");
-            if !self
-                .snapshot
-                .participants
-                .iter()
-                .any(|p| p.display_name.eq_ignore_ascii_case(&candidate))
-            {
-                return candidate;
-            }
-        }
-        format!("{name} ({})", Uuid::new_v4().simple())
-    }
-
     fn touch(&mut self) {
         self.snapshot.updated_at_ms = unix_ms();
     }
@@ -1587,6 +1573,28 @@ mod tests {
             room.player(&spectator).unwrap().role,
             ParticipantRole::Spectator
         );
+    }
+
+    #[test]
+    fn duplicate_usernames_are_rejected_without_numbered_aliases() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let first = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+
+        for duplicate in [" Player ", "PLAYER", "host"] {
+            let error = room
+                .request_join(duplicate, ParticipantRole::Spectator)
+                .unwrap_err();
+            assert_eq!(error.to_string(), "username taken");
+        }
+        assert_eq!(room.snapshot.participants.len(), 2);
+        assert_eq!(room.player(&first).unwrap().display_name, "Player");
+        assert!(room
+            .snapshot
+            .participants
+            .iter()
+            .all(|participant| !participant.display_name.contains("(2)")));
     }
 
     #[test]

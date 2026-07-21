@@ -631,6 +631,50 @@ mod tests {
             .contains_key(&peer));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn username_conflict_clears_rejected_player_state_and_surfaces_error() {
+        let root = temporary("username-conflict");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room = RoomEngine::host(
+            "Conflict".into(),
+            "Host".into(),
+            AdmissionMode::PasswordOnly,
+        );
+        let local_session = room
+            .request_join("Duplicate", ParticipantRole::Player)
+            .unwrap();
+        *state.room.write().await = room;
+        *state.local_session_id.write().await = Some(local_session);
+        *state.connection_status.write().await = "connected".into();
+        let mut events = state.events.subscribe();
+
+        state
+            .handle_network_event(NetworkEvent::Disconnected {
+                session_id: "host-session".into(),
+                reason: "username taken".into(),
+            })
+            .await
+            .unwrap();
+
+        assert!(state.local_session_id.read().await.is_none());
+        assert_eq!(state.connection_status.read().await.as_str(), "offline");
+        assert_eq!(state.room.read().await.snapshot.id, "offline");
+        let mut surfaced = false;
+        while let Ok(event) = events.try_recv() {
+            if event.kind == "runtime.error"
+                && event.payload.get("message").and_then(Value::as_str) == Some("username taken")
+            {
+                surfaced = true;
+            }
+        }
+        assert!(
+            surfaced,
+            "the joining player did not receive the username conflict"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[derive(Clone)]
@@ -1496,7 +1540,8 @@ impl AppState {
                     let terminal_disconnect = normalized_reason.contains("rejected")
                         || normalized_reason.contains("removed from the room")
                         || normalized_reason.contains("room closed")
-                        || normalized_reason.contains("runtime stopped");
+                        || normalized_reason.contains("runtime stopped")
+                        || normalized_reason == "username taken";
                     if terminal_disconnect {
                         self.leave_room().await?;
                         self.emit_error(reason);

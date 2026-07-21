@@ -10,7 +10,8 @@ instead of translucent colors; arbitrary RGB or alpha colors are invalid under
 Beatblock's palette shader and can appear purple. Leaving Online restores the
 native full-color menu shader before the destination state draws, including
 transitions that reuse an already-loaded Menu state. Online also clears the
-native radial-menu entities before opening Song Select and reapplies
+native radial-menu entities when it opens and exits, so a retained `Player`
+instance cannot keep updating beside the next state's player. It reapplies
 Beatblock's menu font on entry, draw, and exit so neither icon art nor stale
 font metrics can leak across states.
 

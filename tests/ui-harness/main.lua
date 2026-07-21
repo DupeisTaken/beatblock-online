@@ -25,7 +25,11 @@ fonts={
 }
 love.graphics.setFont(fonts.digitalDisco)
 mouse={rx=0,ry=0,pressed=nil,disableGameplay=function() end}
-em={clearCount=0,clear=function() em.clearCount=em.clearCount+1 end}
+em={clearCount=0,playerInstance={class={name='Player'}}}
+function em.clear()
+  em.clearCount=em.clearCount+1
+  em.playerInstance=nil
+end
 shuv={pal={},resetPal=function() end,showBadColors=true}
 sounds={}; te=nil
 local pendingInputs={}
@@ -217,6 +221,7 @@ function love.load()
   love.graphics.setFont(fonts.main)
   online:init()
   assert(em.clearCount==1,'Online must clear retained native menu entities')
+  assert(em.playerInstance==nil,'Online must clear the inherited native Player instance')
   assert(love.graphics.getFont()==fonts.digitalDisco,'Online must refresh the native menu font')
   assert(shuv.showBadColors==false,'Online must enable strict indexed palette rendering')
   online:openForm('host')
@@ -231,7 +236,10 @@ function love.load()
   online.modal=nil
   love.textinput('native')
   assert(forwardedText=='native','Online must preserve Beatblock text input outside forms')
+  em.playerInstance={class={name='Player'}}
   online:leave()
+  assert(em.clearCount==2 and em.playerInstance==nil,
+    'Leaving Online must clear the retained native Player instance')
   assert(love.keypressed==nativeKeyPressed,'Leaving Online must restore Beatblock key callbacks')
   assert(love.textinput==nativeTextInput,'Leaving Online must restore Beatblock text callbacks')
   assert(love.graphics.getFont()==fonts.digitalDisco,'Leaving Online must restore the native menu font')
