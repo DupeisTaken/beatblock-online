@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
+    sync::RwLock,
     time::{Duration, Instant},
 };
 
@@ -215,6 +216,10 @@ pub struct InstallStatus {
 pub struct Installer {
     data_dir: PathBuf,
     mods_directory_override: Option<PathBuf>,
+    // The GUI can point at a portable or custom OBS copy. Keep the raw
+    // candidate so an invalid manual choice cannot silently fall back to a
+    // different installation while the user believes the chosen one is used.
+    obs_directory_override: RwLock<Option<PathBuf>>,
 }
 
 impl Installer {
@@ -222,6 +227,7 @@ impl Installer {
         Self {
             data_dir,
             mods_directory_override: None,
+            obs_directory_override: RwLock::new(None),
         }
     }
 
@@ -230,7 +236,43 @@ impl Installer {
         Self {
             data_dir,
             mods_directory_override: Some(mods_directory),
+            obs_directory_override: RwLock::new(None),
         }
+    }
+
+    /// Selects an OBS root (or a folder/executable beneath that root). The
+    /// candidate remains explicit even when invalid so availability feedback
+    /// describes this selection instead of an unrelated automatic match.
+    pub fn set_obs_directory(&self, directory: Option<PathBuf>) -> Result<()> {
+        *self
+            .obs_directory_override
+            .write()
+            .map_err(|_| anyhow::anyhow!("OBS location selection lock is poisoned"))? = directory;
+        Ok(())
+    }
+
+    /// Returns the validated OBS root used by installation. A prior successful
+    /// custom install is reused before standard-location discovery.
+    pub fn obs_directory(&self) -> Option<PathBuf> {
+        let selected = self
+            .obs_directory_override
+            .read()
+            .ok()
+            .and_then(|directory| directory.clone());
+        if let Some(selected) = selected {
+            return normalize_obs_directory(&selected);
+        }
+        self.recorded_obs_directory().or_else(detect_obs_directory)
+    }
+
+    fn recorded_obs_directory(&self) -> Option<PathBuf> {
+        let bytes = read_bounded_file(
+            &self.data_dir.join("obs-install.json"),
+            MAX_OBS_MARKER_BYTES,
+        )
+        .ok()?;
+        let record = serde_json::from_slice::<ObsInstallManifest>(&bytes).ok()?;
+        normalize_obs_directory(&record.obs_directory)
     }
 
     fn mods_directory(&self) -> Option<PathBuf> {
@@ -511,7 +553,7 @@ impl Installer {
                 "Not included in this build"
             } else if obs_recorded {
                 "Installed files failed hash verification"
-            } else if detect_obs_directory().is_none() {
+            } else if self.obs_directory().is_none() {
                 "OBS Studio was not detected"
             } else {
                 "OBS 32 source is available to install"
@@ -1289,7 +1331,9 @@ impl Installer {
         if obs_is_running() {
             bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
         }
-        let obs = detect_obs_directory().context("OBS Studio 32 x64 was not detected")?;
+        let obs = self
+            .obs_directory()
+            .context("OBS Studio 32 x64 was not detected; choose its folder in the installer")?;
         let program_data = configured_program_data();
         self.stage_obs_plugin_into(obs, &program_data)
     }
@@ -1352,9 +1396,11 @@ impl Installer {
     }
 
     pub fn obs_plugin_available(&self) -> bool {
-        !OBS_PLUGIN_PAYLOAD.is_empty()
-            && validate_obs_payload(OBS_PLUGIN_PAYLOAD).is_ok()
-            && detect_obs_directory().is_some()
+        self.obs_plugin_payload_available() && self.obs_directory().is_some()
+    }
+
+    pub fn obs_plugin_payload_available(&self) -> bool {
+        !OBS_PLUGIN_PAYLOAD.is_empty() && validate_obs_payload(OBS_PLUGIN_PAYLOAD).is_ok()
     }
 
     /// Reports whether OBS currently owns its plugin DLLs so the installer UI
@@ -2368,7 +2414,22 @@ fn detect_obs_directory() -> Option<PathBuf> {
     }
     candidates
         .into_iter()
-        .find(|root| root.join("bin/64bit/obs64.exe").is_file())
+        .find_map(|candidate| normalize_obs_directory(&candidate))
+}
+
+/// Resolves selections of the OBS root, `bin`, `bin/64bit`, or `obs64.exe`
+/// back to the root. Supporting the nearby forms makes typed and portable
+/// locations forgiving without recursively scanning the user's drives.
+fn normalize_obs_directory(candidate: &Path) -> Option<PathBuf> {
+    candidate.ancestors().take(4).find_map(|root| {
+        if root.join("bin/64bit/obs64.exe").is_file() {
+            // Preserve the user-facing spelling. Windows canonicalization adds
+            // a `\\?\` prefix that is valid internally but confusing in the UI.
+            Some(root.to_path_buf())
+        } else {
+            None
+        }
+    })
 }
 
 fn obs_program_data_paths(program_data: &Path) -> (PathBuf, PathBuf) {
@@ -3445,6 +3506,64 @@ mod tests {
                 r"C:\ProgramData\obs-studio\plugins\beatblock-online-obs\data\locale\en-US.ini"
             )
         );
+    }
+
+    #[test]
+    fn manual_obs_location_accepts_portable_root_and_nearby_paths() {
+        let root = std::env::temp_dir().join(format!("bbt-portable-obs-{}", rand::random::<u64>()));
+        let executable = root.join("bin/64bit/obs64.exe");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"portable OBS fixture").unwrap();
+        let installer = Installer::with_mods_directory(root.join("data"), root.join("mods"));
+
+        for selected in [
+            root.clone(),
+            root.join("bin"),
+            root.join("bin/64bit"),
+            executable,
+        ] {
+            installer.set_obs_directory(Some(selected)).unwrap();
+            assert_eq!(installer.obs_directory(), Some(root.clone()));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_manual_obs_location_does_not_fall_back_to_another_installation() {
+        let root = std::env::temp_dir().join(format!("bbt-invalid-obs-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let installer = Installer::with_mods_directory(root.join("data"), root.join("mods"));
+        installer.set_obs_directory(Some(root.clone())).unwrap();
+        assert_eq!(installer.obs_directory(), None);
+        assert!(!installer.obs_plugin_available());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_custom_obs_installation_is_rediscovered_from_its_marker() {
+        let root = std::env::temp_dir().join(format!("bbt-recorded-obs-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let obs = root.join("Portable OBS");
+        std::fs::create_dir_all(obs.join("bin/64bit")).unwrap();
+        std::fs::write(obs.join("bin/64bit/obs64.exe"), b"portable OBS fixture").unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let record = ObsInstallManifest {
+            version: "test".into(),
+            obs_directory: obs.clone(),
+            plugin: root.join("plugin.dll"),
+            locale: root.join("en-US.ini"),
+            plugin_sha256: "00".repeat(32),
+        };
+        std::fs::write(
+            data.join("obs-install.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+
+        let installer = Installer::with_mods_directory(data, root.join("mods"));
+        assert_eq!(installer.obs_directory(), Some(obs));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

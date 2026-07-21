@@ -26,6 +26,11 @@ struct Args {
     install_now: bool,
     #[arg(long)]
     install_obs: bool,
+    /// Explicit OBS root selected by the visible installer. This is carried
+    /// across UAC so portable/custom installations do not depend on inherited
+    /// environment variables.
+    #[arg(long)]
+    obs_dir: Option<PathBuf>,
     #[arg(long)]
     firewall_public: bool,
     #[arg(long)]
@@ -100,6 +105,7 @@ fn run(args: Args) -> Result<()> {
     let data_dir = resolved_data_dir(args.data_dir.as_ref());
     std::fs::create_dir_all(&data_dir)?;
     let installer = Installer::new(data_dir.clone());
+    installer.set_obs_directory(args.obs_dir.clone())?;
     if args.install_now {
         let distribution = match args.method.as_str() {
             "standalone" => Some(Distribution::Standalone),
@@ -231,5 +237,21 @@ mod tests {
         assert!(validate_operation_file(&root, Some(&root.join("victim.json"))).is_err());
         assert!(validate_operation_file(&root, Some(&operations.join("not-a-uuid.json"))).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn command_line_accepts_an_explicit_obs_directory() {
+        let args = Args::try_parse_from([
+            "installer",
+            "--install-now",
+            "--install-obs",
+            "--obs-dir",
+            r"D:\Portable Apps\obs-studio",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.obs_dir,
+            Some(PathBuf::from(r"D:\Portable Apps\obs-studio"))
+        );
     }
 }
