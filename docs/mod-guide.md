@@ -22,7 +22,7 @@ explains their scoring behavior, and keeps Exit Online visually secondary.
 
 The roster has **All**, **Players**, **Spectators**, and **Pending** filters. Selection is stored by `sessionId`, so sorting, reconnects, filter changes, and workspace changes cannot silently target a different person. The participant inspector remains visible beside the roster and contains role, connection, chart, run state, and only the actions permitted to the local user.
 
-Before play the roster shows readiness/verification state and never fabricates a `100.00` score. During play and Current Results it shows separate **Rank** and **Accuracy** columns. Missing values render as `—`; invalid outcomes render as **DNF** or **INVALID**. Current Results is a room phase, including cumulative set total where applicable. **History** is only the archive.
+Before play the roster shows readiness/verification state and never fabricates a `100.00` score. During play and Current Results it shows separate **Rank** and **Accuracy** columns. Missing values render as `—`; invalid outcomes render as **DNF** or **INVALID**, with the runtime's reason available through **Run Details**. Current Results is a room phase, including cumulative set total where applicable. **History** is only the archive.
 
 The terms are intentionally distinct:
 
@@ -38,7 +38,7 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Setlist** selects official/custom charts, builds the ordered room set, and exposes Up/Down/Remove for the selected row. Results return the host here; advancing opens the correct selector for local verification.
 - **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; **Advanced Export** edits mode, resolution, FPS, and delay per stream and warns on 1080p60.
 - **History** lists saved match summaries.
-- **Settings** controls the gameplay HUD, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**.
+- **Settings** controls the gameplay HUD and the host's pre-race **Run Checks** policy, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**. Competitive checks remain the default; casual mode permits retries and ordered-event recovery while retaining structural score validation and DNF completion rules.
 - **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
 
 Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
@@ -66,7 +66,7 @@ Long renderer failures are bounded in the workspace. **Details** opens the full 
 
 ## Screenshot verification
 
-`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 29 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
+`pnpm test:ui` stages the tracked harness in a `bbt-ui-*` directory under `%TEMP%`, uses the ignored LÖVE fixture named by `BBT_UI_FIXTURE`, and renders 31 states sequentially in one process. A successful run cleans its stage. A forced termination may leave the stage behind; follow the [temporary artifact hygiene](benchmarking.md#temporary-artifact-hygiene) procedure rather than deleting the persistent fixture. Captures come from the same deterministic `600×360` canvas; `1200×720` review copies and red diff images are emitted under ignored `reports/ui`.
 
 If a review image is open and Windows locks it, set `BBT_UI_REPORTS` to a fresh
 workspace-relative report directory; the baselines and comparison thresholds

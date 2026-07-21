@@ -187,6 +187,7 @@ fn direct_room_handles_16_players_32_spectators_and_ordered_rankings() {
             let misses = player_index as u64;
             room.ingest_score(
                 id,
+                &format!("run-{player_index}"),
                 sequence,
                 &json!({
                     "progress": current as f64 / 100.0,

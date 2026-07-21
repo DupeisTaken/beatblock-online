@@ -9,7 +9,9 @@ local autorun=os.getenv('BBT_UI_AUTORUN')=='1'
 love.errorhandler=function(message)
   local file=io.open(output..'/harness-error.txt','wb')
   if file then file:write(debug.traceback(tostring(message),2)); file:close() end
-  return function() love.event.quit(1) end
+  -- Return an exit status immediately. A graphical error loop can remain
+  -- alive while minimized, hiding the assertion until the outer timeout.
+  return function() return 1 end
 end
 project={res={x=600,y=360,cx=300,cy=180}}
 local function externalFont(name,size)
@@ -61,7 +63,7 @@ participants[#participants+1]=player('viewer-1','Room Viewer','spectator',true,f
 participants[#participants+1]=player('caster-1','Caster Desk','spectator',true,false,nil,nil,true)
 local roomFixture={
   id='visual-room',name='Saturday Showcase',hostSessionId='host-1',lifecycle='ready',
-  admissionMode='host_approval',allowChartTransfers=true,participants=participants,chart=chart,
+  admissionMode='host_approval',allowChartTransfers=true,validityChecksEnabled=true,participants=participants,chart=chart,
   forceStart=false,currentSetlistIndex=0,createdAtMs=1,updatedAtMs=1,
   setlist={
     {id='set-1',chart=chart,completed=false},
@@ -133,12 +135,18 @@ love.graphics.setColor=function(r,g,b,a)
   if mapped then rawSetColor(mapped[1]/255,mapped[2]/255,mapped[3]/255,a or 1) else rawSetColor(r,g,b,a or 1) end
 end
 
+local Dashboard=require('bbt.dashboard_model')
 local online=require('bbt.online_state')()
 local function reset()
   BBT.lastLobby=roomFixture; BBT.context.sessionId='host-1'; BBT.context.lobbyId='visual-room'
   BBT.companionConnected=true; BBT.runtimeStarting=false; BBT.lastError=nil; BBT.chartTransfer=nil
   BBT.renderers=baseRenderers; BBT.mirrorEnabled=false
   BBT.commandLog={}; BBT.pendingRequestId=nil; BBT.lastCompletedRequestId=nil
+  roomFixture.validityChecksEnabled=true
+  for _,participant in ipairs(participants) do
+    participant.validity=participant.admitted and 'valid' or 'pending'
+    participant.invalidReason=nil
+  end
   participants[1].role='host'; participants[1].ready=true; participants[1].verified=true
   roomFixture.lifecycle='ready'; participants[3].verified=true; participants[3].ready=true
   online.workspace='room'; online.rosterFilter='all'; online.selectedSessionId='host-1'
@@ -151,6 +159,7 @@ local scenarios={
   {'runtime-failure',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError='Runtime did not answer. Repair the installation or open logs for the complete diagnostic details.' end},
   {'host-form',function() reset(); BBT.lastLobby=nil; online:openForm('host') end},
   {'host-form-directing',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online.modal.values.hostParticipating=false end},
+  {'host-form-checks-off',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online.modal.values.validityChecksEnabled=false end},
   {'host-form-validation',function() reset(); BBT.lastLobby=nil; online:openForm('host'); online:submitForm(); assert(online.modal and online.modal.error=='PASSWORD IS REQUIRED') end},
   {'join-form',function() reset(); BBT.lastLobby=nil; online:openForm('join',false) end},
   {'long-error',function() reset(); BBT.lastLobby=nil; BBT.companionConnected=false; BBT.lastError=string.rep('This runtime error is intentionally long and must stay bounded. ',8) end},
@@ -162,12 +171,13 @@ local scenarios={
   {'transfer-offer',function() reset(); BBT.context.sessionId='player-2'; participants[3].verified=false; online.selectedSessionId='player-2'; BBT.chartTransfer={state='offer'} end},
   {'transfer-progress',function() reset(); BBT.context.sessionId='player-2'; participants[3].verified=false; online.selectedSessionId='player-2'; BBT.chartTransfer={state='progress',percent=63} end},
   {'consent-warning',function() reset(); BBT.context.sessionId='player-2'; online.modal={kind='confirm',title='SCRIPT CONTENT',message='This package contains Lua or executable content and requires separate explicit confirmation.',label='ACCEPT',run=function() end} end},
-  {'live-results',function() reset(); roomFixture.lifecycle='results'; participants[4].validity='dnf'; participants[5].validity='invalid' end},
+  {'live-results',function() reset(); roomFixture.lifecycle='results'; participants[4].validity='dnf'; participants[5].validity='invalid'; participants[5].invalidReason='Missing ordered score event 27'; online.selectedSessionId='player-4' end},
   {'host-directing',function() reset(); participants[1].role='spectator'; participants[1].ready=true; participants[1].verified=true; online.selectedSessionId='host-1' end},
   {'setlist',function() reset(); online.workspace='setlist' end},
   {'setlist-results',function() reset(); roomFixture.lifecycle='results'; online.workspace='setlist'; online.setlistSelection=2 end},
   {'history',function() reset(); online.workspace='history' end},
   {'settings',function() reset(); online.workspace='settings' end},
+  {'settings-casual',function() reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false end},
   {'help',function() reset(); online.workspace='help' end},
   {'confirmation',function() reset(); online.modal={kind='confirm',title='CLOSE ROOM',message='Close this room and disconnect every participant?',label='CLOSE ROOM',run=function() end} end},
   {'broadcast-basic',function() reset(); online.workspace='broadcast' end},
@@ -255,10 +265,46 @@ function love.load()
   reset(); BBT.lastLobby=nil; online:openForm('host')
   assert(online.modal.values.hostParticipating==true,'Host room creation must default to playing for compatibility')
   activate('form_host_direct')
+  activate('form_checks_off')
   online.modal.values.password='secret'
   activate('form_submit')
   assert(BBT.commandLog[1].kind=='room.host_request','Host form must submit a room creation request')
   assert(BBT.commandLog[1].payload.hostParticipating==false,'Director choice must cross the game/runtime bridge')
+  assert(BBT.commandLog[1].payload.validityChecksEnabled==false,'Run-check choice must cross the game/runtime bridge')
+
+  reset(); BBT.lastLobby=nil; online:openForm('host'); online.modal.values.password='secret'
+  local commandBeforeFailure=BBT.command
+  BBT.command=function() BBT.lastError='Runtime is busy'; return nil end
+  activate('form_submit')
+  assert(online.modal and online.modal.kind=='form','A rejected host command must keep the form open')
+  assert(online.modal.error=='Runtime is busy','A rejected host command must explain why it stayed open')
+  BBT.command=commandBeforeFailure
+
+  reset(); online.workspace='settings'
+  activate('settings_validity')
+  assert(online.modal and online.modal.kind=='confirm','Disabling run checks must explain the competitive tradeoff')
+  activate('modal_confirm')
+  assert(BBT.commandLog[1].kind=='room.validity_checks_set','Settings must use the dedicated run-check command')
+  assert(BBT.commandLog[1].payload.enabled==false,'Settings must disable checks explicitly')
+
+  reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false
+  activate('settings_validity')
+  assert(BBT.commandLog[1].kind=='room.validity_checks_set' and BBT.commandLog[1].payload.enabled==true,'Settings must re-enable checks without a destructive confirmation')
+
+  reset(); roomFixture.lifecycle='results'; participants[5].validity='invalid'; participants[5].invalidReason='Missing ordered score event 27'; online.selectedSessionId='player-4'
+  activate('participant_run_details')
+  assert(online.modal and online.modal.message=='Missing ordered score event 27','Invalid result details must expose the authoritative reason')
+
+  reset(); roomFixture.lifecycle='results'
+  -- Select from the sorted roster, not the insertion-order fixture: pending
+  -- requests and host-first ordering deliberately move entries between pages.
+  local orderedParticipants=Dashboard.visibleParticipants({room=roomFixture},'all')
+  local offPageParticipant=orderedParticipants[#orderedParticipants]
+  offPageParticipant.validity='invalid'; offPageParticipant.invalidReason=nil
+  online.selectedSessionId=offPageParticipant.sessionId
+  activate('participant_run_details')
+  assert(online.rosterOffset>0,'Selecting an off-page invalid result must reveal its roster page')
+  assert(online.modal and online.modal.message:find('did not provide',1,true),'Invalid results without a legacy reason must still expose details')
 
   reset(); online.workspace='setlist'; online.setlistSelection=2
   activate('setlist_up')

@@ -17,9 +17,11 @@ pub struct Envelope {
     #[serde(default, alias = "timestampMs")]
     pub run_time_us: u64,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     /// Correlates in-game control requests with an explicit acknowledgement.
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(default)]
     pub payload: Value,
@@ -255,10 +257,12 @@ pub struct Participant {
     pub verified: bool,
     pub progress: f64,
     pub accuracy: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
     pub set_total: f64,
     pub totals: ScoreTotals,
     pub validity: RunValidity,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_reason: Option<String>,
     pub last_sequence: Option<u64>,
     #[serde(default)]
@@ -295,10 +299,17 @@ pub struct RoomSnapshot {
     pub admission_mode: AdmissionMode,
     #[serde(default = "default_true")]
     pub allow_chart_transfers: bool,
+    /// Competitive integrity verdicts are opt-out per room. Missing fields
+    /// from older protocol-v3 snapshots retain strict behavior.
+    #[serde(default = "default_true")]
+    pub validity_checks_enabled: bool,
     pub participants: Vec<Participant>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<ChartLock>,
     pub setlist: Vec<SetlistEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_setlist_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduled_start_time_ms: Option<u64>,
     pub force_start: bool,
     pub created_at_ms: u64,
@@ -512,6 +523,7 @@ pub struct HostRoomRequest {
     pub port: Option<u16>,
     pub admission_mode: Option<AdmissionMode>,
     pub host_participating: Option<bool>,
+    pub validity_checks_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,4 +567,65 @@ pub struct RendererRequest {
     pub fps: Option<u32>,
     pub delay_ms: Option<u32>,
     pub featured: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn optional_protocol_fields_are_omitted_instead_of_serialized_as_null() {
+        // TypeBox optional fields mean "absent" on the wire. Keeping Rust's
+        // representation identical prevents older Lua/TS peers from treating
+        // a present null as a real chart, rank, or correlation identifier.
+        let envelope = serde_json::to_value(Envelope::new("runtime.ready", 1, json!({})))
+            .expect("serialize envelope");
+        assert!(envelope.get("runId").is_none());
+        assert!(envelope.get("requestId").is_none());
+
+        let participant = Participant {
+            session_id: "host".into(),
+            display_name: "Host".into(),
+            role: ParticipantRole::Host,
+            admitted: true,
+            connected: true,
+            ready: false,
+            verified: false,
+            progress: 0.0,
+            accuracy: 100.0,
+            rank: None,
+            set_total: 0.0,
+            totals: ScoreTotals::default(),
+            validity: RunValidity::Pending,
+            invalid_reason: None,
+            last_sequence: None,
+            commentator_access: false,
+        };
+        let participant_json = serde_json::to_value(&participant).expect("serialize participant");
+        assert!(participant_json.get("rank").is_none());
+        assert!(participant_json.get("invalidReason").is_none());
+
+        let room = RoomSnapshot {
+            id: "room".into(),
+            name: "Room".into(),
+            host_session_id: "host".into(),
+            lifecycle: RoomLifecycle::Forming,
+            admission_mode: AdmissionMode::HostApproval,
+            allow_chart_transfers: true,
+            validity_checks_enabled: true,
+            participants: vec![participant],
+            chart: None,
+            setlist: vec![],
+            current_setlist_index: None,
+            scheduled_start_time_ms: None,
+            force_start: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        let room_json = serde_json::to_value(room).expect("serialize room");
+        for field in ["chart", "currentSetlistIndex", "scheduledStartTimeMs"] {
+            assert!(room_json.get(field).is_none(), "{field} must be omitted");
+        }
+    }
 }

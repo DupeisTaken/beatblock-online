@@ -159,7 +159,7 @@ for (const contract of [
   [core, "function BBT.shouldBlockPause()\n  return BBT.context.lobbyId ~= 'offline'\nend"],
   [hooks, 'if BBT and BBT.shouldBlockPause() then return end'],
   [core, "['render.sample'] = 'bbt_render_latest'"],
-  [core, 'outbound:getCount()>=MAX_ORDERED_OUTBOUND'],
+  [core, 'outbound:getCount()>=limit'],
   [core, 'processed<MAX_INBOUND_PER_FRAME'],
   [core, 'updatedAtMs = estimatedServerTimeMs()'],
   [renderer, 'readbackPending = {false,false}'],
@@ -432,6 +432,7 @@ const requiredCommands = [
   'room.admission_set',
   'room.role_set',
   'room.host_play_set',
+  'room.validity_checks_set',
   'room.commentator_set',
   'room.kick',
   'setlist.remove',
@@ -476,6 +477,21 @@ for (const capability of [
   if (!`${online}\n${dashboard}`.includes(capability))
     throw new Error(`Online dashboard is missing ${capability}`);
 }
+if (!core.includes('if sent then BBT.runSequence = BBT.runSequence + 1 end'))
+  throw new Error('Rejected score IPC writes still create false run-sequence gaps');
+if (
+  !core.includes('local MAX_STANDARD_OUTBOUND = 480') ||
+  !core.includes("['run.finished'] = true")
+)
+  throw new Error('Run lifecycle messages do not retain reserved ordered IPC capacity');
+if (
+  !core.includes('BBT.scoreDirty=true') ||
+  !core.includes('flushScoreDelta(true)') ||
+  !core.includes('BBT.wasRunReady=false')
+)
+  throw new Error('Native score mutations and retry boundaries are not flushed safely');
+if (!hooks.includes('BBT.shouldBlockRetry()'))
+  throw new Error('Results retry is not governed by the host Run Checks policy');
 for (const interaction of [
   "pressed('select')",
   'mouse.pressed==1',

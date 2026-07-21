@@ -273,6 +273,7 @@ async fn host_room(
                 .admission_mode
                 .unwrap_or(crate::model::AdmissionMode::HostApproval),
             request.host_participating.unwrap_or(true),
+            request.validity_checks_enabled.unwrap_or(true),
         )
         .await
     {

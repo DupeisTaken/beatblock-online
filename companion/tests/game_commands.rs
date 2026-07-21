@@ -540,3 +540,51 @@ async fn host_play_command_preserves_host_identity_across_spectating() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn host_can_toggle_run_validity_checks_before_a_race() {
+    let root = temporary("validity-check-command");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+
+    let disable = Envelope::new("room.validity_checks_set", 1, json!({"enabled": false}));
+    assert!(game_commands::handle(&app, &disable).await.unwrap());
+    assert!(!app.room.read().await.snapshot.validity_checks_enabled);
+
+    app.room.write().await.snapshot.lifecycle = RoomLifecycle::Playing;
+    let mut events = app.events.subscribe();
+    let locked = Envelope::new(
+        "room.validity_checks_set",
+        2,
+        json!({"requestId":"checks-locked","enabled": true}),
+    );
+    assert!(game_commands::handle(&app, &locked).await.unwrap());
+    let error = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "control.error" {
+            break event;
+        }
+    };
+    assert_eq!(error.payload["requestId"], "checks-locked");
+    assert_eq!(error.payload["command"], "room.validity_checks_set");
+    assert!(!app.room.read().await.snapshot.validity_checks_enabled);
+
+    app.room.write().await.snapshot.lifecycle = RoomLifecycle::Ready;
+    let malformed = Envelope::new(
+        "room.validity_checks_set",
+        3,
+        json!({"requestId":"checks-malformed","enabled":"yes"}),
+    );
+    assert!(game_commands::handle(&app, &malformed).await.unwrap());
+    let error = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "control.error" && event.payload["requestId"] == "checks-malformed" {
+            break event;
+        }
+    };
+    assert!(error.payload["message"]
+        .as_str()
+        .unwrap()
+        .contains("boolean enabled"));
+    assert!(!app.room.read().await.snapshot.validity_checks_enabled);
+    let _ = std::fs::remove_dir_all(root);
+}

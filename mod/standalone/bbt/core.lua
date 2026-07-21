@@ -25,6 +25,7 @@ local BBT = {
   sessionActive = false,
   requestSequence = 0,
   hudEnabled = true,
+  scoreDirty = false,
 }
 
 local SUPPORTED_GAME_BUILD = 'c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b'
@@ -39,7 +40,13 @@ local COMMAND_TIMEOUT_MS = {
 -- At 512 small JSON frames the game retains a useful recovery window without
 -- allowing a long offline session to consume unbounded process memory.
 local MAX_ORDERED_OUTBOUND = 512
+local MAX_STANDARD_OUTBOUND = 480
 local MAX_INBOUND_PER_FRAME = 128
+local RUN_LIFECYCLE_MESSAGES = {
+  ['run.started'] = true,
+  ['run.invalid'] = true,
+  ['run.finished'] = true,
+}
 local COALESCED_CHANNELS = {
   ['render.sample'] = 'bbt_render_latest',
   ['render.keyframe'] = 'bbt_keyframe_latest',
@@ -98,7 +105,7 @@ local function totals()
   }
 end
 
-function BBT.send(kind, payload)
+function BBT.send(kind, payload, critical)
   if BBT.disabled or not BBT.sessionActive then return end
   local message = {
     version = BBT.protocolVersion,
@@ -121,7 +128,9 @@ function BBT.send(kind, payload)
     return true
   end
   local outbound=love.thread.getChannel('bbt_outbound')
-  if outbound:getCount()>=MAX_ORDERED_OUTBOUND then
+  local limit=(critical or RUN_LIFECYCLE_MESSAGES[kind]) and MAX_ORDERED_OUTBOUND
+    or MAX_STANDARD_OUTBOUND
+  if outbound:getCount()>=limit then
     BBT.lastError='Online IPC is overloaded; reconnect before continuing the race.'
     return false
   end
@@ -168,6 +177,7 @@ function BBT.startOnlineRuntime()
   BBT.sessionActive = true
   BBT.companionConnected = false
   BBT.runtimeStarting = true
+  BBT.scoreDirty = false
   clearPendingRequest()
   love.thread.getChannel('bbt_ipc_control'):clear()
   love.thread.getChannel('bbt_outbound'):clear()
@@ -213,6 +223,7 @@ function BBT.exitOnline()
   BBT.connected = false
   BBT.companionConnected = false
   BBT.runtimeStarting = false
+  BBT.scoreDirty = false
   BBT.lastLobby = nil
   BBT.context.lobbyId = 'offline'
   love.thread.getChannel('bbt_ipc_control'):push('stop')
@@ -499,14 +510,14 @@ function BBT.init(distribution, modPath)
   return BBT
 end
 
-local function emitScoreDelta()
+local function emitScoreDelta(critical)
   local current = totals()
   local songTimeMs = 0
   if cs and cs.source and cs.source.tell then
     local ok, value = pcall(cs.source.tell, cs.source)
     if ok and type(value) == 'number' then songTimeMs = math.floor(value * 1000) end
   end
-  BBT.send('run.score_delta', {
+  local sent=BBT.send('run.score_delta', {
     lobbyId = BBT.context.lobbyId,
     runId = BBT.context.runId,
     runSequence = BBT.runSequence,
@@ -514,8 +525,20 @@ local function emitScoreDelta()
     beat = cs and cs.cBeat or 0,
     songTimeMs = songTimeMs,
     totals = current,
-  })
-  BBT.runSequence = BBT.runSequence + 1
+  },critical)
+  -- Score totals are cumulative, so a locally rejected queue write can be
+  -- recovered by the next update. Only number messages that actually entered
+  -- the ordered IPC queue; otherwise one overload creates a false sequence-gap
+  -- INVALID result even though no transmitted event was lost in transit.
+  if sent then BBT.runSequence = BBT.runSequence + 1 end
+  return sent
+end
+
+local function flushScoreDelta(critical)
+  if not BBT.scoreDirty then return true end
+  if not emitScoreDelta(critical) then return false end
+  BBT.scoreDirty=false
+  return true
 end
 
 function BBT.installHooks()
@@ -530,19 +553,19 @@ function BBT.installHooks()
     local before = totals()
     local result = { addToScore(self, ...) }
     local after = totals()
-    if after.hits ~= before.hits or after.barelies ~= before.barelies or after.currentMaxHits ~= before.currentMaxHits then emitScoreDelta() end
+    if after.hits ~= before.hits or after.barelies ~= before.barelies or after.currentMaxHits ~= before.currentMaxHits then BBT.scoreDirty=true end
     return unpack(result)
   end
   GameManager.handleMiss = function(self, ...)
     local before = totals()
     local result = { handleMiss(self, ...) }
-    if totals().misses ~= before.misses then emitScoreDelta() end
+    if totals().misses ~= before.misses then BBT.scoreDirty=true end
     return unpack(result)
   end
   GameManager.addMineToTotal = function(self, ...)
     local before = totals()
     local result = { addMineToTotal(self, ...) }
-    if totals().currentMaxHits ~= before.currentMaxHits then emitScoreDelta() end
+    if totals().currentMaxHits ~= before.currentMaxHits then BBT.scoreDirty=true end
     return unpack(result)
   end
   if getTapInputs then
@@ -605,12 +628,30 @@ function BBT.shouldBlockPause()
   return BBT.context.lobbyId ~= 'offline'
 end
 
-function BBT.onRetry() BBT.invalidate('Retry is not permitted by competitive defaults', true) end
+function BBT.shouldBlockRetry()
+  return BBT.context.lobbyId ~= 'offline'
+    and (not BBT.lastLobby or BBT.lastLobby.validityChecksEnabled ~= false)
+end
+
+function BBT.onRetry()
+  flushScoreDelta(true)
+  BBT.invalidate('A retry started during a competitive run', false)
+  -- restartLevel swaps in a fresh Game after this hook. Arm the normal
+  -- run-ready detector so that attempt receives its own ID and sequence space.
+  BBT.context.runId=nil
+  BBT.runSequence=0
+  BBT.wasRunReady=false
+  BBT.scoreDirty=false
+end
 function BBT.onQuit()
-  BBT.invalidate('Player quit the competitive run', true)
+  flushScoreDelta(true)
+  BBT.invalidate('Player quit the run', true)
   BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId, quit = true })
 end
-function BBT.onResults() BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId }) end
+function BBT.onResults()
+  flushScoreDelta(true)
+  BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId })
+end
 
 function BBT.shouldHoldStart()
   if not BBT.scheduledStartTimeMs then return false end
@@ -944,6 +985,7 @@ function BBT.update(dt)
       variant = BBT.localChart and BBT.localChart.variantName or nil,
     })
   end
+  if runReady then flushScoreDelta(false) end
   BBT.wasRunReady = runReady
   BBT.wasInGame = inGame
   local songName = inGame and cs.level.metadata and cs.level.metadata.songName or 'No chart'

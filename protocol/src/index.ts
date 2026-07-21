@@ -40,7 +40,7 @@ export const EnvelopeSchema = Type.Object(
     type: Type.String({ minLength: 1, maxLength: 80 }),
     sequence: Type.Integer({ minimum: 0 }),
     runTimeUs: Type.Integer({ minimum: 0 }),
-    runId: Type.Optional(Type.String({ maxLength: 80 })),
+    runId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
     payload: Type.Unknown(),
   },
@@ -115,6 +115,9 @@ export const RoomSnapshotSchema = Type.Object({
   lifecycle: RoomLifecycleSchema,
   admissionMode: Type.Union([Type.Literal('password_only'), Type.Literal('host_approval')]),
   allowChartTransfers: Type.Boolean({ default: true }),
+  // Optional keeps protocol-v3 peers compatible; runtimes default omission to
+  // strict competitive checking.
+  validityChecksEnabled: Type.Optional(Type.Boolean({ default: true })),
   chart: Type.Optional(ChartLockSchema),
   // MAX_PLAYERS already includes the room host.
   participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS }),
@@ -123,7 +126,7 @@ export const RoomSnapshotSchema = Type.Object({
   setlist: Type.Array(
     Type.Object({ id: Type.String(), chart: ChartLockSchema, completed: Type.Boolean() }),
   ),
-  currentSetlistIndex: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+  currentSetlistIndex: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
   createdAtMs: Type.Integer({ minimum: 0 }),
   updatedAtMs: Type.Integer({ minimum: 0 }),
 });
@@ -194,6 +197,48 @@ export const RunScoreDeltaSchema = Type.Object({
   totals: ScoreTotalsSchema,
 });
 export type RunScoreDelta = Static<typeof RunScoreDeltaSchema>;
+
+export const RunStartedSchema = Type.Object(
+  {
+    lobbyId: Type.String({ minLength: 1 }),
+    runId: Type.String({ minLength: 1, maxLength: 128 }),
+    maxHits: Type.Integer({ minimum: 1 }),
+    chartHash: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
+    variant: Type.Optional(Type.String({ maxLength: 128 })),
+  },
+  { additionalProperties: false },
+);
+export type RunStarted = Static<typeof RunStartedSchema>;
+
+export const RunInvalidSchema = Type.Object(
+  {
+    lobbyId: Type.String({ minLength: 1 }),
+    runId: Type.String({ minLength: 1, maxLength: 128 }),
+    reason: Type.String({ minLength: 1, maxLength: 512 }),
+    dnf: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+export type RunInvalid = Static<typeof RunInvalidSchema>;
+
+export const RunFinishedSchema = Type.Object(
+  {
+    lobbyId: Type.String({ minLength: 1 }),
+    runId: Type.String({ minLength: 1, maxLength: 128 }),
+    quit: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+export type RunFinished = Static<typeof RunFinishedSchema>;
+
+export const ValidityChecksCommandSchema = Type.Object(
+  {
+    requestId: Type.String({ minLength: 1, maxLength: 80 }),
+    enabled: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+export type ValidityChecksCommand = Static<typeof ValidityChecksCommandSchema>;
 
 export const ClientHelloSchema = Type.Object({
   instanceId: Type.String({ minLength: 1, maxLength: 96 }),

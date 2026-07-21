@@ -21,6 +21,14 @@ The first IPC message is `client.hello` with a per-game `instanceId`. The runtim
 
 Control groups cover room admission/roles/Commentator grants/kick, setlist editing, chart-transfer consent/cache, renderer A-D configuration, Commentator mirror enablement, history delete/prune, settings, diagnostics, token rotation, export/log opening, restart, and session shutdown. `runtime.snapshot` publishes complete sanitized room, Broadcast plan, machine-local renderer health, Commentator status, history, settings, and diagnostics state to Lua.
 
+Room snapshots optionally carry `validityChecksEnabled`; omission preserves the
+strict `true` default for older protocol-v3 peers. The host may change it only
+before countdown. Strict rooms invalidate sequence gaps and client-reported
+integrity failures. Casual rooms recover from a gap using cumulative score
+totals and allow a new native run to replace an unfinished attempt. Structural
+counter bounds, chart verification, completion, launch-timeout, and disconnect
+DNF rules remain mandatory in both modes.
+
 Host room snapshots and `room.start_scheduled` events carry `serverTimeMs`.
 Participant runtimes convert `scheduledStartTimeMs`/`serverStartTimeMs` into
 their local clock domain while preserving the host's remaining countdown.

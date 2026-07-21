@@ -12,7 +12,7 @@
         "type": { "minLength": 1, "maxLength": 80, "type": "string" },
         "sequence": { "minimum": 0, "type": "integer" },
         "runTimeUs": { "minimum": 0, "type": "integer" },
-        "runId": { "maxLength": 80, "type": "string" },
+        "runId": { "minLength": 1, "maxLength": 128, "type": "string" },
         "requestId": { "minLength": 1, "maxLength": 80, "type": "string" },
         "payload": {}
       }
@@ -161,7 +161,6 @@
         "participants",
         "forceStart",
         "setlist",
-        "currentSetlistIndex",
         "createdAtMs",
         "updatedAtMs"
       ],
@@ -188,6 +187,7 @@
           ]
         },
         "allowChartTransfers": { "default": true, "type": "boolean" },
+        "validityChecksEnabled": { "default": true, "type": "boolean" },
         "chart": {
           "type": "object",
           "required": [

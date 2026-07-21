@@ -72,6 +72,7 @@ fn main() -> anyhow::Result<()> {
             };
             room.ingest_score(
                 id,
+                &format!("run-{player_index}"),
                 sequence,
                 &json!({"progress": current as f64 / 100.0, "totals": totals}),
             )?;
