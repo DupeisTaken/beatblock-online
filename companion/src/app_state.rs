@@ -87,7 +87,7 @@ fn classify_peer_message(message: &Envelope) -> Result<PeerMessageClass> {
         | "chart.transfer_decision"
         | "broadcast.subscribe"
         | "broadcast.mirror_status" => (PeerMessageClass::State, MAX_PEER_STATE_PAYLOAD_BYTES),
-        "client.hello" | "input.tap" | "render.keyframe" => (
+        "client.hello" | "input.tap" | "render.anchor" | "render.keyframe" => (
             PeerMessageClass::Telemetry,
             MAX_PEER_TELEMETRY_PAYLOAD_BYTES,
         ),
@@ -355,6 +355,15 @@ mod tests {
         );
         assert!(classify_peer_message(&oversized).is_err());
         assert!(classify_peer_message(&Envelope::new("gameplay.snapshot", 1, json!({}),)).is_err());
+        assert_eq!(
+            classify_peer_message(&Envelope::new(
+                "render.anchor",
+                2,
+                json!({"firstNoteBeat":32.0,"inputOffsetMs":80})
+            ))
+            .unwrap(),
+            PeerMessageClass::Telemetry
+        );
     }
 
     #[tokio::test]
@@ -677,6 +686,104 @@ impl AppState {
         self.apply_host_message(&session_id, message).await
     }
 
+    /// Consumes the reliable source-side render events that cannot be
+    /// reconstructed from a coalesced held-key sample. Hosts also relay only
+    /// assigned participants' events to authorized Commentator mirrors.
+    async fn ingest_render_event(
+        &self,
+        participant_id: &str,
+        message: &Envelope,
+        relay: bool,
+    ) -> Result<()> {
+        let relayed_kind = match message.kind.as_str() {
+            "input.tap" | "render.tap" => {
+                let beat = message
+                    .payload
+                    .get("beat")
+                    .and_then(Value::as_f64)
+                    .context("tap beat is required")? as f32;
+                let judgement_beat = message
+                    .payload
+                    .get("judgementBeat")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(beat as f64) as f32;
+                let pressed = message
+                    .payload
+                    .get("pressed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let released = message
+                    .payload
+                    .get("released")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.renderer.push_tap(
+                    participant_id,
+                    message.sequence,
+                    beat,
+                    judgement_beat,
+                    pressed,
+                    released,
+                );
+                Some("render.tap")
+            }
+            "render.anchor" => {
+                let first_note_beat = message
+                    .payload
+                    .get("firstNoteBeat")
+                    .and_then(Value::as_f64)
+                    .context("render anchor firstNoteBeat is required")?
+                    as f32;
+                let input_offset_ms = message
+                    .payload
+                    .get("inputOffsetMs")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as f32;
+                self.renderer
+                    .push_render_anchor(participant_id, first_note_beat, input_offset_ms);
+                Some("render.anchor")
+            }
+            _ => None,
+        };
+
+        if relay && relayed_kind.is_some() {
+            let assigned =
+                self.broadcast_plan.read().await.slots.iter().any(|slot| {
+                    slot.active && slot.participant_id.as_deref() == Some(participant_id)
+                });
+            // Anchors are one event per player/run and are cheap to pre-cache.
+            // Relaying them for every admitted player keeps a mid-race warm
+            // rebind from waiting forever on an anchor emitted in the past.
+            if assigned || relayed_kind == Some("render.anchor") {
+                let subscribers = self
+                    .commentator_subscribers
+                    .read()
+                    .await
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut payload = message.payload.clone();
+                if let Some(payload) = payload.as_object_mut() {
+                    payload.insert("participantId".into(), json!(participant_id));
+                }
+                for subscriber in subscribers {
+                    let _ = self
+                        .network
+                        .send_to(
+                            &subscriber,
+                            Envelope::new(
+                                relayed_kind.unwrap_or("render.tap"),
+                                message.sequence,
+                                payload.clone(),
+                            ),
+                        )
+                        .await;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn apply_local(&self, message: Envelope) -> Result<()> {
         self.validate(&message)?;
         if message.kind == "client.ping" {
@@ -692,6 +799,16 @@ impl AppState {
         }
         self.apply_common(&message).await?;
         let session = self.local_session_id.read().await.clone();
+        if matches!(message.kind.as_str(), "input.tap" | "render.anchor") {
+            if let Some(session_id) = session.as_deref() {
+                self.ingest_render_event(
+                    session_id,
+                    &message,
+                    self.is_host.load(Ordering::Relaxed),
+                )
+                .await?;
+            }
+        }
         if message.kind == "render.sample" {
             let sample = crate::model::RenderSample {
                 session_id: 0,
@@ -738,7 +855,7 @@ impl AppState {
             }
         } else if matches!(
             message.kind.as_str(),
-            "client.hello" | "input.tap" | "render.keyframe" | "chart.status"
+            "client.hello" | "input.tap" | "render.anchor" | "render.keyframe" | "chart.status"
         ) && !self.is_host.load(Ordering::Relaxed)
         {
             self.network.broadcast(message.clone()).await;
@@ -751,7 +868,20 @@ impl AppState {
         localize_host_schedule(&mut message, unix_ms());
         self.validate(&message)?;
         let mut publish_message = true;
-        if message.kind == "chart.transfer_offer" {
+        if message.kind == "room.start_scheduled" {
+            self.renderer.begin_run();
+        }
+        if matches!(message.kind.as_str(), "render.tap" | "render.anchor") {
+            let participant_id = message
+                .payload
+                .get("participantId")
+                .and_then(Value::as_str)
+                .context("relayed render event requires participantId")?
+                .to_owned();
+            self.ingest_render_event(&participant_id, &message, false)
+                .await?;
+            publish_message = false;
+        } else if message.kind == "chart.transfer_offer" {
             let offer: ChartTransferHeader = serde_json::from_value(message.payload.clone())?;
             offer.validate()?;
             *self.pending_inbound_transfer_offer.write().await =
@@ -897,9 +1027,12 @@ impl AppState {
                     };
                     self.require_admitted_peer(&session_id).await?;
                     if class == PeerMessageClass::Telemetry {
-                        // These messages currently have no authoritative host
-                        // consumer. Silently discard them rather than mutating
-                        // host-local state or publishing noisy no-op events.
+                        if matches!(envelope.kind.as_str(), "input.tap" | "render.anchor") {
+                            self.ingest_render_event(&session_id, &envelope, true)
+                                .await?;
+                        }
+                        // Other telemetry has no authoritative host consumer.
+                        // Keep it out of shared state and the UI event stream.
                         return Ok(());
                     }
                     if class == PeerMessageClass::Run {
@@ -2008,6 +2141,7 @@ impl AppState {
     pub async fn start_room(&self, force: bool) -> Result<u64> {
         self.require_host()?;
         let start = self.room.write().await.schedule_start(force, 5_000)?;
+        self.renderer.begin_run();
         self.network
             .broadcast(Envelope::new(
                 "room.start_scheduled",
@@ -2063,14 +2197,34 @@ impl AppState {
         request: RendererRequest,
     ) -> Result<crate::model::RendererSlot> {
         self.require_host()?;
+        let current = self.renderer.slot(slot).context("unknown renderer slot")?;
+        let lifecycle = self.room.read().await.snapshot.lifecycle;
+        let race_active = matches!(
+            lifecycle,
+            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
+        );
+        let live_rebind = race_active
+            && current.parked
+            && request
+                .participant_id
+                .as_deref()
+                .is_some_and(|participant| !participant.is_empty())
+            && request.mode.is_none_or(|mode| mode == current.mode)
+            && request.width.is_none_or(|width| width == current.width)
+            && request.height.is_none_or(|height| height == current.height)
+            && request.fps.is_none_or(|fps| fps == current.fps)
+            && request
+                .delay_ms
+                .is_none_or(|delay| delay.clamp(250, 1_500) == current.delay_ms)
+            && request
+                .featured
+                .is_none_or(|featured| featured == current.featured);
         // A fresh Beatblock child can reproduce the chart exactly only when it
         // observes the pre-roll and every timed VFX event. Starting or
         // reconfiguring one after the synchronized countdown has begun would
-        // collapse earlier eases into a single frame.
-        if matches!(
-            self.room.read().await.snapshot.lifecycle,
-            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
-        ) {
+        // collapse earlier eases into a single frame. A participant-only rebind
+        // is safe when STOP parked the already-warm child.
+        if race_active && !live_rebind {
             anyhow::bail!("configure renderer slots before the synchronized start");
         }
         let previous_featured = self
@@ -2114,6 +2268,24 @@ impl AppState {
                 anyhow::bail!("renderer slots can only follow active players");
             }
         }
+        if live_rebind {
+            let participant_id = request
+                .participant_id
+                .clone()
+                .context("renderer participant is required")?;
+            let configured = self.renderer.rebind_parked(
+                slot,
+                participant_id.clone(),
+                request.participant_name.clone(),
+            )?;
+            self.sync_renderer_player(&participant_id).await;
+            self.exports.publish_room(
+                self.room.read().await.snapshot.clone(),
+                self.renderer.slots(),
+            );
+            self.refresh_broadcast_plan().await?;
+            return Ok(configured);
+        }
         let configured = self.renderer.configure(slot, request)?;
         // Relaunch the previous featured slot muted before starting the new
         // featured process, guaranteeing at most one audible child.
@@ -2155,7 +2327,19 @@ impl AppState {
         if self.renderer.slot(slot).is_none() {
             anyhow::bail!("unknown renderer slot");
         }
-        self.renderer.stop_slot(slot);
+        let race_active = matches!(
+            self.room.read().await.snapshot.lifecycle,
+            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
+        );
+        if race_active {
+            if self.renderer.park_slot(slot).is_err() {
+                // A crashed child cannot be kept warm, but Unassign must still
+                // clear the dead slot instead of trapping it in Active state.
+                self.renderer.stop_slot(slot);
+            }
+        } else {
+            self.renderer.stop_slot(slot);
+        }
         self.refresh_broadcast_plan().await?;
         self.publish_renderer_snapshot();
         Ok(())
@@ -2357,8 +2541,72 @@ impl AppState {
             return;
         }
         let plan = self.broadcast_plan.read().await.clone();
-        self.renderer.stop_all();
-        for slot in plan.slots.into_iter().filter(|slot| slot.active) {
+        let race_active = matches!(
+            self.room.read().await.snapshot.lifecycle,
+            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
+        );
+        for slot in plan.slots {
+            let Some(current) = self.renderer.slot(&slot.id) else {
+                continue;
+            };
+            if !slot.active {
+                if current.active {
+                    if race_active {
+                        if self.renderer.park_slot(&slot.id).is_err() {
+                            self.renderer.stop_slot(&slot.id);
+                        }
+                    } else {
+                        self.renderer.stop_slot(&slot.id);
+                    }
+                } else if current.parked && !race_active {
+                    self.renderer.stop_slot(&slot.id);
+                }
+                continue;
+            }
+
+            let same_output = current.mode == slot.mode
+                && current.width == slot.width
+                && current.height == slot.height
+                && current.fps == slot.fps
+                && current.delay_ms == slot.delay_ms
+                && current.featured == slot.featured;
+            let same_participant = current.participant_id == slot.participant_id;
+            if current.active && same_output && same_participant {
+                continue;
+            }
+            if race_active && same_output {
+                if current.active && !same_participant {
+                    if let Err(error) = self.renderer.park_slot(&slot.id) {
+                        self.renderer.set_error(&slot.id, error.to_string());
+                        continue;
+                    }
+                }
+                if self
+                    .renderer
+                    .slot(&slot.id)
+                    .is_some_and(|candidate| candidate.parked)
+                {
+                    let Some(participant_id) = slot.participant_id.clone() else {
+                        continue;
+                    };
+                    if let Err(error) = self.renderer.rebind_parked(
+                        &slot.id,
+                        participant_id,
+                        slot.participant_name.clone(),
+                    ) {
+                        self.renderer.set_error(&slot.id, error.to_string());
+                    }
+                    continue;
+                }
+            }
+            if race_active {
+                self.renderer.set_error(
+                    &slot.id,
+                    "host changed cold renderer settings during an active race",
+                );
+                continue;
+            }
+
             let request = RendererRequest {
                 participant_id: slot.participant_id.clone(),
                 participant_name: slot.participant_name.clone(),

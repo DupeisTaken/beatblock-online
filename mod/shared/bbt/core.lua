@@ -524,7 +524,8 @@ function BBT.installHooks()
   local handleMiss = GameManager.handleMiss
   local addMineToTotal = GameManager.addMineToTotal
   local getTapInputs = GameManager.getTapInputs
-  if not addToScore or not handleMiss or not addMineToTotal then return end
+  local updateTaps = GameManager.updateTaps
+  if not addToScore or not handleMiss or not addMineToTotal or not updateTaps then return end
   GameManager.addToScore = function(self, ...)
     local before = totals()
     local result = { addToScore(self, ...) }
@@ -549,10 +550,37 @@ function BBT.installHooks()
       if BBTRenderer and BBTRenderer.active then return BBTRenderer.tapInputs() end
       local pressed, released = getTapInputs(self, ...)
       if pressed or released then
-        BBT.send('input.tap', { pressed = pressed == true, released = released == true, beat = cs and cs.cBeat or 0 })
+        local beat=cs and cs.cBeat or 0
+        local offset=savedata and savedata.options and savedata.options.game
+          and tonumber(savedata.options.game.inputOffset) or 0
+        local judgementBeat=beat
+        if self.msToBeat then judgementBeat=beat-self:msToBeat(offset) end
+        BBT.send('input.tap', {
+          pressed = pressed == true, released = released == true,
+          beat = beat, judgementBeat = judgementBeat,
+        })
       end
       return pressed, released
     end
+  end
+  GameManager.updateTaps = function(self, ...)
+    if not (BBTRenderer and BBTRenderer.active) then return updateTaps(self, ...) end
+    local args={...}
+    local event=BBTRenderer.beginTapJudgement()
+    local gameOptions=savedata and savedata.options and savedata.options.game
+    local originalOffset=gameOptions and gameOptions.inputOffset
+    local originalBeat=cs and cs.cBeat
+    -- Exact raw tap events carry their already offset-adjusted judgement beat.
+    -- Frames without an edge retain the source player's offset so miss-window
+    -- expiry also cannot depend on the OBS machine's local save.
+    if gameOptions then gameOptions.inputOffset=event and 0 or BBTRenderer.inputOffsetMs end
+    if event and cs then cs.cBeat=event.judgementBeat end
+    local success,result=xpcall(function() return {updateTaps(self,unpack(args))} end,debug.traceback)
+    if cs and originalBeat~=nil then cs.cBeat=originalBeat end
+    if gameOptions then gameOptions.inputOffset=originalOffset end
+    BBTRenderer.endTapJudgement()
+    if not success then error(result,0) end
+    return unpack(result)
   end
   BBT.installedHooks = true
 end
@@ -753,6 +781,24 @@ function BBT.drawRaceHud()
   if player then love.graphics.printf(string.format('%.2f%%  %+.2f', player.accuracy or 100, (player.accuracy or 100) - 100), project.res.x - 168, 31, 154, 'left') end
 end
 
+local function firstScoringBeat()
+  if not (cs and type(cs.playEvents)=='table' and Event and Event.hitCount) then return nil end
+  local first=nil
+  for _,event in ipairs(cs.playEvents) do
+    local beat=nil
+    if event.type=='mine' then
+      beat=tonumber(event.time)
+    elseif event.type=='mineHold' then
+      beat=(tonumber(event.time) or 0)+(tonumber(event.duration) or 0)
+    elseif Event.hitCount[event.type] then
+      local ok,count=pcall(Event.hitCount[event.type],event)
+      if ok and type(count)=='number' and count>0 then beat=tonumber(event.time) end
+    end
+    if beat and (not first or beat<first) then first=beat end
+  end
+  return first
+end
+
 function BBT.update(dt)
   if BBT.disabled then return end
   BBT.installHooks()
@@ -786,6 +832,14 @@ function BBT.update(dt)
   BBT.keyframeTimer = BBT.keyframeTimer + dt
   BBT.heartbeatTimer = (BBT.heartbeatTimer or 0) + dt
   local inGame = cs and cs.level and not cs.results
+  if inGame and (not BBT.renderAnchorState or BBT.renderAnchorState.game~=cs) then
+    BBT.renderAnchorState={game=cs,firstNoteBeat=nil,sent=false}
+  elseif not inGame then
+    BBT.renderAnchorState=nil
+  end
+  if inGame and BBT.renderAnchorState and not BBT.renderAnchorState.firstNoteBeat then
+    BBT.renderAnchorState.firstNoteBeat=firstScoringBeat()
+  end
   if BBT.heartbeatTimer >= 2 then
     BBT.heartbeatTimer = BBT.heartbeatTimer - 2
     BBT.send('client.ping',{instanceId=CLIENT_INSTANCE_ID})
@@ -813,6 +867,16 @@ function BBT.update(dt)
     -- and paused. Publishing that as "playing" lets a delayed renderer start
     -- before the participant's real synchronized first frame.
     local renderPlaying = inGame and not cs.startPending and not cs.paused
+    local anchor=BBT.renderAnchorState
+    if renderPlaying and anchor and anchor.firstNoteBeat
+      and cs.cBeat>=anchor.firstNoteBeat and not anchor.sent then
+      local offset=savedata and savedata.options and savedata.options.game
+        and tonumber(savedata.options.game.inputOffset) or 0
+      BBT.send('render.anchor',{
+        firstNoteBeat=anchor.firstNoteBeat,inputOffsetMs=offset,
+      })
+      anchor.sent=true
+    end
     if renderPlaying then flags = flags + 1 end
     if cs and cs.paused then flags = flags + 2 end
     BBT.send('render.sample', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, tapMask = tapMask, flags = flags })
@@ -856,6 +920,8 @@ function BBT.update(dt)
     progress = current.maxHits > 0 and math.min(1, current.currentMaxHits / current.maxHits) or 0,
     connected = BBT.connected,
     health = health,
+    beat = cs and cs.cBeat or 0,
+    paddleAngle = cs and cs.p and cs.p.angle or 0,
     updatedAtMs = estimatedServerTimeMs(),
   })
 end

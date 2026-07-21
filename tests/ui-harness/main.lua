@@ -138,6 +138,11 @@ local function reset()
   BBT.lastLobby=roomFixture; BBT.context.sessionId='host-1'; BBT.context.lobbyId='visual-room'
   BBT.companionConnected=true; BBT.runtimeStarting=false; BBT.lastError=nil; BBT.chartTransfer=nil
   BBT.renderers=baseRenderers; BBT.mirrorEnabled=false
+  for index,slot in ipairs(baseRenderers) do
+    slot.active=index<3; slot.parked=false; slot.lastError=nil
+    slot.participantId=index<3 and 'player-'..(index+1) or nil
+    slot.participantName=index<3 and 'Player '..(index+1) or nil
+  end
   BBT.commandLog={}; BBT.pendingRequestId=nil; BBT.lastCompletedRequestId=nil
   participants[1].role='host'; participants[1].ready=true; participants[1].verified=true
   roomFixture.lifecycle='ready'; participants[3].verified=true; participants[3].ready=true
@@ -170,6 +175,11 @@ local scenarios={
   {'help',function() reset(); online.workspace='help' end},
   {'confirmation',function() reset(); online.modal={kind='confirm',title='CLOSE ROOM',message='Close this room and disconnect every participant?',label='CLOSE ROOM',run=function() end} end},
   {'broadcast-basic',function() reset(); online.workspace='broadcast' end},
+  {'broadcast-parked',function()
+    reset(); online.workspace='broadcast'; roomFixture.lifecycle='playing'; online.selectedSessionId='player-4'
+    BBT.renderers[1].active=false; BBT.renderers[1].parked=true
+    BBT.renderers[1].participantId=nil; BBT.renderers[1].participantName=nil
+  end},
   {'broadcast-advanced',function()
     reset(); online.workspace='broadcast'; online.broadcastAdvanced=true; online.broadcastSlot='B'
     online.broadcastDraft={mode='clean',width=1920,height=1080,fps=60,delayMs=1000}
@@ -268,6 +278,18 @@ function love.load()
   -- Disabled controls are intentionally omitted from the focus/click table.
   local lockedApply=optionalControl('broadcast_apply')
   assert(not lockedApply or lockedApply.run==nil,'Advanced export Apply must lock during an active race')
+  online.broadcastAdvanced=false
+  local parked=BBT.renderers[1]
+  parked.active=false; parked.parked=true
+  parked.participantId=nil; parked.participantName=nil
+  online.selectedSessionId='player-2'
+  activate('broadcast_assign_A')
+  assert(BBT.commandLog[#BBT.commandLog].kind=='renderer.configure',
+    'A warm parked stream must remain assignable during active gameplay')
+  assert(BBT.commandLog[#BBT.commandLog].payload.slot=='A',
+    'Warm reassign targeted the wrong stream closure')
+  parked.active=true; parked.parked=false
+  parked.participantId='player-2'; parked.participantName='Player 2'
 
   reset(); roomFixture.lifecycle='results'
   activate('session_primary')

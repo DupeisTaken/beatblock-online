@@ -119,6 +119,12 @@ Role changes and removals are disabled during countdown/gameplay. **Room Options
 
 Host participation is also locked during countdown/gameplay. Directing keeps room and Broadcast authority but excludes the host from readiness, scoring, and renderer assignment; returning to Play clears stale readiness and requires fresh chart verification.
 
+## Broadcast lifecycle
+
+Configure Stream A-D before countdown. Full mode reproduces the chart's background, entities, effects, HUD, and native Results screen; Clean keeps the same chart content before final shading. The runtime caches every assigned feed and releases the cohort on one first-scoring-note boundary, so video, featured audio, and featured text share one presentation cursor.
+
+During countdown/gameplay, output settings remain locked. **Stop** warm-parks that child instead of destroying it: the slot becomes unassigned and stops capturing, while its hidden chart continues advancing. Select another active player and choose **Assign** to rebind the parked process without losing earlier VFX. A cold slot still cannot be launched mid-race.
+
 ## Networking
 
 The installer adds a program-scoped UDP firewall rule for the runtime. Private/domain profiles are the default; public-profile access is opt-in. If automatic port mapping fails, forward the configured UDP port manually. CGNAT requires a VPN or a different host because BBT has no relay service.
