@@ -13,6 +13,13 @@ The path in the field is always the path being described and modified. Selection
 
 Only one game folder is managed at a time. Selecting another valid folder changes the primary action to **Move Installation** and asks before restoring the former target. Mod files remain in the normal shared `%APPDATA%\Beatblock\Mods` location; the game-folder-specific change is the Lovely `version.dll` injector.
 
+The optional OBS field is independent of the game target. It accepts the OBS
+root, `bin`, `bin\64bit`, or `obs64.exe`, normalizes that choice to the root, and
+requires `bin\64bit\obs64.exe` before enabling installation. An explicit invalid
+path does not fall back to another detected copy. The chosen root is passed to
+the elevated helper with `--obs-dir` and is rediscovered from the successful
+OBS install record on later runs.
+
 Installation starts with the player's normal Windows permissions. If a protected game, OBS, or firewall operation returns access denied, requires elevation, or requests an administrator, the same installer opens the native Windows UAC prompt and continues in a windowless elevated helper. The visible installer follows the helper through an atomic status file and waits for its process exit plus postflight verification. It performs a final status read after process exit and retains failed status files for diagnosis, so UAC cancellation, invalid firewall arguments, and other privileged failures report the complete underlying error instead of only exit code 1. Build validation failures remain in the installer and do not trigger an unrelated UAC prompt.
 
 The firewall rule is reconciled once per transaction. Its `program=` path is normalized to Windows backslashes, an absent previous rule is harmless, and the selected Private/Public profile is recorded for later Repair operations. If Repair stops at 76%, check for a UAC prompt on the secure desktop; accept it once and let the visible installer finish its postflight verification.

@@ -40,7 +40,7 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; **Advanced Export** edits mode, resolution, FPS, and delay per stream and warns on 1080p60.
 - **History** lists saved match summaries.
 - **Settings** controls the gameplay HUD and the host's pre-race **Run Checks** policy, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**. Competitive checks remain the default; casual mode permits retries and ordered-event recovery while retaining structural score validation and DNF completion rules.
-- **Help** explains roles, controls, chart transfer, and troubleshooting without covering room controls.
+- **Help** explains roles, controls, chart transfer, and player troubleshooting without granting room controls. Runtime errors remain visible in the footer, while complete INVALID/DNF reasons live in **Run Details**.
 
 Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
 

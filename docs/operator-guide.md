@@ -77,16 +77,21 @@ different network before the event. See the
 [official frp TCP/UDP proxy guide](https://gofrp.org/en/docs/features/tcp-udp/)
 for current proxy configuration syntax.
 
-### Player connection troubleshooting
+### Player connection and result troubleshooting
 
 | Symptom                                  | What to check                                                                                                                                                                                                                    |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Host address resolution fails            | Enter a valid public IPv4 address or DNS name in **Host Address**, without a URL scheme or port. Confirm the DNS name resolves on the Player's PC.                                                                               |
 | Connection times out                     | Confirm the room is still active, the proxy type is UDP, the room port equals `localPort`, the Player entered `remotePort`, and inbound UDP on `remotePort` is allowed by both the FRP server firewall and cloud security group. |
 | Password/authentication is rejected      | Re-enter the exact case-sensitive room password. Repeated failed attempts may require waiting before another attempt.                                                                                                            |
+| **username taken**                       | The room already reserves that trimmed name, ignoring ASCII letter casing. Choose a different display name; the client clears the rejected local room state instead of repeatedly reconnecting.                                  |
 | **Waiting for Approval** remains visible | The network connection and password succeeded; the host still needs to accept the Player.                                                                                                                                        |
 | Protocol is incompatible                 | Host and Player must install the same Beatblock Online release/protocol version.                                                                                                                                                 |
 | **Locate Matching Chart** appears        | The room connection succeeded, but the local chart does not match. Select the exact official chart, locate the matching custom chart, or request the host transfer when offered.                                                 |
+| Header shows **RECONNECTING**            | Keep Online open while the authenticated 30-second reconnect grace runs. If it returns Offline, rejoin the room; a runtime restart intentionally cannot restore ownership from a serialized snapshot.                            |
+| Result is **INVALID**                    | Open the participant and choose **Run Details**. Competitive rooms use INVALID for retry/integrity failures or unrecoverable ordered-event gaps; the runtime preserves that reason through reconnects.                           |
+| Result is **DNF**                        | Open **Run Details**. DNF means the attempt did not complete—for example an explicit quit, incomplete score, 30-second launch timeout, or disconnect expiry. Casual mode still enforces DNF.                                     |
+| **Online IPC is overloaded**             | Do not continue the race as if scoring were current. Return to Online and reconnect before another competitive attempt; lifecycle events have reserved queue capacity, but a completely full queue cannot accept more work.      |
 
 ## Host a room
 
@@ -98,7 +103,7 @@ for current proxy configuration syntax.
 6. Follow **Select Chart**, build an optional setlist, and wait for every assigned player's exact verification.
 7. When the dashboard reports all assigned players ready, choose **Start Race**. A directing host can start once at least one Player is assigned and ready.
 
-The persistent header shows room name, runtime link, and lifecycle. The chart strip shows the locked chart and local verification. Above the eight-row roster, player, ready, and spectator totals stay visible even in a 16-player room.
+The persistent header shows room name, runtime link, and lifecycle. The chart strip shows the locked chart and local verification. The six-row roster paginates by stable participant ID, while player, ready, and spectator totals stay visible even in a 16-player room.
 
 ## Charts and setlists
 
@@ -115,7 +120,7 @@ Readiness requires the supported game and mod versions, selected variant, expect
 
 Password-only rooms admit valid clients immediately. Host-approval rooms place them in the roster as **Pending** until accepted. Pending requests do not count toward player/spectator/ready totals.
 
-Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Escape and controller pause inputs are ignored during online gameplay, while offline practice retains the native pause menu. Complete valid journals rank normally; missing, mismatched, paused, retried, incomplete, or disconnected runs become visible DNF and add `0.00` to the set total. Players stay in the room for later charts.
+Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Escape and controller pause inputs are ignored during online gameplay, while offline practice retains the native pause menu. Complete valid journals rank normally. In competitive rooms, retries, integrity failures, and unrecoverable score-event gaps become **INVALID**; explicit quits, incomplete attempts, launch timeouts, and expired disconnects become **DNF**. Either verdict contributes `0.00` to the set total, and the Player remains in the room for later charts.
 
 Host participation is also locked during countdown/gameplay. Directing keeps room and Broadcast authority but excludes the host from readiness, scoring, and renderer assignment; returning to Play clears stale readiness and requires fresh chart verification.
 

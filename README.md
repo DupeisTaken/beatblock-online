@@ -2,12 +2,11 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The current prerelease candidate is [`v0.3.0-beta.1`](docs/releases/v0.3.0-beta.1.md),
-which promotes the redesigned Online workspace into beta with host Play/Direct
-selection, host-selectable competitive run checks, pause-safe online races,
-native-timed OBS output, authenticated room
-and local IPC boundaries, safer installer upgrades, bounded runtime resources,
-and reproducible native-artifact verification.
+The current prerelease candidate is [`v0.3.0-beta.2`](docs/releases/v0.3.0-beta.2.md).
+It hardens per-attempt scoring and reconnect recovery, adds host-selectable
+competitive checks, rejects duplicate usernames, clears retained player state,
+sources OBS accuracy and Results from the delayed player stream, supports custom
+OBS installation folders, and clears stale per-stream text when assignments end.
 
 ## Player quick start
 
@@ -18,6 +17,11 @@ and reproducible native-artifact verification.
 5. Open **Online**, then host a room or follow the [Player joining guide](docs/operator-guide.md#join-a-room-as-a-player) with the host's public address, UDP port, and password. When the host uses frp, Players enter the frp server's public address and UDP `remotePort`.
 6. Follow the session strip's highlighted next action. Select a roster row for its persistent participant inspector; the host can Play or Direct, choose competitive or casual Run Checks, Setlist supports ordered commands and next-chart continuation, and Broadcast exposes per-stream advanced export settings. A Spectator only receives Broadcast when the host grants Commentator access.
 7. Choose **Exit Online** when finished; the local runtime, API, exports, and renderers close with the Online session.
+
+If joining or scoring does not behave as expected, start with the
+[player troubleshooting table](docs/operator-guide.md#player-connection-and-result-troubleshooting).
+It maps the messages shown by the current runtime—including **username taken**,
+**INVALID**, **DNF**, reconnecting, and chart mismatch—to player actions.
 
 ![Concentrated host dashboard](tests/ui-baselines/host-lobby.png)
 
@@ -69,7 +73,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the
 - [Installer/runtime architecture](docs/architecture.md)
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
-- [v0.3.0-beta.1 release notes](docs/releases/v0.3.0-beta.1.md)
+- [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
 

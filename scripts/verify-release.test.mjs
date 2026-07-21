@@ -67,21 +67,21 @@ test('release version metadata and generated asset names stay aligned', async ()
 
 test('tagged releases must exactly match the package version', () => {
   assert.deepEqual(
-    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-beta.1', version: '0.3.0-beta.1' }),
-    { tagged: true, expected: 'v0.3.0-beta.1' },
+    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-beta.2', version: '0.3.0-beta.2' }),
+    { tagged: true, expected: 'v0.3.0-beta.2' },
   );
   assert.throws(
     () =>
       validateReleaseTag({
         refType: 'tag',
-        refName: 'v0.3.0-beta.2',
-        version: '0.3.0-beta.1',
+        refName: 'v0.3.0-beta.3',
+        version: '0.3.0-beta.2',
       }),
     /does not match package version/,
   );
   assert.deepEqual(
-    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-beta.1' }),
-    { tagged: false, expected: 'v0.3.0-beta.1' },
+    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-beta.2' }),
+    { tagged: false, expected: 'v0.3.0-beta.2' },
   );
 });
 

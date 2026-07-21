@@ -286,6 +286,25 @@ fn clear_featured_exports_with(
     Ok(())
 }
 
+fn clear_stream_exports_with(
+    directory: &Path,
+    write: &mut impl FnMut(PathBuf, &str) -> Result<()>,
+) -> Result<()> {
+    // OBS text sources retain their last file contents indefinitely. Clearing
+    // every participant-derived field makes an unassigned or departed stream
+    // visibly empty instead of impersonating its previous player.
+    for name in [
+        "player_name.txt",
+        "accuracy.txt",
+        "combo.txt",
+        "misses.txt",
+        "rank.txt",
+    ] {
+        write(directory.join(name), "")?;
+    }
+    Ok(())
+}
+
 pub fn write_room_exports(
     directory: &Path,
     room: &RoomSnapshot,
@@ -312,33 +331,34 @@ fn write_room_exports_with(
             slot_directory.join("state.json"),
             &serde_json::to_string_pretty(slot)?,
         )?;
-        if let Some(participant_id) = slot.participant_id.as_deref() {
-            if let Some(participant) = room
-                .participants
+        let participant = slot.participant_id.as_deref().and_then(|participant_id| {
+            room.participants
                 .iter()
                 .find(|participant| participant.session_id == participant_id)
-            {
-                write(
-                    slot_directory.join("player_name.txt"),
-                    &participant.display_name,
-                )?;
-                write(
-                    slot_directory.join("accuracy.txt"),
-                    &format!("{:.2}%", participant.accuracy),
-                )?;
-                write(
-                    slot_directory.join("combo.txt"),
-                    &participant.totals.combo.to_string(),
-                )?;
-                write(
-                    slot_directory.join("misses.txt"),
-                    &participant.totals.misses.to_string(),
-                )?;
-                write(
-                    slot_directory.join("rank.txt"),
-                    &participant.rank.unwrap_or(0).to_string(),
-                )?;
-            }
+        });
+        if let Some(participant) = participant {
+            write(
+                slot_directory.join("player_name.txt"),
+                &participant.display_name,
+            )?;
+            write(
+                slot_directory.join("accuracy.txt"),
+                &format!("{:.2}%", participant.accuracy),
+            )?;
+            write(
+                slot_directory.join("combo.txt"),
+                &participant.totals.combo.to_string(),
+            )?;
+            write(
+                slot_directory.join("misses.txt"),
+                &participant.totals.misses.to_string(),
+            )?;
+            write(
+                slot_directory.join("rank.txt"),
+                &participant.rank.unwrap_or(0).to_string(),
+            )?;
+        } else {
+            clear_stream_exports_with(&slot_directory, write)?;
         }
     }
     write(
@@ -470,6 +490,57 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(root.join("featured_name.txt")).unwrap(),
+            ""
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unassigned_or_departed_streams_clear_stale_player_text() {
+        use crate::{
+            model::{AdmissionMode, RendererMode},
+            room::RoomEngine,
+        };
+
+        let root =
+            std::env::temp_dir().join(format!("bbt-stream-export-clear-{}", rand::random::<u64>()));
+        let room = RoomEngine::host("Room".into(), "Player".into(), AdmissionMode::PasswordOnly);
+        let participant_id = room.snapshot.host_session_id.clone();
+        let mut slot = RendererSlot::defaults("A", true);
+        slot.active = true;
+        slot.participant_id = Some(participant_id.clone());
+        slot.participant_name = Some("Player".into());
+        slot.mode = RendererMode::Full;
+
+        write_room_exports(&root, &room.snapshot, &[slot.clone()]).unwrap();
+        let stream = root.join("streams/A");
+        assert_eq!(
+            std::fs::read_to_string(stream.join("player_name.txt")).unwrap(),
+            "Player"
+        );
+
+        // A stale assignment can outlive the participant snapshot briefly.
+        let mut without_player = room.snapshot.clone();
+        without_player.participants.clear();
+        write_room_exports(&root, &without_player, &[slot.clone()]).unwrap();
+        for name in [
+            "player_name.txt",
+            "accuracy.txt",
+            "combo.txt",
+            "misses.txt",
+            "rank.txt",
+        ] {
+            assert_eq!(std::fs::read_to_string(stream.join(name)).unwrap(), "");
+        }
+
+        // Reassignment can repopulate the files, and an explicit unassign must
+        // clear them again for OBS text sources that watch stable paths.
+        write_room_exports(&root, &room.snapshot, &[slot.clone()]).unwrap();
+        slot.participant_id = None;
+        slot.participant_name = None;
+        write_room_exports(&root, &room.snapshot, &[slot]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(stream.join("player_name.txt")).unwrap(),
             ""
         );
         let _ = std::fs::remove_dir_all(root);

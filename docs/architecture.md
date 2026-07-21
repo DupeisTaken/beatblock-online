@@ -24,9 +24,11 @@ finite router lease remains the crash fallback.
 The room lifecycle is `forming -> chart_locked -> ready -> countdown -> playing -> results -> set_complete -> closed`. The host derives accuracy from ordered score mutations and stores a two-minute diagnostic snapshot, but only a live authenticated network session can own or resume a room.
 
 `run.started` is validated against the locked chart's note count and records one
-started participant per scheduled chart. Completion is likewise
-participant-scoped rather than trusting client-provided run IDs. Thirty seconds
-after the scheduled start, assigned players that never entered Game are
+active attempt ID per participant. Duplicate starts are idempotent, replaced IDs
+are retained in a bounded stale-event set, and one participant still contributes
+at most one final result per scheduled chart. Competitive replacement keeps an
+INVALID verdict; casual replacement resets the unfinished attempt. Thirty
+seconds after the scheduled start, assigned players that never entered Game are
 finalized as DNF so Force Start and failed client loads cannot strand the room.
 
 Scheduled timestamps are localized when they cross from the host runtime to a
@@ -65,7 +67,9 @@ prevent abandoned or hostile connections from retaining an unbounded number
 of tasks and socket buffers.
 OBS text exports collapse into 100 ms batches, skip unchanged fields, and use
 atomic replacement without forcing ephemeral overlay state through the physical
-disk cache. These clocks keep durable ordering separate from presentation work.
+disk cache. Per-stream player text is explicitly emptied when a slot is
+unassigned or its participant disappears. These clocks keep durable ordering
+separate from presentation work.
 
 Renderer input alignment parks when no stream is active and otherwise follows
 the fastest configured 30/60 Hz stream. Game clients send 60 Hz render input

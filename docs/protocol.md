@@ -32,9 +32,19 @@ DNF rules remain mandatory in both modes.
 Host room snapshots and `room.start_scheduled` events carry `serverTimeMs`.
 Participant runtimes convert `scheduledStartTimeMs`/`serverStartTimeMs` into
 their local clock domain while preserving the host's remaining countdown.
-`run.started` must match the verified chart's authoritative note count. A room
-accepts one final result per participant per chart, independent of the
-client-provided run ID.
+Every attempt carries a non-empty `runId` of at most 128 characters on
+`run.started`, score, invalidation, and finish events. `run.started` must match
+the verified chart's authoritative note count. Duplicate starts for the active
+ID are idempotent; a new ID resets cumulative counters for the new attempt,
+retires the previous ID, and applies the room's competitive/casual retry policy.
+Late events from retired attempts are ignored. A room accepts one final result
+per participant per chart, independent of the client-provided run ID.
+
+Structurally invalid score messages are recorded as a participant INVALID in a
+competitive room but do not tear down local IPC. Cumulative score events only
+advance their run sequence after entering the bounded ordered queue, preventing
+local backpressure from manufacturing a sequence gap. Reconnect restores the
+same authenticated participant and preserves existing INVALID/DNF verdicts.
 
 High-rate 32-byte datagrams contain version, stable render-source ID/sequence, run timestamp, beat, processed paddle angle, held taps, and flags. Reliable source-authored renderer keyframes carry accuracy, score totals, average offset, and the final Results marker; each OBS child aligns them with the same delayed datagram timeline through a sequence-committed score sidecar. Authoritative room scoring still comes from ordered score mutations. The host relays renderer data only for active plan assignments and only to authorized, enabled Commentators.
 

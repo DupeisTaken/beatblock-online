@@ -290,14 +290,23 @@ mod tests {
         let mut event = Envelope::new("run.score_delta", 1, serde_json::json!({}));
         event.run_id = Some("periodic".into());
         journal.publish(&event).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(
-            std::fs::read_to_string(root.join("periodic.ndjson"))
-                .unwrap()
-                .lines()
-                .count(),
-            1
-        );
+
+        // Keep this an observation of the periodic flush rather than forcing a
+        // flush through the public API. Parallel test workers can delay this
+        // background thread beyond one timer interval on a busy CI runner, so
+        // poll within a bounded deadline instead of assuming exact scheduling.
+        let path = root.join("periodic.ndjson");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let line_count = std::fs::read_to_string(&path)
+                .map(|contents| contents.lines().count())
+                .unwrap_or(0);
+            if line_count == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
         drop(journal);
         let _ = std::fs::remove_dir_all(root);
     }

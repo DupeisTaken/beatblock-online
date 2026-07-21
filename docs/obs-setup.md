@@ -122,6 +122,7 @@ Before assigning slots, keep the host game and OBS below 80% CPU and GPU utiliza
 3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS player stream source registered` and `beatblock-online-obs.dll`.
 4. If the source is present but remains black while the runtime reports published frames, close OBS and use **Repair Required Components**. This replaces an older plugin DLL before OBS can load it again.
 5. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
+6. For portable/custom OBS, verify the editable OBS field resolves to a folder containing `bin\64bit\obs64.exe`. An invalid explicit choice is reported and never falls back silently to another OBS copy.
 
 ## Text capture
 
@@ -142,7 +143,7 @@ streams\A-D\...
 
 Add a normal OBS Text source and enable **Read from file**. Featured files use the same delayed state selected by the featured renderer.
 
-`state.json` contains the room and stream-slot snapshot. `gameplay.json` contains the host game's local gameplay snapshot. Featured files have one delayed-state writer and are cleared when no participant is featured.
+`state.json` contains the room and stream-slot snapshot. `gameplay.json` contains the host game's local gameplay snapshot. Featured files have one delayed-state writer and are cleared when no participant is featured. Each `streams\A-D` directory also has stable `player_name.txt`, `accuracy.txt`, `combo.txt`, `misses.txt`, and `rank.txt` paths. Those five files are cleared when the slot is unassigned or its participant disappears, so an OBS Text source cannot retain the previous player's values indefinitely.
 
 ## Rebuild the reviewed plugin artifact
 

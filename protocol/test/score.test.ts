@@ -245,7 +245,7 @@ describe('Beatblock score derivation', () => {
   it('validates the runtime client hello ownership key', () => {
     const hello = {
       instanceId: 'game-123',
-      clientVersion: '0.3.0-beta.1',
+      clientVersion: '0.3.0-beta.2',
       gameBuildHash: 'a'.repeat(64),
       distribution: 'standalone',
       mods: [],
