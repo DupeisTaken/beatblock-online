@@ -62,6 +62,8 @@ slint::slint! {
         in-out property<bool> install-obs: false;
         in-out property<bool> obs-available: false;
         in-out property<bool> obs-running: false;
+        in-out property<string> obs-path: "";
+        in-out property<string> obs-detail: "Choose the OBS folder containing bin\\64bit\\obs64.exe.";
         in-out property<bool> firewall-public: false;
         in-out property<bool> remove-user-data: false;
         in-out property<bool> allow-unknown-build: false;
@@ -83,7 +85,9 @@ slint::slint! {
         in-out property<string> confirmation-kind: "";
 
         callback browse();
+        callback browse-obs();
         callback path-edited(string);
+        callback obs-path-edited(string);
         callback install();
         callback repair();
         callback uninstall();
@@ -169,6 +173,16 @@ slint::slint! {
                                             : "Install/update OBS source";
                                     checked <=> root.install-obs;
                                 }
+                                HorizontalLayout { spacing: 7px;
+                                    LineEdit {
+                                        text <=> root.obs-path;
+                                        enabled: !root.busy;
+                                        horizontal-stretch: 1;
+                                        edited(value) => { root.obs-path-edited(value); }
+                                    }
+                                    Button { text: "Browse..."; width: 82px; enabled: !root.busy; clicked => { root.browse-obs(); } }
+                                }
+                                Text { text: root.obs-detail; color: #596570; font-size: 10px; wrap: word-wrap; }
                             }
                         }
                         Rectangle {
@@ -432,7 +446,53 @@ fn refresh_selected(window: &InstallerWindow, installer: &Installer) {
     set_badge(window, &installer.inspect_target(&path));
 }
 
-fn selected_options(window: &InstallerWindow) -> (PathBuf, bool, Option<Distribution>, bool, bool) {
+fn selected_obs_directory(window: &InstallerWindow) -> Option<PathBuf> {
+    let value = window.get_obs_path();
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
+    let selected = selected_obs_directory(window);
+    if let Err(error) = installer.set_obs_directory(selected.clone()) {
+        window.set_obs_available(false);
+        window.set_install_obs(false);
+        window.set_obs_detail(format!("Could not update OBS location: {error:#}").into());
+        return;
+    }
+
+    let resolved = installer.obs_directory();
+    let payload_available = installer.obs_plugin_payload_available();
+    let available = payload_available && resolved.is_some();
+    let running = installer.obs_running();
+    window.set_obs_available(available);
+    window.set_obs_running(running);
+    if !available || running {
+        window.set_install_obs(false);
+    }
+    window.set_obs_detail(
+        match (payload_available, resolved, selected) {
+            (false, _, _) => "The OBS source is not included in this installer build.".into(),
+            (true, Some(root), _) => format!("OBS 32 x64 detected at {}", root.display()),
+            (true, None, Some(_)) => {
+                "The selected folder does not contain bin\\64bit\\obs64.exe.".into()
+            }
+            (true, None, None) => "Choose the OBS folder containing bin\\64bit\\obs64.exe.".into(),
+        }
+        .into(),
+    );
+}
+
+fn selected_options(
+    window: &InstallerWindow,
+) -> (
+    PathBuf,
+    bool,
+    Option<Distribution>,
+    bool,
+    bool,
+    Option<PathBuf>,
+) {
     let distribution = match window.get_install_method() {
         1 => Some(Distribution::Standalone),
         2 => Some(Distribution::BeatblockPlus),
@@ -444,6 +504,7 @@ fn selected_options(window: &InstallerWindow) -> (PathBuf, bool, Option<Distribu
         distribution,
         window.get_install_obs(),
         window.get_firewall_public(),
+        selected_obs_directory(window),
     )
 }
 
@@ -453,8 +514,16 @@ fn begin_install(
     installer: Arc<Installer>,
     data_dir: PathBuf,
 ) {
-    let (path, allow_unknown, distribution, install_obs, firewall_public) =
+    let (path, allow_unknown, distribution, install_obs, firewall_public, obs_directory) =
         selected_options(window);
+    if let Err(error) = installer.set_obs_directory(obs_directory.clone()) {
+        window.set_result_visible(true);
+        window.set_result_background(slint::Color::from_rgb_u8(250, 220, 220));
+        window.set_result_foreground(slint::Color::from_rgb_u8(139, 37, 37));
+        window
+            .set_result_text(format!("Could not use the selected OBS location: {error:#}").into());
+        return;
+    }
     window.set_busy(true);
     window.set_result_visible(false);
     window.set_operation_step("Starting installation…".into());
@@ -488,6 +557,7 @@ fn begin_install(
                         distribution,
                         install_obs,
                         firewall_public,
+                        obs_directory.as_deref(),
                     );
                     Installer::request_elevated_with_progress(
                         &arguments,
@@ -525,10 +595,13 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
     let installer = Arc::new(Installer::new(data_dir.clone()));
     let status = installer.detect();
-    let obs_running = installer.obs_running();
-    window.set_obs_available(installer.obs_plugin_available());
-    window.set_obs_running(obs_running);
-    window.set_install_obs(status.obs_plugin_present && !obs_running);
+    if let Some(obs_directory) = installer.obs_directory() {
+        window.set_obs_path(obs_directory.display().to_string().into());
+    }
+    refresh_obs_selection(&window, &installer);
+    window.set_install_obs(
+        status.obs_plugin_present && window.get_obs_available() && !window.get_obs_running(),
+    );
     if let Some((distribution, firewall_public)) = installer.installed_options() {
         window.set_install_method(match distribution {
             Distribution::Standalone => 1,
@@ -553,6 +626,30 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
                     window.set_game_path(path.display().to_string().into());
                     refresh_selected(&window, &installer);
                 }
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let installer = installer.clone();
+        window.on_browse_obs(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Choose the OBS Studio folder")
+                .pick_folder()
+            {
+                if let Some(window) = weak.upgrade() {
+                    window.set_obs_path(path.display().to_string().into());
+                    refresh_obs_selection(&window, &installer);
+                }
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let installer = installer.clone();
+        window.on_obs_path_edited(move |_| {
+            if let Some(window) = weak.upgrade() {
+                refresh_obs_selection(&window, &installer);
             }
         });
     }
@@ -689,14 +786,9 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
         let installer = installer.clone();
         window.on_refresh(move || {
             if let Some(window) = weak.upgrade() {
-                let obs_running = installer.obs_running();
-                window.set_obs_available(installer.obs_plugin_available());
-                window.set_obs_running(obs_running);
-                if obs_running {
-                    // Keep the core installation available while OBS owns the
-                    // optional plugin DLLs; the user can refresh after closing it.
-                    window.set_install_obs(false);
-                }
+                // Revalidate the selected portable/custom path as well as the
+                // running-process lock before enabling the optional component.
+                refresh_obs_selection(&window, &installer);
                 refresh_selected(&window, &installer);
             }
         });
@@ -779,6 +871,7 @@ fn elevated_install_arguments(
     distribution: Option<Distribution>,
     install_obs: bool,
     firewall_public: bool,
+    obs_directory: Option<&Path>,
 ) -> String {
     let mut args = vec![
         "--data-dir".into(),
@@ -800,6 +893,9 @@ fn elevated_install_arguments(
     }
     if install_obs {
         args.push("--install-obs".into());
+        if let Some(path) = obs_directory {
+            args.extend(["--obs-dir".into(), quote_cli_value(path)]);
+        }
     }
     if firewall_public {
         args.push("--firewall-public".into());
@@ -917,9 +1013,11 @@ mod tests {
             Some(Distribution::BeatblockPlus),
             true,
             true,
+            Some(Path::new(r"D:\Portable Apps\obs-studio")),
         );
         assert!(args.contains(r#"--game-dir "C:\Program Files\Beatblock""#));
         assert!(args.contains("--method beatblock-plus"));
         assert!(args.contains("--install-obs"));
+        assert!(args.contains(r#"--obs-dir "D:\Portable Apps\obs-studio""#));
     }
 }
