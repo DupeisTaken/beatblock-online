@@ -577,28 +577,31 @@ local function drawBroadcast(self)
   ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
   ui:text(target and ('CANDIDATE: '..target.displayName) or 'CANDIDATE: SELECT A PLAYER',306,105,270,'right','muted')
   for index,id in ipairs(STREAMS) do
-    local slot=authority=='host' and rendererSlot(id) or planSlot(id)
+    -- Capture the loop value for deferred button callbacks. Lua 5.1 closures
+    -- otherwise share the control variable and can target the final stream.
+    local streamId=id
+    local slot=authority=='host' and rendererSlot(streamId) or planSlot(streamId)
     local x=20+(index-1)*140
     ui:color(slot.active and (slot.featured and 'cyan' or 'raised') or 'panel')
     love.graphics.rectangle('fill',x,126,132,104,3,3)
     ui:color('raised'); love.graphics.rectangle('line',x+.5,126.5,131,103,3,3)
-    ui:text('STREAM '..id,x+7,134,118,'left',slot.active and 'black' or 'white')
+    ui:text('STREAM '..streamId,x+7,134,118,'left',slot.active and 'black' or 'white')
     ui:text(slot.participantName or slot.participant_name or 'UNASSIGNED',x+7,153,118,'left',slot.active and 'black' or 'muted')
-    local health=slot.lastError and 'ERROR' or slot.healthy and 'HEALTHY' or slot.active and 'STARTING' or 'STOPPED'
+    local health=slot.lastError and 'ERROR' or slot.parked and 'PARKED' or slot.healthy and 'HEALTHY' or slot.active and 'STARTING' or 'STOPPED'
     ui:text(health,x+7,173,118,'left',slot.lastError and 'red' or slot.healthy and 'green' or 'muted')
     if authority=='host' then
-      button(self,'broadcast_assign_'..id,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
-        if slot.active then BBT.command('renderer.stop',{slot=id})
+      button(self,'broadcast_assign_'..streamId,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
+        if slot.active then BBT.command('renderer.stop',{slot=streamId})
         elseif target and target.role~='spectator' then
           BBT.command('renderer.configure',{
-            slot=id,participantId=target.sessionId,participantName=target.displayName,
+            slot=streamId,participantId=target.sessionId,participantName=target.displayName,
             mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,
             delayMs=slot.delayMs,featured=slot.featured,
           })
         end
-      end,slot.active and 'yellow' or 'cyan',slot.active or (rendererEditable and target and target.role~='spectator'))
-      button(self,'broadcast_feature_'..id,x+68,196,57,25,'FEATURE',function()
-        BBT.command('renderer.configure',{slot=id,participantId=slot.participantId,participantName=slot.participantName,mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,delayMs=slot.delayMs,featured=true})
+      end,slot.active and 'yellow' or 'cyan',slot.active or ((rendererEditable or slot.parked) and target and target.role~='spectator'))
+      button(self,'broadcast_feature_'..streamId,x+68,196,57,25,'FEATURE',function()
+        BBT.command('renderer.configure',{slot=streamId,participantId=slot.participantId,participantName=slot.participantName,mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,delayMs=slot.delayMs,featured=true})
       end,'green',rendererEditable and slot.active and not slot.featured)
     end
   end

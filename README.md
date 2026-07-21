@@ -4,7 +4,7 @@ Beatblock Online is a Windows direct-IP competition mod. One player hosts a pass
 
 The latest prerelease is [`v0.3.0-alpha.3`](docs/releases/v0.3.0-alpha.3.md),
 which introduces the redesigned Online workspace, Commentator broadcast
-controls, synchronized final-shaded OBS renderer output, authenticated room and
+controls, first-note-synchronized full-chart OBS renderer output, authenticated room and
 local IPC boundaries, safer installer upgrades, bounded runtime resources, and
 reproducible native-artifact verification.
 

@@ -192,9 +192,8 @@ for (const contract of [
   [renderer, 'Renderer.frames.pointer + 32'],
   [renderer, 'function Renderer.applyState(advanceMotion)'],
   [renderer, 'function Renderer.afterGameUpdate()'],
-  [renderer, 'function Renderer.beginGameplayOnly(game)'],
-  [renderer, 'function Renderer.endGameplayOnly()'],
-  [renderer, "local entityList = rawget(_G, 'entities')"],
+  [renderer, 'Renderer.captureEnabled'],
+  [renderer, 'function Renderer.beginTapJudgement()'],
   [renderer, 'player.circleX = math.cos(radians) * radius'],
   [renderer, 'math.abs(sourceBeat - Renderer.beat) > .05'],
   [online, 'local initialWorkspace=options.workspace'],
@@ -248,14 +247,28 @@ if (!hooks.includes(playerViewCapture))
 if (!hooks.includes('pattern = "cs:draw()"'))
   throw new Error('Renderer capture does not run after the complete gamestate composition');
 if (
-  !hooks.includes('BBTRenderer.beginGameplayOnly(self)') ||
-  !hooks.includes('BBTRenderer.endGameplayOnly()')
+  hooks.includes('BBTRenderer.beginGameplayOnly(self)') ||
+  hooks.includes('BBTRenderer.endGameplayOnly()') ||
+  renderer.includes('function Renderer.beginGameplayOnly')
 )
-  throw new Error('Renderer does not bracket Game drawing with backdrop suppression');
+  throw new Error('Renderer still suppresses chart backgrounds or decorative effects');
+if (!hooks.includes("cs.name == 'Game' or cs.name == 'Results'"))
+  throw new Error('Renderer capture does not continue through the native Results screen');
 if (hooks.includes('BBTRenderer.captureSafe(self.canv, shuv.canvas)'))
   throw new Error('Renderer still exposes Beatblock palette-index colors as the Full stream');
 if (!renderer.includes('chromatic and chromatic.enabled'))
   throw new Error('Renderer Full mode omits Beatblock final chromatic-aberration pass');
+if (
+  !core.includes("BBT.send('render.anchor'") ||
+  !core.includes('judgementBeat = judgementBeat') ||
+  !core.includes('gameOptions.inputOffset=event and 0 or BBTRenderer.inputOffsetMs')
+)
+  throw new Error('Renderer does not replay authoritative source-offset tap judgements');
+if (
+  !renderer.includes('Renderer.tapQueue[#Renderer.tapQueue+1]') ||
+  !renderer.includes('function Renderer.beginTapJudgement()')
+)
+  throw new Error('Renderer does not preserve reliable tap edges as a one-shot queue');
 if (renderer.includes('cs and cs.notes') || renderer.includes('local function drawClean()'))
   throw new Error('Renderer still publishes the synthetic empty clean-mode scene');
 if (!hooks.includes('BBTRenderer.shouldHold() and not self.startPending then return end'))

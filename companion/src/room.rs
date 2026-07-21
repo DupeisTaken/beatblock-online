@@ -1464,6 +1464,7 @@ mod tests {
         room.set_verified(&host, true, None).unwrap();
         room.set_ready(&host, true).unwrap();
         room.schedule_start(false, 2_000).unwrap();
+        room.start_run(&host, 100).unwrap();
         room.finish_run(&host, "finished").unwrap();
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::SetComplete);
 

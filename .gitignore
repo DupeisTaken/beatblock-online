@@ -64,6 +64,7 @@ companion-data/
 exports/
 reports/ui/
 reports/obs-stream/
+reports/renderer-game-e2e.bmp
 .dev-mods/
 __pycache__/
 *.py[cod]

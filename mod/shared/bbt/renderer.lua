@@ -10,7 +10,9 @@ local Renderer = {
   readbackPending = {false,false}, readbackRequests = {nil,nil}, readbackTickets = {0,0},
   readbackStartedAt = {nil,nil},
   playing = false, hasInput = false, droppedFrames = 0, nextFrameAt = nil,
-  previousAngle = nil, motionSequence = 0,
+  previousAngle = nil, motionSequence = 0, freshInput = false,
+  captureEnabled = false, parked = false, inputOffsetMs = 0,
+  tapQueue = {}, currentTapEvent = nil, sourceVolume = 1, sourceVolumeCaptured = false,
 }
 Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
@@ -25,7 +27,15 @@ if ok then ffi.cdef[[
   BOOL UnmapViewOfFile(const void*); BOOL CloseHandle(HANDLE);
   int MultiByteToWideChar(unsigned int, DWORD, const char*, int, wchar_t*, int);
   void* GetActiveWindow(void); int ShowWindow(void*, int);
+  int PHYSFS_mount(const char*, const char*, int);
+  int PHYSFS_isInit(void);
+  const char* PHYSFS_getLastError(void);
+  int PHYSFS_getLastErrorCode(void);
+  const char* PHYSFS_getErrorByCode(int);
 ]] end
+local loveNativeOk,loveNative = false,nil
+if ok then loveNativeOk,loveNative = pcall(ffi.load, 'love.dll') end
+if loveNativeOk then Renderer.loveNative = loveNative elseif ok then Renderer.loveNative = ffi.C end
 
 local function wide(value)
   local length = ffi.C.MultiByteToWideChar(65001, 0, value, #value, nil, 0)
@@ -69,10 +79,6 @@ local function reportError(message)
 end
 
 function Renderer.shutdown()
-  -- A draw failure can terminate the child between the pre/post draw hooks.
-  -- Restore chart state before releasing resources in case Beatblock's normal
-  -- error path attempts one final draw.
-  if Renderer.endGameplayOnly then Renderer.endGameplayOnly() end
   unmapFile(Renderer.inputs)
   unmapFile(Renderer.frames)
   -- Drop pending GPU readbacks and canvases when initialization fails. Normal
@@ -87,6 +93,7 @@ end
 
 local function failInitialization(message)
   Renderer.initializationError = message
+  reportError(message)
   Renderer.shutdown()
   if love and love.event and love.event.quit then love.event.quit(1) else os.exit(1) end
   return Renderer
@@ -143,7 +150,41 @@ function Renderer.start()
   if not Renderer.active then return end
   local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
   if not chart or chart == '' then return end
-  if not string.match(chart, '[/\\]$') then chart = chart .. '/' end
+  -- Transferred and manually selected charts are represented by absolute
+  -- native directories in the companion. Beatblock's loader reads through
+  -- LÖVE/PhysFS, so expose that directory under a stable virtual path before
+  -- the threaded Game loader attempts to read manifest.json.
+  if string.match(chart, '^%a:[/\\]') or string.match(chart, '^[/\\][/\\]') then
+    local mountPoint = '/__bbt_renderer_chart'
+    local nativeChart = string.gsub(chart, '\\', '/')
+    if not string.match(nativeChart, '/$') then nativeChart = nativeChart .. '/' end
+    local mountCall,mounted = pcall(function()
+      return Renderer.loveNative and Renderer.loveNative.PHYSFS_mount(nativeChart, mountPoint, 1) ~= 0
+    end)
+    if not mounted then
+      local mountError = mountCall and 'unknown PhysFS error' or tostring(mounted)
+      if mountCall and Renderer.loveNative then
+        local detailCall,detail = pcall(function()
+          local legacy = Renderer.loveNative.PHYSFS_getLastError()
+          if legacy ~= nil then return legacy end
+          local code = Renderer.loveNative.PHYSFS_getLastErrorCode()
+          return Renderer.loveNative.PHYSFS_getErrorByCode(code)
+        end)
+        if detailCall and detail ~= nil then mountError = ffi.string(detail) end
+      end
+      local probe = io.open(nativeChart .. 'manifest.json', 'rb')
+      local readable = probe ~= nil
+      if probe then probe:close() end
+      local initCall,initialized = pcall(function()
+        return Renderer.loveNative and Renderer.loveNative.PHYSFS_isInit() ~= 0
+      end)
+      return failInitialization('renderer chart could not be mounted: ' .. mountError
+        .. ' (readable=' .. tostring(readable)
+        .. ', physfs=' .. tostring(initCall and initialized) .. ')')
+    end
+    chart = string.sub(mountPoint, 2) .. '/'
+  end
+  if chart ~= '' and not string.match(chart, '[/\\]$') then chart = chart .. '/' end
   local variantInfo = nil
   if variant and variant ~= '' and dpf and dpf.loadJson then
     local loaded, manifest = pcall(dpf.loadJson, chart .. 'manifest.json')
@@ -183,7 +224,16 @@ function Renderer.start()
   -- preserves that shape and lets Beatblock load the song without attempting
   -- to index a boolean sentinel.
   cs:init(chart, variantInfo, nil, {})
-  if not Renderer.audioEnabled and cs.source and cs.source.setVolume then cs.source:setVolume(0) end
+  if cs.source and cs.source.getVolume then
+    local volumeOk,volume=pcall(cs.source.getVolume,cs.source)
+    if volumeOk and type(volume)=='number' then
+      Renderer.sourceVolume=volume
+      Renderer.sourceVolumeCaptured=true
+    end
+  end
+  -- Even the featured child stays muted while its video is hidden in the
+  -- first-note cache. Audio is released on the same synchronized map commit.
+  if cs.source and cs.source.setVolume then cs.source:setVolume(0) end
 end
 
 function Renderer.update()
@@ -195,6 +245,8 @@ function Renderer.update()
   if beat ~= beat or angle ~= angle or beat == math.huge or beat == -math.huge
     or angle == math.huge or angle == -math.huge then return end
   local flags = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 30)[0])
+  local judgementBeat = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 12)[0])
+  local inputOffsetMs = tonumber(ffi.cast('float*', Renderer.inputs.pointer + 16)[0])
   Renderer.lastInputSequence = sequence
   Renderer.previousTapMask = Renderer.tapMask
   Renderer.tapMask = tonumber(ffi.cast('uint16_t*', Renderer.inputs.pointer + 28)[0])
@@ -202,8 +254,49 @@ function Renderer.update()
   Renderer.previousAngle = Renderer.angle
   Renderer.angle = angle % 360
   Renderer.playing = flags % 2 == 1
+  Renderer.parked = math.floor(flags / 8) % 2 == 1
+  Renderer.captureEnabled = math.floor(flags / 16) % 2 == 1
+  if cs and cs.source and cs.source.getVolume and not Renderer.sourceVolumeCaptured then
+    local volumeOk,volume=pcall(cs.source.getVolume,cs.source)
+    if volumeOk and type(volume)=='number' then
+      Renderer.sourceVolume=volume
+      Renderer.sourceVolumeCaptured=true
+    end
+  end
+  if cs and cs.source and cs.source.setVolume then
+    local volume=Renderer.audioEnabled and Renderer.captureEnabled and not Renderer.parked
+      and Renderer.sourceVolume or 0
+    pcall(cs.source.setVolume,cs.source,volume)
+  end
+  Renderer.inputOffsetMs = inputOffsetMs == inputOffsetMs and inputOffsetMs or 0
   Renderer.hasInput = true
-  Renderer.applyState(false)
+  Renderer.freshInput = not Renderer.parked
+  if math.floor(flags / 32) % 2 == 1 then
+    -- The cohort barrier owns the first visible motion sample. Do not blend
+    -- from a hidden pre-roll angle or carry an old held-key edge across it.
+    Renderer.previousAngle = Renderer.angle
+    Renderer.motionSequence = sequence
+    Renderer.previousTapMask = Renderer.tapMask
+    Renderer.tapQueue = {}
+    Renderer.currentTapEvent = nil
+  end
+  local pressed = math.floor(flags / 64) % 2 == 1
+  local released = math.floor(flags / 128) % 2 == 1
+  if (pressed or released) and judgementBeat == judgementBeat then
+    if #Renderer.tapQueue>=256 then table.remove(Renderer.tapQueue,1) end
+    Renderer.tapQueue[#Renderer.tapQueue+1] = {
+      pressed=pressed,released=released,judgementBeat=judgementBeat,
+    }
+  end
+  if Renderer.parked then return end
+  if Renderer.shouldHold() then
+    Renderer.previousAngle = Renderer.angle
+    Renderer.motionSequence = sequence
+    Renderer.applyState(true)
+    Renderer.freshInput = false
+  else
+    Renderer.applyState(false)
+  end
 end
 
 -- Beatblock's hidden window still runs its native mouse/controller update,
@@ -253,94 +346,27 @@ function Renderer.applyState(advanceMotion)
 end
 
 function Renderer.afterGameUpdate()
+  if not Renderer.freshInput then return end
   Renderer.applyState(true)
+  Renderer.freshInput = false
 end
 
 function Renderer.shouldHold()
-  return Renderer.active and (not Renderer.hasInput or not Renderer.playing)
+  return Renderer.active and not Renderer.parked and (not Renderer.hasInput or not Renderer.playing)
+end
+
+function Renderer.beginTapJudgement()
+  Renderer.currentTapEvent=table.remove(Renderer.tapQueue,1)
+  return Renderer.currentTapEvent
 end
 
 function Renderer.tapInputs()
-  return Renderer.tapMask ~= 0 and Renderer.previousTapMask == 0,
-    Renderer.tapMask == 0 and Renderer.previousTapMask ~= 0
+  local event=Renderer.currentTapEvent
+  return event and event.pressed or false,event and event.released or false
 end
 
--- OBS is a competition view, not a second copy of the chart's decorative
--- artwork. Keep notes, the player, hit feedback, HUD, and screen-space VFX,
--- while temporarily hiding scenery only inside the isolated renderer child.
-local gameplayEntityNames = {
-  player=true, block=true, bounce=true, extratap=true, hold=true,
-  mine=true, minehold=true, side=true, trace=true, tapeffect=true,
-  hitparticle=true, missparticle=true, sideparticle=true, mineexplosion=true,
-}
-
-local function className(entity)
-  local class = entity and entity.class
-  local value = type(class) == 'table' and class.name or class
-  return string.lower(tostring(value or ''))
-end
-
-local function isGameplayEntity(entity, game)
-  if not entity then return false end
-  if game and entity == game.p then return true end
-  if type(entity.isInstanceOf) == 'function' then
-    if Player and entity:isInstanceOf(Player) then return true end
-    if Block and entity:isInstanceOf(Block) then return true end
-  end
-  return gameplayEntityNames[className(entity)] == true
-end
-
-function Renderer.beginGameplayOnly(game)
-  if not Renderer.active or Renderer.backgroundState then return end
-  game = game or cs
-  if not game then return end
-  local vfx = game.vfx
-  local state = {
-    game=game,
-    bgColor=game.bgColor,
-    bg=game.bg,
-    drawVideoBG=game.drawVideoBG,
-    entities={},
-    vfx=vfx,
-    bgNoise=vfx and vfx.bgNoise,
-    bgNoiseOld=vfx and vfx.bgNoise_OLD and vfx.bgNoise_OLD.enable,
-  }
-  Renderer.backgroundState = state
-  game.bgColor = 0
-  game.bg = nil
-  game.drawVideoBG = false
-  if vfx then
-    vfx.bgNoise = 0
-    if vfx.bgNoise_OLD then vfx.bgNoise_OLD.enable = false end
-  end
-  local entityList = rawget(_G, 'entities')
-  if type(entityList) == 'table' then
-    for _, entity in ipairs(entityList) do
-      if not isGameplayEntity(entity, game) then
-        state.entities[#state.entities + 1] = {entity=entity, skipRender=entity.skipRender}
-        entity.skipRender = true
-      end
-    end
-  end
-end
-
-function Renderer.endGameplayOnly()
-  local state = Renderer.backgroundState
-  if not state then return end
-  Renderer.backgroundState = nil
-  local game = state.game
-  if game then
-    game.bgColor = state.bgColor
-    game.bg = state.bg
-    game.drawVideoBG = state.drawVideoBG
-  end
-  if state.vfx then
-    state.vfx.bgNoise = state.bgNoise
-    if state.vfx.bgNoise_OLD then state.vfx.bgNoise_OLD.enable = state.bgNoiseOld end
-  end
-  for _, saved in ipairs(state.entities) do
-    saved.entity.skipRender = saved.skipRender
-  end
+function Renderer.endTapJudgement()
+  Renderer.currentTapEvent=nil
 end
 
 local function drawSource(source, finalShader)
@@ -450,7 +476,7 @@ local function finishReadbacks()
 end
 
 function Renderer.capture(cleanSource, shadedSource, finalShader)
-  if not Renderer.active or not Renderer.frames then return end
+  if not Renderer.active or not Renderer.frames or not Renderer.captureEnabled or Renderer.parked then return end
   local now = love.timer.getTime()
   -- LÖVE 12 returns a GraphicsReadback object; it does not accept a callback.
   -- Poll completed requests before reserving an output canvas for this frame.

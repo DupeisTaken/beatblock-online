@@ -16,7 +16,16 @@ try {
   await mkdir(resolve(stage, 'bbt'), { recursive: true });
   await copyFile(resolve(root, 'tests/renderer-harness/main.lua'), resolve(stage, 'main.lua'));
   await copyFile(resolve(root, 'mod/shared/bbt/renderer.lua'), resolve(stage, 'bbt/renderer.lua'));
-  await writeFile(statePath, Buffer.alloc(32));
+  const inputState = Buffer.alloc(32);
+  inputState[0] = 3;
+  inputState.writeUInt32LE(1, 8);
+  inputState.writeFloatLE(Number.NaN, 12);
+  inputState.writeFloatLE(0, 16);
+  inputState.writeFloatLE(-8, 20);
+  inputState.writeFloatLE(135, 24);
+  // Capture enabled with playing unset exercises the stable held-pose path.
+  inputState.writeUInt16LE(1 << 4, 30);
+  await writeFile(statePath, inputState);
   const header = Buffer.alloc(64);
   header.write('BBTFRAME', 0, 'ascii');
   header.writeUInt32LE(2, 8);
@@ -111,14 +120,14 @@ try {
   const centerPixel = [...frame.subarray(center, center + 4)];
   assert.deepEqual(
     centerPixel,
-    [153, 102, 51, 255],
-    `Full mode omitted the shaded player view or its final screen-space effect`,
+    [76, 204, 25, 255],
+    `Full mode omitted the shaded Results view or stopped its final screen-space effect`,
   );
   const leftPixel = [...frame.subarray(offset, offset + 4)];
   assert.deepEqual(leftPixel, [0, 0, 0, 255], 'aspect-ratio pillarbox must remain opaque black');
 
   console.log(
-    `Verified final shaded OBS frame at 320x180 (${sequence} published, ${dropped} dropped).`,
+    `Verified gameplay-to-Results OBS capture at 320x180 (${sequence} published, ${dropped} dropped).`,
   );
 } finally {
   await rm(stage, { recursive: true, force: true });

@@ -5,7 +5,7 @@ use crate::model::{
 use anyhow::{bail, Context, Result};
 use memmap2::MmapMut;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{File, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
@@ -16,6 +16,44 @@ use std::{
 const FRAME_HEADER: usize = 64;
 const FRAME_COUNT: usize = 3;
 const MAX_FRAME_SIZE: usize = 1920 * 1080 * 4;
+const MAX_RENDER_SAMPLES: usize = 60 * 60;
+const MAX_RENDER_TAPS: usize = 2_048;
+
+const FLAG_PLAYING: u16 = 1;
+const FLAG_PARKED: u16 = 1 << 3;
+const FLAG_CAPTURE_ENABLED: u16 = 1 << 4;
+const FLAG_SYNC_RELEASE: u16 = 1 << 5;
+const FLAG_TAP_PRESSED: u16 = 1 << 6;
+const FLAG_TAP_RELEASED: u16 = 1 << 7;
+
+#[derive(Clone)]
+struct BufferedRenderSample {
+    sample: RenderSample,
+    received_at_us: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RenderAnchor {
+    first_note_beat: f32,
+    input_offset_ms: f32,
+    source_time_us: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RenderTap {
+    sequence: u64,
+    beat: f32,
+    judgement_beat: f32,
+    pressed: bool,
+    released: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SyncEpoch {
+    participants: Vec<String>,
+    release_at_us: u64,
+    released: bool,
+}
 
 /// Creates an isolated APPDATA tree for spectator Beatblock processes. Keeping
 /// this outside the installer avoids pulling installer UI/payload code into the
@@ -44,9 +82,17 @@ pub struct RendererManager {
     data_dir: PathBuf,
     slots: Mutex<Vec<RendererSlot>>,
     processes: Mutex<HashMap<String, Child>>,
-    render_samples: Mutex<HashMap<String, VecDeque<RenderSample>>>,
+    render_samples: Mutex<HashMap<String, VecDeque<BufferedRenderSample>>>,
+    render_anchors: Mutex<HashMap<String, RenderAnchor>>,
+    render_taps: Mutex<HashMap<String, VecDeque<RenderTap>>>,
     player_states: Mutex<HashMap<String, VecDeque<GameplayState>>>,
     input_maps: Mutex<HashMap<String, MmapMut>>,
+    input_sequences: Mutex<HashMap<String, u32>>,
+    input_sources: Mutex<HashMap<String, String>>,
+    tap_cursors: Mutex<HashMap<String, u64>>,
+    sync_epoch: Mutex<Option<SyncEpoch>>,
+    presentation_origin_us: Mutex<Option<u64>>,
+    presentation_samples: Mutex<HashMap<String, RenderSample>>,
     frame_observations: Mutex<HashMap<String, (u64, u64, u64)>>,
 }
 
@@ -63,8 +109,16 @@ impl RendererManager {
             slots: Mutex::new(slots),
             processes: Mutex::new(HashMap::new()),
             render_samples: Mutex::new(HashMap::new()),
+            render_anchors: Mutex::new(HashMap::new()),
+            render_taps: Mutex::new(HashMap::new()),
             player_states: Mutex::new(HashMap::new()),
             input_maps: Mutex::new(HashMap::new()),
+            input_sequences: Mutex::new(HashMap::new()),
+            input_sources: Mutex::new(HashMap::new()),
+            tap_cursors: Mutex::new(HashMap::new()),
+            sync_epoch: Mutex::new(None),
+            presentation_origin_us: Mutex::new(None),
+            presentation_samples: Mutex::new(HashMap::new()),
             frame_observations: Mutex::new(HashMap::new()),
         })
     }
@@ -158,6 +212,7 @@ impl RendererManager {
             configured.delay_ms = delay.clamp(250, 1_500);
         }
         configured.active = configured.participant_id.is_some();
+        configured.parked = false;
         let render_changed = previous.participant_id != configured.participant_id
             || previous.mode != configured.mode
             || previous.width != configured.width
@@ -174,7 +229,19 @@ impl RendererManager {
         }
         if render_changed || !self.frame_path(&configured.id).is_file() {
             self.create_frame_ring(&configured)?;
-            self.create_input_map(&configured.id)?;
+            self.reset_input_map(&configured.id)?;
+            self.input_sources
+                .lock()
+                .expect("renderer input sources poisoned")
+                .remove(&configured.id);
+            self.tap_cursors
+                .lock()
+                .expect("renderer tap cursors poisoned")
+                .remove(&configured.id);
+            *self
+                .sync_epoch
+                .lock()
+                .expect("renderer sync epoch poisoned") = None;
             self.frame_observations
                 .lock()
                 .expect("renderer observations poisoned")
@@ -225,17 +292,102 @@ impl RendererManager {
         })
     }
 
-    pub fn push_sample(&self, participant_id: &str, mut sample: RenderSample) {
-        sample.run_time_us = crate::room::unix_ms() * 1_000;
+    pub fn push_sample(&self, participant_id: &str, sample: RenderSample) {
+        self.push_sample_at(participant_id, sample, crate::room::unix_ms() * 1_000);
+    }
+
+    fn push_sample_at(&self, participant_id: &str, sample: RenderSample, received_at_us: u64) {
+        // Keep the sender's monotonic timestamp. Arrival time is recorded
+        // separately for pre-anchor buffering; after the first-note barrier all
+        // sources are selected in their own source-relative clock domains.
         let mut buffers = self.render_samples.lock().expect("render buffers poisoned");
         let buffer = buffers.entry(participant_id.into()).or_default();
-        buffer.push_back(sample);
-        while buffer.len() > 60 * 5 {
+        if buffer
+            .back()
+            .is_some_and(|current| sample.sequence <= current.sample.sequence)
+        {
+            return;
+        }
+        buffer.push_back(BufferedRenderSample {
+            sample,
+            received_at_us,
+        });
+        while buffer.len() > MAX_RENDER_SAMPLES {
             buffer.pop_front();
         }
     }
 
-    pub fn push_player_state(&self, participant_id: &str, state: GameplayState) {
+    pub fn push_render_anchor(
+        &self,
+        participant_id: &str,
+        first_note_beat: f32,
+        input_offset_ms: f32,
+    ) {
+        if !first_note_beat.is_finite() || !input_offset_ms.is_finite() {
+            return;
+        }
+        self.render_anchors
+            .lock()
+            .expect("renderer anchors poisoned")
+            .entry(participant_id.into())
+            .and_modify(|anchor| {
+                anchor.first_note_beat = first_note_beat;
+                anchor.input_offset_ms = input_offset_ms;
+            })
+            .or_insert(RenderAnchor {
+                first_note_beat,
+                input_offset_ms,
+                source_time_us: None,
+            });
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+    }
+
+    pub fn push_tap(
+        &self,
+        participant_id: &str,
+        sequence: u64,
+        beat: f32,
+        judgement_beat: f32,
+        pressed: bool,
+        released: bool,
+    ) {
+        if (!pressed && !released) || !beat.is_finite() || !judgement_beat.is_finite() {
+            return;
+        }
+        let mut taps = self.render_taps.lock().expect("renderer taps poisoned");
+        let buffer = taps.entry(participant_id.into()).or_default();
+        if buffer.iter().any(|tap| tap.sequence == sequence) {
+            return;
+        }
+        buffer.push_back(RenderTap {
+            sequence,
+            beat,
+            judgement_beat,
+            pressed,
+            released,
+        });
+        while buffer.len() > MAX_RENDER_TAPS {
+            buffer.pop_front();
+        }
+    }
+
+    pub fn push_player_state(&self, participant_id: &str, mut state: GameplayState) {
+        if state.beat == 0.0 {
+            state.beat = self
+                .render_samples
+                .lock()
+                .ok()
+                .and_then(|buffers| {
+                    buffers
+                        .get(participant_id)
+                        .and_then(|buffer| buffer.back())
+                        .map(|buffered| buffered.sample.beat as f64)
+                })
+                .unwrap_or(0.0);
+        }
         let mut buffers = self
             .player_states
             .lock()
@@ -247,16 +399,21 @@ impl RendererManager {
         }
     }
 
-    pub fn aligned_featured_state(&self, now_ms: u64) -> Option<GameplayState> {
+    pub fn aligned_featured_state(&self, _now_ms: u64) -> Option<GameplayState> {
         let featured = self.slots().into_iter().find(|slot| slot.featured)?;
         let participant_id = featured.participant_id?;
-        let target = now_ms.saturating_sub(featured.delay_ms as u64);
+        let target_beat = self
+            .presentation_samples
+            .lock()
+            .ok()?
+            .get(&participant_id)?
+            .beat as f64;
         let buffers = self.player_states.lock().ok()?;
         let buffer = buffers.get(&participant_id)?;
         buffer
             .iter()
             .rev()
-            .find(|state| state.updated_at_ms <= target)
+            .find(|state| state.beat <= target_beat + f64::EPSILON)
             .cloned()
     }
 
@@ -279,32 +436,223 @@ impl RendererManager {
     }
 
     pub fn write_aligned_inputs(&self, now_us: u64) {
-        let slots = self.slots();
+        let slots = self
+            .slots()
+            .into_iter()
+            .filter(|slot| slot.active)
+            .collect::<Vec<_>>();
+        if slots.is_empty() {
+            return;
+        }
+        let common_delay_us = slots
+            .iter()
+            .map(|slot| slot.delay_ms as u64 * 1_000)
+            .max()
+            .unwrap_or(500_000);
+        let mut participants = slots
+            .iter()
+            .filter_map(|slot| slot.participant_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        participants.sort();
+
         let buffers = self.render_samples.lock().expect("render buffers poisoned");
+        let mut anchors = self
+            .render_anchors
+            .lock()
+            .expect("renderer anchors poisoned");
+        let mut anchor_times = HashMap::new();
+        for participant in &participants {
+            let Some(anchor) = anchors.get_mut(participant) else {
+                continue;
+            };
+            if anchor.source_time_us.is_none() {
+                anchor.source_time_us = buffers.get(participant).and_then(|buffer| {
+                    buffer
+                        .iter()
+                        .find(|buffered| {
+                            buffered.sample.flags & FLAG_PLAYING != 0
+                                && buffered.sample.beat + 0.0001 >= anchor.first_note_beat
+                        })
+                        .map(|buffered| buffered.sample.run_time_us)
+                });
+            }
+            if let Some(source_time_us) = anchor.source_time_us {
+                anchor_times.insert(participant.clone(), source_time_us);
+            }
+        }
+
+        let mut epoch = self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned");
+        if epoch
+            .as_ref()
+            .is_some_and(|current| current.participants != participants)
+        {
+            *epoch = None;
+        }
+        if epoch.is_none() && anchor_times.len() == participants.len() {
+            let existing_origin = *self
+                .presentation_origin_us
+                .lock()
+                .expect("renderer presentation origin poisoned");
+            *epoch = Some(SyncEpoch {
+                participants: participants.clone(),
+                release_at_us: existing_origin
+                    .unwrap_or_else(|| now_us.saturating_add(common_delay_us)),
+                released: existing_origin.is_some(),
+            });
+        }
+        let release_at_us = epoch.as_ref().map(|value| value.release_at_us);
+        let released = release_at_us.is_some_and(|release| now_us >= release);
+        let first_release = released && epoch.as_ref().is_some_and(|value| !value.released);
+
         let mut maps = self.input_maps.lock().expect("input maps poisoned");
-        for slot in slots.into_iter().filter(|slot| slot.active) {
+        let taps = self.render_taps.lock().expect("renderer taps poisoned");
+        let mut tap_cursors = self
+            .tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned");
+        let mut input_sources = self
+            .input_sources
+            .lock()
+            .expect("renderer input sources poisoned");
+        let mut input_sequences = self
+            .input_sequences
+            .lock()
+            .expect("renderer input sequences poisoned");
+        let mut presentation = self
+            .presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned");
+
+        for slot in slots {
             let Some(participant) = slot.participant_id.as_deref() else {
                 continue;
             };
             let Some(buffer) = buffers.get(participant) else {
                 continue;
             };
-            let target = now_us.saturating_sub(slot.delay_ms as u64 * 1_000);
-            let Some(sample) = buffer
-                .iter()
-                .rev()
-                .find(|sample| sample.run_time_us <= target)
-            else {
-                continue;
+            let selected = if released {
+                let Some(anchor_time_us) = anchor_times.get(participant).copied() else {
+                    continue;
+                };
+                let elapsed = now_us.saturating_sub(release_at_us.unwrap_or(now_us));
+                let target_source_us = anchor_time_us.saturating_add(elapsed);
+                let Some(selected) = buffer
+                    .iter()
+                    .rev()
+                    .find(|buffered| buffered.sample.run_time_us <= target_source_us)
+                else {
+                    continue;
+                };
+                selected
+            } else {
+                let target_receipt_us = now_us.saturating_sub(common_delay_us);
+                let Some(selected) = buffer
+                    .iter()
+                    .rev()
+                    .find(|buffered| buffered.received_at_us <= target_receipt_us)
+                else {
+                    continue;
+                };
+                selected
             };
+            let sample = &selected.sample;
             let Some(map) = maps.get_mut(&slot.id) else {
                 continue;
             };
-            let bytes = sample.encode();
+
+            let source_changed =
+                input_sources.get(&slot.id).map(String::as_str) != Some(participant);
+            if source_changed {
+                input_sources.insert(slot.id.clone(), participant.to_owned());
+                let baseline = taps
+                    .get(participant)
+                    .and_then(|events| {
+                        events
+                            .iter()
+                            .rev()
+                            .find(|event| event.beat < sample.beat - 0.05)
+                    })
+                    .map(|event| event.sequence)
+                    .unwrap_or(0);
+                tap_cursors.insert(slot.id.clone(), baseline);
+            }
+
+            let cursor = tap_cursors.get(&slot.id).copied().unwrap_or(0);
+            // A first-note sample can become receipt-delay eligible one input
+            // tick before the cohort barrier releases. Never consume its
+            // reliable edge while capture is still hidden.
+            let tap = released
+                .then(|| {
+                    taps.get(participant).and_then(|events| {
+                        events.iter().find(|event| {
+                            event.sequence > cursor && event.beat <= sample.beat + 0.001
+                        })
+                    })
+                })
+                .flatten();
+            if let Some(tap) = tap {
+                tap_cursors.insert(slot.id.clone(), tap.sequence);
+            }
+
+            let mut mapped_sample = sample.clone();
+            if first_release {
+                if let Some(anchor) = anchors.get(participant) {
+                    mapped_sample.beat = anchor.first_note_beat;
+                }
+            }
+            let mut bytes = mapped_sample.encode();
+            let mut flags = sample.flags
+                & !(FLAG_PARKED
+                    | FLAG_CAPTURE_ENABLED
+                    | FLAG_SYNC_RELEASE
+                    | FLAG_TAP_PRESSED
+                    | FLAG_TAP_RELEASED);
+            if released {
+                flags |= FLAG_CAPTURE_ENABLED;
+            }
+            if first_release || (released && source_changed) {
+                flags |= FLAG_SYNC_RELEASE;
+            }
+            let judgement_beat = tap.map(|event| event.judgement_beat).unwrap_or(f32::NAN);
+            bytes[12..16].copy_from_slice(&judgement_beat.to_le_bytes());
+            let input_offset_ms = anchors
+                .get(participant)
+                .map(|anchor| anchor.input_offset_ms)
+                .unwrap_or(0.0);
+            bytes[16..20].copy_from_slice(&input_offset_ms.to_le_bytes());
+            if tap.is_some_and(|event| event.pressed) {
+                flags |= FLAG_TAP_PRESSED;
+            }
+            if tap.is_some_and(|event| event.released) {
+                flags |= FLAG_TAP_RELEASED;
+            }
+            bytes[30..32].copy_from_slice(&flags.to_le_bytes());
+
+            let sequence = input_sequences.entry(slot.id.clone()).or_insert(0);
+            *sequence = sequence.wrapping_add(1).max(1);
+            bytes[8..12].copy_from_slice(&sequence.to_le_bytes());
             map[..8].copy_from_slice(&bytes[..8]);
             map[12..].copy_from_slice(&bytes[12..]);
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
             map[8..12].copy_from_slice(&bytes[8..12]);
+
+            if released {
+                presentation.insert(participant.to_owned(), mapped_sample);
+            }
+        }
+        if first_release {
+            if let Some(epoch) = epoch.as_mut() {
+                epoch.released = true;
+                *self
+                    .presentation_origin_us
+                    .lock()
+                    .expect("renderer presentation origin poisoned") = Some(epoch.release_at_us);
+            }
         }
     }
 
@@ -414,6 +762,7 @@ impl RendererManager {
             slot.participant_id = None;
             slot.participant_name = None;
             slot.active = false;
+            slot.parked = false;
             slot.healthy = false;
             slot.frame_sequence = 0;
             slot.dropped_frames = 0;
@@ -428,10 +777,192 @@ impl RendererManager {
                 format!("reset renderer frame ring failed: {error}"),
             );
         }
+        if let Err(error) = self.reset_input_map(&reset.id) {
+            self.set_error(
+                &reset.id,
+                format!("reset renderer input map failed: {error}"),
+            );
+        }
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .remove(&reset.id);
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .remove(&reset.id);
+        self.presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned")
+            .clear();
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
         self.frame_observations
             .lock()
             .expect("renderer observations poisoned")
             .remove(&reset.id);
+    }
+
+    /// Detaches a live slot without destroying its child. The hidden renderer
+    /// keeps advancing native chart events with capture disabled, allowing a
+    /// participant-only rebind during the same race without losing prior VFX.
+    pub fn park_slot(&self, slot_id: &str) -> Result<RendererSlot> {
+        let id = slot_id.to_ascii_uppercase();
+        if !self
+            .processes
+            .lock()
+            .expect("renderer processes poisoned")
+            .contains_key(&id)
+        {
+            bail!("renderer slot has no warm child to park");
+        }
+        let parked = {
+            let mut slots = self.slots.lock().expect("renderer slots poisoned");
+            let slot = slots
+                .iter_mut()
+                .find(|slot| slot.id.eq_ignore_ascii_case(&id))
+                .context("unknown renderer slot")?;
+            slot.participant_id = None;
+            slot.participant_name = None;
+            slot.active = false;
+            slot.parked = true;
+            slot.clone()
+        };
+        if let Some(map) = self
+            .input_maps
+            .lock()
+            .expect("input maps poisoned")
+            .get_mut(&id)
+        {
+            let mut flags = u16::from_le_bytes(map[30..32].try_into().unwrap_or_default());
+            flags &=
+                !(FLAG_CAPTURE_ENABLED | FLAG_SYNC_RELEASE | FLAG_TAP_PRESSED | FLAG_TAP_RELEASED);
+            flags |= FLAG_PLAYING | FLAG_PARKED;
+            map[12..16].copy_from_slice(&f32::NAN.to_le_bytes());
+            map[30..32].copy_from_slice(&flags.to_le_bytes());
+            let mut sequences = self
+                .input_sequences
+                .lock()
+                .expect("renderer input sequences poisoned");
+            let sequence = sequences.entry(id.clone()).or_insert(0);
+            *sequence = sequence.wrapping_add(1).max(1);
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+            map[8..12].copy_from_slice(&sequence.to_le_bytes());
+        }
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .remove(&id);
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .remove(&id);
+        self.presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned")
+            .clear();
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+        Ok(parked)
+    }
+
+    pub fn rebind_parked(
+        &self,
+        slot_id: &str,
+        participant_id: String,
+        participant_name: Option<String>,
+    ) -> Result<RendererSlot> {
+        if participant_id.is_empty() {
+            bail!("renderer participant is required");
+        }
+        let id = slot_id.to_ascii_uppercase();
+        if !self
+            .processes
+            .lock()
+            .expect("renderer processes poisoned")
+            .contains_key(&id)
+        {
+            bail!("parked renderer child is no longer running");
+        }
+        let rebound = {
+            let mut slots = self.slots.lock().expect("renderer slots poisoned");
+            let slot = slots
+                .iter_mut()
+                .find(|slot| slot.id.eq_ignore_ascii_case(&id))
+                .context("unknown renderer slot")?;
+            if !slot.parked {
+                bail!("renderer slot is not parked");
+            }
+            slot.participant_id = Some(participant_id);
+            slot.participant_name = participant_name;
+            slot.active = true;
+            slot.parked = false;
+            slot.clone()
+        };
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .remove(&id);
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .remove(&id);
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+        Ok(rebound)
+    }
+
+    pub fn begin_run(&self) {
+        self.render_samples
+            .lock()
+            .expect("render buffers poisoned")
+            .clear();
+        self.render_anchors
+            .lock()
+            .expect("renderer anchors poisoned")
+            .clear();
+        self.render_taps
+            .lock()
+            .expect("renderer taps poisoned")
+            .clear();
+        self.player_states
+            .lock()
+            .expect("player state buffers poisoned")
+            .clear();
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .clear();
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .clear();
+        self.presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned")
+            .clear();
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+        *self
+            .presentation_origin_us
+            .lock()
+            .expect("renderer presentation origin poisoned") = None;
+        let ids = self
+            .slots()
+            .into_iter()
+            .map(|slot| slot.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.reset_input_map(&id);
+        }
     }
 
     /// Stops only the child process while preserving its desired slot config.
@@ -462,6 +993,22 @@ impl RendererManager {
             .lock()
             .expect("player state buffers poisoned")
             .remove(participant_id);
+        self.render_anchors
+            .lock()
+            .expect("renderer anchors poisoned")
+            .remove(participant_id);
+        self.render_taps
+            .lock()
+            .expect("renderer taps poisoned")
+            .remove(participant_id);
+        self.presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned")
+            .remove(participant_id);
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
     }
 
     fn kill_process(&self, slot_id: &str) {
@@ -506,7 +1053,19 @@ impl RendererManager {
             .lock()
             .expect("renderer observations poisoned");
         let mut slots = self.slots.lock().expect("renderer slots poisoned");
-        for slot in slots.iter_mut().filter(|slot| slot.active) {
+        for slot in slots.iter_mut().filter(|slot| slot.active || slot.parked) {
+            if slot.parked {
+                if let Some((_, error)) = exited.iter().find(|(id, _)| id == &slot.id) {
+                    slot.parked = false;
+                    slot.last_error = Some(error.clone());
+                } else if !running.get(&slot.id).copied().unwrap_or(false) {
+                    slot.parked = false;
+                    slot.last_error = Some("parked renderer is no longer running".into());
+                }
+                slot.healthy = false;
+                slot.actual_fps = 0.0;
+                continue;
+            }
             if let Ok(error) = std::fs::read_to_string(self.error_path(&slot.id)) {
                 slot.healthy = false;
                 slot.last_error = Some(format!("renderer capture failed: {error}"));
@@ -575,7 +1134,39 @@ impl RendererManager {
             .lock()
             .expect("player state buffers poisoned")
             .clear();
+        self.render_anchors
+            .lock()
+            .expect("renderer anchors poisoned")
+            .clear();
+        self.render_taps
+            .lock()
+            .expect("renderer taps poisoned")
+            .clear();
         self.input_maps.lock().expect("input maps poisoned").clear();
+        self.input_sequences
+            .lock()
+            .expect("renderer input sequences poisoned")
+            .clear();
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .clear();
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .clear();
+        self.presentation_samples
+            .lock()
+            .expect("renderer presentation samples poisoned")
+            .clear();
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+        *self
+            .presentation_origin_us
+            .lock()
+            .expect("renderer presentation origin poisoned") = None;
         self.frame_observations
             .lock()
             .expect("renderer observations poisoned")
@@ -617,7 +1208,21 @@ impl RendererManager {
         Ok(())
     }
 
-    fn create_input_map(&self, slot_id: &str) -> Result<()> {
+    fn reset_input_map(&self, slot_id: &str) -> Result<()> {
+        let id = slot_id.to_ascii_uppercase();
+        if let Some(map) = self
+            .input_maps
+            .lock()
+            .expect("input maps poisoned")
+            .get_mut(&id)
+        {
+            // Reuse the mapping in place. Truncating a still-mapped state file
+            // fails on Windows and was the reason STOP followed by ASSIGN could
+            // no longer configure that slot.
+            map.fill(0);
+            map.flush()?;
+            return Ok(());
+        }
         let path = self.state_path(slot_id);
         let file = OpenOptions::new()
             .create(true)
@@ -631,7 +1236,7 @@ impl RendererManager {
         self.input_maps
             .lock()
             .expect("input maps poisoned")
-            .insert(slot_id.to_ascii_uppercase(), map);
+            .insert(id, map);
         Ok(())
     }
 }
@@ -909,35 +1514,38 @@ mod tests {
                 },
             )
             .unwrap();
-        manager.render_samples.lock().unwrap().insert(
-            "player-1".into(),
-            VecDeque::from([
-                RenderSample {
-                    session_id: 0,
-                    sequence: 1,
-                    run_time_us: 1_000_000,
-                    beat: 10.0,
-                    paddle_angle: 20.0,
-                    tap_mask: 1,
-                    flags: 1,
-                },
-                RenderSample {
-                    session_id: 0,
-                    sequence: 2,
-                    run_time_us: 1_016_667,
-                    beat: 10.25,
-                    paddle_angle: 21.0,
-                    tap_mask: 2,
-                    flags: 1,
-                },
-            ]),
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
+                session_id: 0,
+                sequence: 1,
+                run_time_us: 1_000_000,
+                beat: 10.0,
+                paddle_angle: 20.0,
+                tap_mask: 1,
+                flags: 1,
+            },
+            1_000_000,
+        );
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
+                session_id: 0,
+                sequence: 2,
+                run_time_us: 1_016_667,
+                beat: 10.25,
+                paddle_angle: 21.0,
+                tap_mask: 2,
+                flags: 1,
+            },
+            1_016_667,
         );
 
         manager.write_aligned_inputs(1_516_667);
 
         let sample =
             RenderSample::decode(&std::fs::read(manager.state_path("A")).unwrap()).unwrap();
-        assert_eq!(sample.sequence, 2);
+        assert_eq!(sample.sequence, 1);
         assert_eq!(sample.beat, 10.25);
         assert_eq!(sample.paddle_angle, 21.0);
         assert_eq!(sample.tap_mask, 2);
@@ -964,9 +1572,9 @@ mod tests {
                 },
             )
             .unwrap();
-        manager.render_samples.lock().unwrap().insert(
-            "player-1".into(),
-            VecDeque::from([RenderSample {
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
                 session_id: 0,
                 sequence: 7,
                 run_time_us: 1_000_000,
@@ -974,7 +1582,8 @@ mod tests {
                 paddle_angle: 135.0,
                 tap_mask: 0,
                 flags: 1,
-            }]),
+            },
+            1_000_000,
         );
 
         manager.write_aligned_inputs(1_499_999);
@@ -989,7 +1598,7 @@ mod tests {
         manager.write_aligned_inputs(1_500_000);
         let sample =
             RenderSample::decode(&std::fs::read(manager.state_path("A")).unwrap()).unwrap();
-        assert_eq!(sample.sequence, 7);
+        assert_eq!(sample.sequence, 1);
         assert_eq!(sample.paddle_angle, 135.0);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1018,16 +1627,287 @@ mod tests {
             "player-1".into(),
             VecDeque::from([GameplayState {
                 updated_at_ms: 1_000,
+                beat: 10.0,
                 player_name: "Delayed player".into(),
                 ..GameplayState::default()
             }]),
         );
 
         assert!(manager.aligned_featured_state(1_499).is_none());
+        manager.presentation_samples.lock().unwrap().insert(
+            "player-1".into(),
+            RenderSample {
+                session_id: 0,
+                sequence: 1,
+                run_time_us: 1_000_000,
+                beat: 10.0,
+                paddle_angle: 0.0,
+                tap_mask: 0,
+                flags: 1,
+            },
+        );
         assert_eq!(
             manager.aligned_featured_state(1_500).unwrap().player_name,
             "Delayed player"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_note_barrier_removes_cross_source_arrival_jitter() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-cohort-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        for (slot, participant, delay) in [("A", "player-1", 250), ("B", "player-2", 500)] {
+            manager
+                .configure(
+                    slot,
+                    RendererRequest {
+                        participant_id: Some(participant.into()),
+                        participant_name: Some(participant.into()),
+                        mode: Some(RendererMode::Full),
+                        width: Some(320),
+                        height: Some(180),
+                        fps: Some(60),
+                        delay_ms: Some(delay),
+                        featured: Some(slot == "A"),
+                    },
+                )
+                .unwrap();
+        }
+        manager.push_render_anchor("player-1", 10.0, 80.0);
+        manager.push_render_anchor("player-2", 10.0, -45.0);
+        for (participant, source_base, receipt_base) in [
+            ("player-1", 1_000_000, 10_000_000),
+            // Player 2 arrives 120 ms later, but has an unrelated source clock.
+            ("player-2", 5_000_000, 10_120_000),
+        ] {
+            manager.push_sample_at(
+                participant,
+                RenderSample {
+                    session_id: 0,
+                    sequence: 1,
+                    run_time_us: source_base,
+                    beat: 9.75,
+                    paddle_angle: 20.0,
+                    tap_mask: 0,
+                    flags: FLAG_PLAYING,
+                },
+                receipt_base,
+            );
+            manager.push_sample_at(
+                participant,
+                RenderSample {
+                    session_id: 0,
+                    sequence: 2,
+                    run_time_us: source_base + 16_667,
+                    beat: 10.0,
+                    paddle_angle: 21.0,
+                    tap_mask: 0,
+                    flags: FLAG_PLAYING,
+                },
+                receipt_base + 16_667,
+            );
+        }
+
+        // The slowest configured cache wins for the synchronized cohort.
+        manager.write_aligned_inputs(10_136_667);
+        assert_eq!(
+            manager
+                .sync_epoch
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .release_at_us,
+            10_636_667
+        );
+        manager.write_aligned_inputs(10_636_667);
+        for slot in ["A", "B"] {
+            let sample =
+                RenderSample::decode(&std::fs::read(manager.state_path(slot)).unwrap()).unwrap();
+            assert_eq!(sample.beat, 10.0);
+            assert_ne!(sample.flags & FLAG_CAPTURE_ENABLED, 0);
+            assert_ne!(sample.flags & FLAG_SYNC_RELEASE, 0);
+        }
+
+        for (participant, source_base, receipt) in [
+            ("player-1", 1_000_000, 10_200_000),
+            ("player-2", 5_000_000, 10_360_000),
+        ] {
+            manager.push_sample_at(
+                participant,
+                RenderSample {
+                    session_id: 0,
+                    sequence: 3,
+                    run_time_us: source_base + 33_334,
+                    beat: 10.25,
+                    paddle_angle: 22.0,
+                    tap_mask: 0,
+                    flags: FLAG_PLAYING,
+                },
+                receipt,
+            );
+        }
+        manager.write_aligned_inputs(10_670_001);
+        let a = RenderSample::decode(&std::fs::read(manager.state_path("A")).unwrap()).unwrap();
+        let b = RenderSample::decode(&std::fs::read(manager.state_path("B")).unwrap()).unwrap();
+        assert_eq!(a.beat, 10.25);
+        assert_eq!(a.beat, b.beat);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reliable_tap_edges_are_delivered_once_with_source_judgement() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-taps-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(500),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        manager.push_render_anchor("player-1", 10.0, 80.0);
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
+                session_id: 0,
+                sequence: 1,
+                run_time_us: 1_000_000,
+                beat: 10.0,
+                paddle_angle: 90.0,
+                tap_mask: 0,
+                flags: FLAG_PLAYING,
+            },
+            2_000_000,
+        );
+        // Both edges fall inside one sampled held-key interval.
+        manager.push_tap("player-1", 101, 10.0, 9.84, true, false);
+        manager.push_tap("player-1", 102, 10.0, 9.86, false, true);
+        manager.write_aligned_inputs(2_016_667);
+        manager.write_aligned_inputs(2_500_000);
+        let hidden = std::fs::read(manager.state_path("A")).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(hidden[30..32].try_into().unwrap())
+                & (FLAG_CAPTURE_ENABLED | FLAG_TAP_PRESSED | FLAG_TAP_RELEASED),
+            0,
+            "the first raw edge must remain queued until the cohort is visible"
+        );
+
+        manager.write_aligned_inputs(2_516_667);
+        let first = std::fs::read(manager.state_path("A")).unwrap();
+        assert_ne!(
+            u16::from_le_bytes(first[30..32].try_into().unwrap()) & FLAG_TAP_PRESSED,
+            0
+        );
+        assert!((f32::from_le_bytes(first[12..16].try_into().unwrap()) - 9.84).abs() < 0.0001);
+        assert_eq!(f32::from_le_bytes(first[16..20].try_into().unwrap()), 80.0);
+
+        manager.write_aligned_inputs(2_533_334);
+        let second = std::fs::read(manager.state_path("A")).unwrap();
+        assert_ne!(
+            u16::from_le_bytes(second[30..32].try_into().unwrap()) & FLAG_TAP_RELEASED,
+            0
+        );
+        assert!((f32::from_le_bytes(second[12..16].try_into().unwrap()) - 9.86).abs() < 0.0001);
+
+        manager.write_aligned_inputs(2_550_001);
+        let third = std::fs::read(manager.state_path("A")).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(third[30..32].try_into().unwrap())
+                & (FLAG_TAP_PRESSED | FLAG_TAP_RELEASED),
+            0
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stopped_input_mapping_can_be_reassigned_without_truncation() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-reassign-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        let request = |participant: &str| RendererRequest {
+            participant_id: Some(participant.into()),
+            participant_name: Some(participant.into()),
+            mode: Some(RendererMode::Full),
+            width: Some(320),
+            height: Some(180),
+            fps: Some(60),
+            delay_ms: Some(500),
+            featured: Some(true),
+        };
+        manager.configure("A", request("player-1")).unwrap();
+        manager.stop_slot("A");
+        let reassigned = manager.configure("A", request("player-2")).unwrap();
+        assert!(reassigned.active);
+        assert_eq!(reassigned.participant_id.as_deref(), Some("player-2"));
+        assert_eq!(
+            std::fs::metadata(manager.state_path("A")).unwrap().len(),
+            RenderSample::WIRE_SIZE as u64
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn warm_park_and_rebind_preserve_the_live_child() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-warm-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(500),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        let child = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
+            .spawn()
+            .unwrap();
+        let process_id = child.id();
+        manager.processes.lock().unwrap().insert("A".into(), child);
+
+        let parked = manager.park_slot("A").unwrap();
+        assert!(parked.parked);
+        assert!(!parked.active);
+        assert_eq!(
+            manager.processes.lock().unwrap()["A"].id(),
+            process_id,
+            "parking replaced the child and lost its accumulated chart VFX"
+        );
+
+        let rebound = manager
+            .rebind_parked("A", "player-2".into(), Some("Player 2".into()))
+            .unwrap();
+        assert!(rebound.active);
+        assert!(!rebound.parked);
+        assert_eq!(rebound.participant_id.as_deref(), Some("player-2"));
+        assert_eq!(manager.processes.lock().unwrap()["A"].id(), process_id);
+        manager.stop_all();
         let _ = std::fs::remove_dir_all(root);
     }
 }

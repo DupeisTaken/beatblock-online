@@ -111,24 +111,6 @@ times = 1
 [[patches]]
 [patches.pattern]
 target = "states/Game.lua"
-pattern = "self.gm:draw()"
-position = "before"
-payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.beginGameplayOnly(self) end"
-match_indent = true
-times = 1
-
-[[patches]]
-[patches.pattern]
-target = "states/Game.lua"
-pattern = "self.gm:draw()"
-position = "after"
-payload = "if BBTRenderer and BBTRenderer.active then BBTRenderer.endGameplayOnly() end"
-match_indent = true
-times = 1
-
-[[patches]]
-[patches.pattern]
-target = "states/Game.lua"
 pattern = "love.graphics.setCanvas(self.canv)"
 position = "after"
 payload = "if self.startPending and BBT then BBT.drawCountdown() end"
@@ -150,9 +132,11 @@ target = "main.lua"
 # Gamestate:draw returns only after shuv.finish has converted raw palette-index
 # colors into shuv.canvasShaded and composited every in-state HUD layer. Capture
 # here before the native mouse overlay, preserving Clean mode via cs.canv.
+# Results uses the same final composition contract and must keep publishing
+# instead of freezing OBS on the last gameplay frame.
 pattern = "cs:draw()"
 position = "after"
-payload = "if BBTRenderer and BBTRenderer.active and cs and cs.name == 'Game' then BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded) end"
+payload = "if BBTRenderer and BBTRenderer.active and cs and (cs.name == 'Game' or cs.name == 'Results') then BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded) end"
 match_indent = true
 times = 1
 

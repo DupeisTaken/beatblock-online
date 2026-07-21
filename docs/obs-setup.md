@@ -17,16 +17,18 @@ recover without recreating the OBS source.
 
 The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
 
-Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. The OBS competition view removes chart scenery, background images/video, and background noise while retaining the player, notes, hit feedback, chart-controlled HUD, online race HUD, palette/accessibility conversion, and screen-space effects. Backdrop suppression is scoped to the isolated renderer child and restored after every Game draw, so the host player's window is unchanged. Capturing occurs after the remaining gamestate composition, preventing raw palette-index artwork from appearing as a color mask. Optional Clean mode captures the same foreground-only gameplay canvas before final shading. Both modes preserve the source aspect ratio. Renderer children preload the chart and remain held until a genuinely delayed `playing` sample arrives—an initial sample is never allowed to bypass the configured buffer. Each frame reapplies the selected player's delayed beat, paddle, taps, and any material music-clock correction after hidden-window input has run.
+Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode reproduces the complete chart composition: scenery, background images/video, background noise, foreground entities, HUD, palette/accessibility conversion, and screen-space effects. Capturing still occurs after the final shaded gamestate composition, preventing raw palette-index artwork from appearing as a color mask, and continues through Beatblock's native Results state. Optional Clean mode captures the complete unshaded state canvas before final shading. Both modes preserve the source aspect ratio.
 
-Choose **Advanced Export** in Broadcast to edit each Stream A-D independently. The complete visible controls are Full/Clean mode, 1280×720/1920×1080 output, 30/60 fps, and 250/500/1000/1500 ms delay. **Apply to Stream** stores those values even while the slot is unassigned; a later **Assign** uses that slot's saved configuration instead of resetting it to defaults. A 1080p60 selection is marked **High GPU Load**. Apply is disabled during countdown/gameplay.
+Renderer children simulate the hidden pre-roll so timed chart VFX are not lost, but visible capture waits for every assigned participant to cache a first-scoring-note anchor. All active streams are released on the same writer tick and then selected by source-relative time instead of packet-arrival time. The largest configured delay in the active A-D cohort is the shared cache depth; this is required to keep unequal per-slot settings from reintroducing skew. Featured child audio and featured text exports follow that same presentation cursor. Reliable raw press/release events carry the source player's effective judgement beat, so short taps cannot collapse into a 60 Hz held-key sample and the OBS machine's local input-offset setting cannot change results.
+
+Choose **Advanced Export** in Broadcast to edit each Stream A-D independently. The complete visible controls are Full/Clean mode, 1280×720/1920×1080 output, 30/60 fps, and 250/500/1000/1500 ms cache depth. **Apply to Stream** stores those values even while the slot is unassigned; a later **Assign** uses that slot's saved configuration instead of resetting it to defaults. During a multi-stream run, the greatest active cache depth drives the synchronized cohort. A 1080p60 selection is marked **High GPU Load**. Apply is disabled during countdown/gameplay.
 
 Renderer output canvases explicitly use a `1.0` DPI scale. OBS dimensions are
 physical pixels; allowing Windows display scaling to inflate a nominal
 1280×720 canvas would make readbacks fail their exact-size guard and leave OBS
 showing a stale or blank frame.
 
-Assign and configure every stream before starting the synchronized countdown. The runtime rejects renderer reconfiguration during countdown or gameplay because a new child would not have observed the chart's earlier timed VFX events and could not reconstruct the original composition exactly. An active stream can still be stopped during a race.
+Assign and configure every stream before starting the synchronized countdown. The runtime rejects cold launches and output-setting changes during countdown or gameplay because a new child would not have observed the chart's earlier timed VFX events. **Stop** during an active race now warm-parks the existing child: capture is disabled while the chart continues simulating. The parked slot shows **Parked** and may be assigned to another active player without restarting the child or losing accumulated effects.
 
 Renderer processes receive their stream configuration through environment
 variables, not command-line flags, because Lovely parses the game's command line
@@ -112,7 +114,7 @@ gameplay.json
 streams\A-D\...
 ```
 
-Add a normal OBS Text source and enable **Read from file**. Featured files use the same delayed state selected by the featured renderer.
+Add a normal OBS Text source and enable **Read from file**. Featured files use the same first-note presentation cursor and selected beat as the featured renderer.
 
 `state.json` contains the room and stream-slot snapshot. `gameplay.json` contains the host game's local gameplay snapshot. Featured files have one delayed-state writer and are cleared when no participant is featured.
 

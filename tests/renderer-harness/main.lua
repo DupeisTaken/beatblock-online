@@ -18,7 +18,10 @@ cs={
   },
 }
 
-local playerEntity={class={name='Player'},skipRender=false}
+local playerEntity={
+  class={name='Player'},skipRender=false,x=300,y=180,radius=90,
+  angle=0,anglePrevFrame=0,circleX=0,circleY=0,snapX=0,snapY=0,
+}
 local noteEntity={class={name='Block'},skipRender=false}
 local hitEntity={class={name='HitParticle'},skipRender=false}
 local sceneryEntity={class={name='Deco'},skipRender=false}
@@ -42,6 +45,12 @@ function love.load()
   cs.vfx.chromaticAberration.enabled=true
   Renderer.init()
   assert(Renderer.active,'renderer fixture did not initialize')
+  Renderer.update()
+  assert(playerEntity.angle==135 and playerEntity.anglePrevFrame==135,
+    'a held pre-chart sample left Cranky at the previous pose')
+  assert(math.abs(playerEntity.snapX-playerEntity.circleX)<.001
+    and math.abs(playerEntity.snapY-playerEntity.circleY)<.001,
+    'held renderer input did not preserve paddle snap coordinates')
   -- A graphics driver may never complete an async readback. Verify the public
   -- reclamation path frees both canvases and invalidates their old tickets.
   Renderer.readbackPending={true,true}
@@ -54,16 +63,11 @@ function love.load()
   assert(Renderer.readbackTickets[1]==nil and Renderer.readbackTickets[2]==nil,
     'renderer retained abandoned readback tickets')
   Renderer.droppedFrames=0
-  Renderer.beginGameplayOnly(cs)
-  assert(cs.bgColor==0 and cs.bg==nil and cs.drawVideoBG==false,'renderer retained a chart backdrop')
-  assert(cs.vfx.bgNoise==0 and cs.vfx.bgNoise_OLD.enable==false,'renderer retained background noise')
+  assert(cs.bgColor==6 and cs.bg and cs.drawVideoBG==true,'renderer removed the chart backdrop')
+  assert(cs.vfx.bgNoise==1 and cs.vfx.bgNoise_OLD.enable==true,'renderer removed background VFX')
   assert(not playerEntity.skipRender and not noteEntity.skipRender and not hitEntity.skipRender,
     'renderer hid gameplay entities')
-  assert(sceneryEntity.skipRender,'renderer retained decorative scenery')
-  Renderer.endGameplayOnly()
-  assert(cs.bgColor==6 and cs.bg and cs.drawVideoBG==true,'renderer did not restore chart backdrop state')
-  assert(cs.vfx.bgNoise==1 and cs.vfx.bgNoise_OLD.enable==true,'renderer did not restore background VFX')
-  assert(sceneryEntity.skipRender==false,'renderer did not restore entity visibility')
+  assert(sceneryEntity.skipRender==false,'renderer hid decorative chart scenery')
   -- Use the production synchronous fallback for deterministic completion before
   -- the short-lived fixture exits; the QA LÖVE build predates readbackTexture,
   -- so adapt its equivalent Canvas:newImageData API at the harness boundary.
@@ -91,6 +95,11 @@ function love.load()
 end
 
 function love.draw()
+  if frames==25 then
+    cs.name='Results'
+    rawCanvas:renderTo(function() love.graphics.clear(.8,.1,.1,1) end)
+    shadedCanvas:renderTo(function() love.graphics.clear(.1,.8,.3,1) end)
+  end
   Renderer.capturePlayerView(rawCanvas,shadedCanvas)
   frames=frames+1
   if frames>=45 and love.timer.getTime()-startedAt>=.75 then
