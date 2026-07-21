@@ -598,7 +598,13 @@ function BBT.invalidate(reason, dnf)
   BBT.send('run.invalid', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId, reason = reason, dnf = dnf == true })
 end
 
-function BBT.onPause() BBT.invalidate('Pause is not permitted by competitive defaults', false) end
+-- Beatblock routes every gameplay pause input through pauseGame. Blocking at
+-- that boundary prevents Escape or a controller from stopping an online chart
+-- without changing native pause behavior for offline practice.
+function BBT.shouldBlockPause()
+  return BBT.context.lobbyId ~= 'offline'
+end
+
 function BBT.onRetry() BBT.invalidate('Retry is not permitted by competitive defaults', true) end
 function BBT.onQuit()
   BBT.invalidate('Player quit the competitive run', true)

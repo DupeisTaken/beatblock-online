@@ -116,7 +116,10 @@ times = 1
 target = "states/Game.lua"
 pattern = "self:pauseGame()"
 position = "before"
-payload = "if BBT then BBT.onPause() end"
+# pauseGame is the shared destination for Escape and controller pause inputs.
+# Competitive sessions ignore it before Beatblock can stop the chart; offline
+# play keeps the game's native pause behavior.
+payload = "if BBT and BBT.shouldBlockPause() then return end"
 match_indent = true
 times = 1
 

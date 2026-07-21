@@ -156,6 +156,8 @@ for (const contract of [
   [core, 'previous.menuMusicManager:stop()'],
   [core, 'local renderInterval = inGame and 1 / 60 or 1 / 5'],
   [core, 'local renderPlaying = inGame and not cs.startPending and not cs.paused'],
+  [core, "function BBT.shouldBlockPause()\n  return BBT.context.lobbyId ~= 'offline'\nend"],
+  [hooks, 'if BBT and BBT.shouldBlockPause() then return end'],
   [core, "['render.sample'] = 'bbt_render_latest'"],
   [core, 'outbound:getCount()>=MAX_ORDERED_OUTBOUND'],
   [core, 'processed<MAX_INBOUND_PER_FRAME'],
@@ -221,6 +223,10 @@ for (const contract of [
   if (!contract[0].includes(contract[1]))
     throw new Error(`Lazy runtime contract is missing ${contract[1]}`);
 }
+if (core.includes('function BBT.onPause()') || hooks.includes('BBT.onPause()'))
+  throw new Error(
+    'Online pause handling must block the native pause instead of invalidating afterward',
+  );
 if (!core.includes("anchor.sent = BBT.send('render.anchor'"))
   throw new Error('First-note anchors do not retry after bounded IPC backpressure');
 if (ipc.includes('"version":2'))

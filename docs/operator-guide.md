@@ -115,7 +115,7 @@ Readiness requires the supported game and mod versions, selected variant, expect
 
 Password-only rooms admit valid clients immediately. Host-approval rooms place them in the roster as **Pending** until accepted. Pending requests do not count toward player/spectator/ready totals.
 
-Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Complete valid journals rank normally; missing, mismatched, paused, retried, incomplete, or disconnected runs become visible DNF and add `0.00` to the set total. Players stay in the room for later charts.
+Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Escape and controller pause inputs are ignored during online gameplay, while offline practice retains the native pause menu. Complete valid journals rank normally; missing, mismatched, paused, retried, incomplete, or disconnected runs become visible DNF and add `0.00` to the set total. Players stay in the room for later charts.
 
 Host participation is also locked during countdown/gameplay. Directing keeps room and Broadcast authority but excludes the host from readiness, scoring, and renderer assignment; returning to Play clears stale readiness and requires fresh chart verification.
 
