@@ -81,8 +81,12 @@ menu's deliberately retained entities and eases; native menu-to-menu reuse must
 not leak `MenuBackground` into a chart renderer.
 First-scoring-note anchors translate participant-local monotonic clocks into one
 cohort presentation epoch; the release sample seeds the paddle and enables OBS,
-then delayed beats drive Beatblock's own event and results lifecycle. Reliable
-tap edges retain the originating player's judgement beat and input offset.
+then delayed beats drive Beatblock's own event lifecycle. Reliable source score
+keyframes are selected against that same delayed timestamp and restore the
+player's accuracy after native simulation. A final keyframe gates the transition
+into Results and supplies its totals/offset, so OBS never publishes a result
+derived only by the hidden replay. Reliable tap edges retain the originating
+player's judgement beat and input offset.
 An async readback slot that receives no driver callback is reclaimed after one
 second with ticket validation for late callbacks. OBS releases stale CPU/GPU
 buffers and periodically reopens an idle mapping so atomic renderer-file

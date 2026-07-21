@@ -101,6 +101,17 @@ times = 1
 
 [[patches]]
 [patches.pattern]
+target = "obj/GameManager.lua"
+# The hidden simulation still drives native HUD layout and effects, but the
+# number printed by OBS must be the delayed source player's exact accuracy.
+pattern = "acc = math.floor(acc*100)/100 -- drop everything after 2sf (round down)"
+position = "after"
+payload = "if BBTRenderer and BBTRenderer.active and BBTRenderer.sourceAccuracy then acc = BBTRenderer.sourceAccuracy end"
+match_indent = true
+times = 1
+
+[[patches]]
+[patches.pattern]
 target = "obj/Player.lua"
 # The transmitted paddle angle is the source Player's final native state. Apply
 # it after the hidden Player's local input/cap pass and before note entities (at
@@ -144,7 +155,10 @@ match_indent = true
 target = "states/Game.lua"
 pattern = "function st:goToResults(forceScore,scoreMax,fadeTime)"
 position = "after"
-payload = "if BBT then BBT.onResults() end"
+# A reconstructed child cannot publish its locally derived Results. Wait for
+# the source player's final keyframe, then enter native Results with those
+# authoritative totals. Normal players still report completion immediately.
+payload = "if BBTRenderer and BBTRenderer.active and not BBTRenderer.shouldShowResults() then return end; if BBT then BBT.onResults(forceScore,scoreMax) end"
 match_indent = true
 
 [[patches]]

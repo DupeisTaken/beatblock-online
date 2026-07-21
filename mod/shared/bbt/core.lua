@@ -90,6 +90,13 @@ local function accuracy(totals)
   return math.max(0, math.floor((((totals.currentMaxHits - totals.misses - totals.barelies / 4) / totals.currentMaxHits) * 100) * 100) / 100)
 end
 
+local function resultsAccuracy(totals)
+  if totals.maxHits <= 0 then return 100 end
+  -- Results uses the chart-wide maximum rather than the live HUD denominator.
+  -- Keep the source keyframe identical to the player's native Results screen.
+  return math.floor((((totals.maxHits - totals.misses - totals.barelies / 4) / totals.maxHits) * 100) * 100) / 100
+end
+
 local function totals()
   local mineHits = 0
   if cs and type(cs.mineHits) == 'table' then for _ in pairs(cs.mineHits) do mineHits = mineHits + 1 end end
@@ -103,6 +110,13 @@ local function totals()
     maxHits = math.max(0, cs and cs.maxHits or 0),
     mineHits = mineHits,
   }
+end
+
+local function averageTapOffset()
+  if not (cs and type(cs.tapTiming) == 'table') or #cs.tapTiming == 0 then return 0 end
+  local sum = 0
+  for _, value in ipairs(cs.tapTiming) do sum = sum + (tonumber(value) or 0) end
+  return math.floor((sum / #cs.tapTiming) * 1000) / 1000
 end
 
 function BBT.send(kind, payload, critical)
@@ -510,6 +524,33 @@ function BBT.init(distribution, modPath)
   return BBT
 end
 
+-- Score keyframes are source-authored renderer state. The runtime aligns them
+-- to the same delayed motion sample used by each OBS slot, so hidden replays do
+-- not substitute their own accuracy or Results totals.
+local function emitRenderKeyframe(current, results, forceScore, scoreMax)
+  current = current or totals()
+  if forceScore then
+    local forcedMax = tonumber(scoreMax) or 100
+    current.maxHits = forcedMax
+    current.currentMaxHits = forcedMax
+    current.misses = math.max(0, forcedMax - tonumber(forceScore))
+    current.barelies = 0
+  elseif results and current.maxHits == 0 then
+    -- Match Game:goToResults' zero-note guard before the hidden child enters
+    -- Results from this source-authored state.
+    current.maxHits = 1
+  end
+  BBT.send('render.keyframe', {
+    beat = cs and cs.cBeat or 0,
+    paddleAngle = cs and cs.p and cs.p.angle or 0,
+    totals = current,
+    accuracy = results and resultsAccuracy(current) or accuracy(current),
+    averageOffset = averageTapOffset(),
+    activeNotes = cs and cs.notes and #cs.notes or 0,
+    results = results == true,
+  })
+end
+
 local function emitScoreDelta(critical)
   local current = totals()
   local songTimeMs = 0
@@ -531,6 +572,10 @@ local function emitScoreDelta(critical)
   -- the ordered IPC queue; otherwise one overload creates a false sequence-gap
   -- INVALID result even though no transmitted event was lost in transit.
   if sent then BBT.runSequence = BBT.runSequence + 1 end
+  -- OBS is presentation state, so publish its latest source-authored score even
+  -- if the ordered scoring queue is temporarily full. The coalesced keyframe
+  -- cannot create a validation sequence gap and will be replaced on retry.
+  emitRenderKeyframe(current, false)
   return sent
 end
 
@@ -648,8 +693,9 @@ function BBT.onQuit()
   BBT.invalidate('Player quit the run', true)
   BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId, quit = true })
 end
-function BBT.onResults()
+function BBT.onResults(forceScore, scoreMax)
   flushScoreDelta(true)
+  emitRenderKeyframe(nil, true, forceScore, scoreMax)
   BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId })
 end
 
@@ -964,7 +1010,10 @@ function BBT.update(dt)
   end
   if BBT.keyframeTimer >= 1 then
     BBT.keyframeTimer = math.min(BBT.keyframeTimer - 1, 1)
-    BBT.send('render.keyframe', { beat = cs and cs.cBeat or 0, paddleAngle = cs and cs.p and cs.p.angle or 0, totals = totals(), activeNotes = cs and cs.notes and #cs.notes or 0 })
+    -- Results does not retain every live Game counter. Preserve the final
+    -- results=true keyframe emitted by goToResults instead of replacing it
+    -- with an incomplete idle-state snapshot one second later.
+    if inGame then emitRenderKeyframe(nil, false) end
   end
   -- Score mutations remain event-driven. Fifteen gameplay snapshots per second
   -- are enough for overlays; idle screens publish only a two-Hz liveness state.

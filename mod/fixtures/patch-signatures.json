@@ -10,6 +10,7 @@
     "prof.pop(\"entityman update\")",
     "self.gm:update(dt)",
     "  -- read the level",
+    "acc = math.floor(acc*100)/100 -- drop everything after 2sf (round down)",
     "self:pauseGame()",
     "function st:restartLevel()",
     "function st:quitLevel()",
