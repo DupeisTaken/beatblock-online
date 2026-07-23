@@ -45,11 +45,11 @@ Before submitting, complete these checks:
 
 Choose the guided template that matches the issue:
 
-- [Report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
-- [Request a new feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md)
-- [Improve existing behavior](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.md)
-- [Request a documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.md)
-- [Ask a question](https://github.com/DupeisTaken/beatblock-online/issues/new?template=question.md)
+- [Report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.yml)
+- [Request a new feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.yml)
+- [Improve existing behavior](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.yml)
+- [Request a documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.yml)
+- [Ask a question](https://github.com/DupeisTaken/beatblock-online/issues/new?template=question.yml)
 
 Read the [issue tags and reporting guide](docs/issues.md) for help choosing a
 type and for title, evidence, environment, and triage guidelines.

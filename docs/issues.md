@@ -4,11 +4,11 @@ Use GitHub issues for reproducible defects, focused improvements, documentation
 gaps, and questions that are not answered by the existing guides. Choose the
 template that matches the issue:
 
-- [Bug report](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
-- [Feature request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md)
-- [Enhancement request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.md)
-- [Documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.md)
-- [Question](https://github.com/DupeisTaken/beatblock-online/issues/new?template=question.md)
+- [Bug report](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.yml)
+- [Feature request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.yml)
+- [Enhancement request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.yml)
+- [Documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.yml)
+- [Question](https://github.com/DupeisTaken/beatblock-online/issues/new?template=question.yml)
 
 Before opening an issue, search the open and closed issues, check the newest
 release, and review the relevant troubleshooting guide.

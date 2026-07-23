@@ -1,0 +1,27 @@
+name: Enhancement request
+description: Suggest an improvement to existing Beatblock Online behavior
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the latest release and documentation.
+          required: true
+        - label: I searched open and closed issues for this improvement.
+          required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Proposed improvement
+      description: What existing behavior should change, and how?
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason
+      description: Why is this improvement useful?
+    validations:
+      required: true
