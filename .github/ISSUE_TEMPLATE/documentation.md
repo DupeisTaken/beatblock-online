@@ -8,29 +8,16 @@ assignees: ''
 
 ## Before submitting
 
-- [ ] I checked the documentation for the latest Beatblock Online release.
-- [ ] I searched the open and closed issues for the same documentation gap.
-- [ ] I identified the specific page or section affected.
-- [ ] This issue covers one focused documentation change.
-- [ ] I removed passwords, public addresses, usernames, tokens, and other
-      private information from the examples.
+- [ ] I checked the latest documentation and searched open and closed issues.
 
-## Affected documentation
+## Page or section
 
-<!-- Link to the page and heading, or provide the repository path. -->
-
-## Audience and goal
-
-<!-- Who is using this documentation, and what are they trying to accomplish? -->
+<!-- Link to it or provide the repository path and heading. -->
 
 ## Problem
 
-<!-- What is missing, unclear, outdated, or inaccurate? -->
+<!-- What is missing, unclear, or inaccurate? -->
 
 ## Suggested change
 
-<!-- Describe the correction or additional guidance that would resolve the gap. -->
-
-## Additional context
-
-<!-- Add a short example, screenshot, or authoritative reference if useful. -->
+<!-- What should the documentation say instead? -->

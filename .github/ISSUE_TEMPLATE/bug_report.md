@@ -8,50 +8,30 @@ assignees: ''
 
 ## Before submitting
 
-- [ ] I tested the latest Beatblock Online release, or explained below why I
-      could not.
-- [ ] I searched the open and closed issues for the same problem.
-- [ ] I reviewed the relevant troubleshooting guide.
-- [ ] This report covers one problem and includes repeatable steps where
-      possible.
-- [ ] I removed passwords, public addresses, usernames, tokens, and other
-      private information from the evidence.
+- [ ] I tested the latest release, checked the troubleshooting guide, and
+      searched open and closed issues.
+- [ ] I removed private information from the report and evidence.
 
-## Summary
+## Problem
 
-<!-- What failed, and what impact did it have? -->
+<!-- What happened? -->
 
-## Version and environment
+## Versions
 
 - Beatblock Online version:
 - Beatblock version:
 - Windows version:
-- Role: <!-- Host, Player, Spectator, or Commentator -->
-- Install adapter: <!-- Lovely or BeatblockPlus -->
-- Network path: <!-- Direct, frp, or other -->
-- OBS version, if relevant:
 
-## Steps to reproduce
+## Reproduction
 
 1.
 2.
 3.
 
-## Expected behavior
+## Expected and actual behavior
 
-<!-- What should have happened? -->
-
-## Actual behavior
-
-<!-- What happened instead? Include the exact visible error or status. -->
+<!-- What should have happened, and what happened instead? -->
 
 ## Evidence
 
-<!--
-Attach a screenshot, recording, timestamp, crash report, or a short sanitized
-log excerpt around the failure. Say whether the problem happens every time.
--->
-
-## Additional context
-
-<!-- Include relevant room settings, chart type, role assignments, or workarounds. -->
+<!-- Optional: add a screenshot, crash report, or short sanitized log excerpt. -->

@@ -8,32 +8,13 @@ assignees: ''
 
 ## Before submitting
 
-- [ ] I checked the latest Beatblock Online release and documentation to confirm
-      this capability does not already exist.
-- [ ] I searched the open and closed issues for the same or a similar request.
-- [ ] This issue describes one focused request.
-- [ ] I removed passwords, public addresses, usernames, tokens, and other
-      private information from the examples.
+- [ ] I checked the latest release and documentation and searched open and
+      closed issues.
 
-## Problem or use case
+## Problem
 
-<!-- Who encounters the problem, and what are they trying to accomplish? -->
+<!-- What need or use case is not currently supported? -->
 
-## Desired outcome
+## Proposed feature
 
-<!-- Describe the behavior or capability you would like, not only an implementation. -->
-
-## Alternatives considered
-
-<!-- What existing workflows, workarounds, or alternative designs did you try? -->
-
-## Compatibility considerations
-
-<!--
-If relevant, note effects on the UI, protocol, networking, installer, OBS,
-existing rooms, saved data, or older releases.
--->
-
-## Additional context
-
-<!-- Add mockups, examples, or other context that helps explain the request. -->
+<!-- What new capability should be added? -->
