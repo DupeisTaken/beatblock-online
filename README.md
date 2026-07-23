@@ -25,6 +25,32 @@ It maps the messages shown by the current runtime—including **username taken**
 
 ![Concentrated host dashboard](tests/ui-baselines/host-lobby.png)
 
+## Submit an issue
+
+Before submitting, complete these checks:
+
+1. Install and test the newest Beatblock Online release, or note why the newest
+   release cannot be tested.
+2. Search both [open issues](https://github.com/DupeisTaken/beatblock-online/issues)
+   and [closed issues](https://github.com/DupeisTaken/beatblock-online/issues?q=is%3Aissue%20is%3Aclosed)
+   for the same problem or request.
+3. Follow the
+   [player troubleshooting table](docs/operator-guide.md#player-connection-and-result-troubleshooting)
+   or the relevant detailed guide before reporting a defect.
+4. Isolate one problem or request per issue. For bugs, reproduce it where
+   possible and collect the exact versions, minimal steps, visible error, and a
+   short relevant log excerpt or screenshot.
+5. Remove room passwords, public addresses, usernames, filesystem user names,
+   tokens, and other private data from every attachment and example.
+
+Use the guided form to
+[report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
+or
+[request a feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md).
+For documentation gaps and questions, [open a blank issue](https://github.com/DupeisTaken/beatblock-online/issues/new).
+Read the [issue tags and reporting guide](docs/issues.md) for title, evidence,
+environment, and triage guidelines.
+
 ## Recommended specifications
 
 These are engineering recommendations for Beatblock Online in addition to the requirements of Beatblock and OBS:

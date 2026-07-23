@@ -1,18 +1,21 @@
 # Creating issues
 
 Use GitHub issues for reproducible defects, focused improvements, documentation
-gaps, and questions that are not answered by the existing guides. Before
-[opening an issue](https://github.com/DupeisTaken/beatblock-online/issues/new),
-search the open and closed issues, check the newest release, and review the
-relevant troubleshooting guide.
+gaps, and questions that are not answered by the existing guides. Start with the
+[bug report](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
+or
+[feature request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md)
+template when applicable. Before opening an issue, search the open and closed
+issues, check the newest release, and review the relevant troubleshooting guide.
 
 Keep each issue to one problem or request. A focused issue is easier to confirm,
 prioritize, and close without losing related discussion.
 
 ## Choose an issue tag
 
-GitHub calls these tags **labels**. Choose the single label that best describes
-the issue:
+GitHub calls these tags **labels**. The bug and feature templates apply their
+primary label automatically. For a blank issue, state the type clearly so a
+maintainer can apply the single label that best describes it:
 
 | Label           | Use it for                                                                 |
 | --------------- | -------------------------------------------------------------------------- |
