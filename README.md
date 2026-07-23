@@ -43,13 +43,16 @@ Before submitting, complete these checks:
 5. Remove room passwords, public addresses, usernames, filesystem user names,
    tokens, and other private data from every attachment and example.
 
-Use the guided form to
-[report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
-or
-[request a feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md).
-For documentation gaps and questions, [open a blank issue](https://github.com/DupeisTaken/beatblock-online/issues/new).
-Read the [issue tags and reporting guide](docs/issues.md) for title, evidence,
-environment, and triage guidelines.
+Choose the guided template that matches the issue:
+
+- [Report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.md)
+- [Request a new feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.md)
+- [Improve existing behavior](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.md)
+- [Request a documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.md)
+- [Ask a question](https://github.com/DupeisTaken/beatblock-online/issues/new?template=question.md)
+
+Read the [issue tags and reporting guide](docs/issues.md) for help choosing a
+type and for title, evidence, environment, and triage guidelines.
 
 ## Recommended specifications
 
