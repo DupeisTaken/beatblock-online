@@ -73,6 +73,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the
 - [Installer/runtime architecture](docs/architecture.md)
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
+- [Issue tags and reporting guidelines](docs/issues.md)
 - [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
