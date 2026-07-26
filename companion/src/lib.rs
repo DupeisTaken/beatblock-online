@@ -20,3 +20,4 @@ pub mod storage;
 // Protocol-v3 chart fallback uses this hardened archive/cache boundary after
 // authenticated room consent and before mounting content for Online.
 pub mod transfer;
+pub mod update;

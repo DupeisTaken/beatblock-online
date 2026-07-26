@@ -55,7 +55,11 @@ fn main() -> anyhow::Result<()> {
     for (player_index, id) in players.iter().enumerate() {
         for sequence in 0..240u64 {
             let current = sequence.min(99) + 1;
-            let misses = if player_index == 15 && sequence >= 120 {
+            // Introduce the miss while the opportunity counter is still
+            // advancing. Adding it after `current` has already capped at 100
+            // would make `hits` fall from 100 to 99, which is not a possible
+            // native score transition and correctly fails monotonicity checks.
+            let misses = if player_index == 15 && sequence >= 50 {
                 1
             } else {
                 0

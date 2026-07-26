@@ -83,6 +83,12 @@ slint::slint! {
         in-out property<string> dialog-title: "Completed";
         in-out property<string> dialog-body: "";
         in-out property<string> confirmation-kind: "";
+        in-out property<string> current-version: "Unknown";
+        in-out property<string> version-channel: "Stable";
+        in-out property<string> update-status: "Updates have not been checked.";
+        in-out property<string> update-url: "";
+        in-out property<bool> update-available: false;
+        in-out property<bool> update-checking: false;
 
         callback browse();
         callback browse-obs();
@@ -99,6 +105,7 @@ slint::slint! {
         callback copy-log();
         callback open-backup();
         callback check-update();
+        callback open-update();
 
         VerticalLayout {
             spacing: 0px;
@@ -240,8 +247,17 @@ slint::slint! {
                 if root.page == 3: ScrollView { VerticalLayout { padding: 20px; spacing: 14px;
                     Text { text: "Installer settings"; color: #18222c; font-size: 18px; font-weight: 700; }
                     Text { text: "Installation choices are shown on the Install page so the exact firewall, build-trust, and OBS scope is visible before files are changed."; color: #596570; font-size: 11px; wrap: word-wrap; }
-                    Rectangle { height: 105px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
-                        VerticalLayout { padding: 13px; spacing: 6px; Text { text: "Stable update channel"; color: #35414c; font-size: 13px; font-weight: 700; } Text { text: "Update checks run only while this installer is open and always require confirmation."; color: #596570; font-size: 11px; } Button { text: "Check for updates"; enabled: !root.busy; clicked => { root.check-update(); } } }
+                    Rectangle { height: 162px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
+                        VerticalLayout {
+                            padding: 13px; spacing: 6px;
+                            Text { text: "Beatblock Online " + root.current-version; color: #35414c; font-size: 13px; font-weight: 700; }
+                            Text { text: "Release channel: " + root.version-channel; color: #596570; font-size: 11px; }
+                            Text { text: root.update-status; color: root.update-available ? #1d6337 : #596570; font-size: 11px; wrap: word-wrap; }
+                            HorizontalLayout { spacing: 8px;
+                                Button { text: root.update-checking ? "Checking…" : "Check for updates"; enabled: !root.busy && !root.update-checking; clicked => { root.check-update(); } }
+                                if root.update-available: Button { text: "Open release page"; enabled: !root.busy; clicked => { root.open-update(); } }
+                            }
+                        }
                     }
                     Button { text: "Open backup folder"; clicked => { root.open-backup(); } }
                 } }
@@ -593,6 +609,15 @@ fn begin_install(
 
 pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
+    window.set_current_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
+    window.set_version_channel(
+        if env!("CARGO_PKG_VERSION").contains('-') {
+            "Preview"
+        } else {
+            "Stable"
+        }
+        .into(),
+    );
     let installer = Arc::new(Installer::new(data_dir.clone()));
     let status = installer.detect();
     if let Some(obs_directory) = installer.obs_directory() {
@@ -850,7 +875,51 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
     }
     {
         let weak = window.as_weak();
-        window.on_check_update(move || if let Some(window)=weak.upgrade(){ window.set_result_visible(true); window.set_result_text("You are on the stable 0.3 alpha channel. No signed update manifest is configured for this development build.".into()); });
+        window.on_check_update(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            if window.get_update_checking() {
+                return;
+            }
+            window.set_update_checking(true);
+            window.set_update_available(false);
+            window.set_update_url("".into());
+            window.set_update_status("Contacting GitHub Releases…".into());
+            let worker = weak.clone();
+            std::thread::spawn(move || {
+                let result = crate::update::check_for_updates();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(window) = worker.upgrade() else {
+                        return;
+                    };
+                    window.set_update_checking(false);
+                    match result {
+                        Ok(check) => {
+                            window.set_update_status(check.status().into());
+                            window.set_update_available(check.update_available());
+                            window.set_update_url(check.release_url.unwrap_or_default().into());
+                        }
+                        Err(error) => {
+                            window.set_update_status(
+                                format!("Update check failed: {error:#}").into(),
+                            );
+                        }
+                    }
+                });
+            });
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.on_open_update(move || {
+            if let Some(window) = weak.upgrade() {
+                let url = window.get_update_url();
+                if !url.is_empty() {
+                    let _ = open::that(url.as_str());
+                }
+            }
+        });
     }
     {
         let weak = window.as_weak();

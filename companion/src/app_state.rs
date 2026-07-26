@@ -2459,28 +2459,12 @@ impl AppState {
         ) {
             anyhow::bail!("configure renderer slots before the synchronized start");
         }
-        let previous_featured = self
-            .renderer
-            .slots()
-            .into_iter()
-            .find(|candidate| candidate.active && candidate.featured)
-            .map(|candidate| candidate.id);
-        let promoting = request.featured == Some(true)
-            && previous_featured
-                .as_deref()
-                .is_some_and(|current| !current.eq_ignore_ascii_case(slot));
-        if promoting {
-            if let Some(previous) = previous_featured.as_deref() {
-                self.renderer.stop_process(previous);
-            }
-        }
         let restart = request.participant_id.is_some()
             || request.mode.is_some()
             || request.width.is_some()
             || request.height.is_some()
             || request.fps.is_some()
-            || request.delay_ms.is_some()
-            || request.featured.is_some();
+            || request.delay_ms.is_some();
         if let Some(participant_id) = request
             .participant_id
             .as_deref()
@@ -2501,21 +2485,6 @@ impl AppState {
             }
         }
         let configured = self.renderer.configure(slot, request)?;
-        // Relaunch the previous featured slot muted before starting the new
-        // featured process, guaranteeing at most one audible child.
-        if promoting {
-            if let Some(previous) = previous_featured.as_deref() {
-                if self
-                    .renderer
-                    .slot(previous)
-                    .is_some_and(|candidate| candidate.active)
-                {
-                    if let Err(error) = self.launch_renderer_slot(previous).await {
-                        self.renderer.set_error(previous, error.to_string());
-                    }
-                }
-            }
-        }
         if let Some(participant_id) = configured.participant_id.as_deref() {
             self.sync_renderer_player(participant_id).await;
         }

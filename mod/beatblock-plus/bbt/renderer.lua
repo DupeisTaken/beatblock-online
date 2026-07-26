@@ -33,7 +33,14 @@ if ok then ffi.cdef[[
   BOOL UnmapViewOfFile(const void*); BOOL CloseHandle(HANDLE);
   int MultiByteToWideChar(unsigned int, DWORD, const char*, int, wchar_t*, int);
   void* GetActiveWindow(void); int ShowWindow(void*, int);
+  void** SDL_GetWindows(int*); bool SDL_HideWindow(void*); void SDL_free(void*);
 ]] end
+
+local sdl = nil
+if ok then
+  local loaded, library = pcall(ffi.load, 'SDL3')
+  if loaded then sdl = library end
+end
 
 local function wide(value)
   local length = ffi.C.MultiByteToWideChar(65001, 0, value, #value, nil, 0)
@@ -61,6 +68,30 @@ local function unmapFile(mapped)
   if mapped.pointer ~= nil then ffi.C.UnmapViewOfFile(mapped.pointer); mapped.pointer = nil end
   if mapped.mapping ~= nil then ffi.C.CloseHandle(mapped.mapping); mapped.mapping = nil end
   if mapped.handle ~= nil then ffi.C.CloseHandle(mapped.handle); mapped.handle = nil end
+end
+
+local function hideRendererWindow()
+  -- GetActiveWindow is often nil when the child was launched behind OBS. Ask
+  -- SDL for this process's windows first so background launches are hidden as
+  -- reliably as foreground launches.
+  local hidden = false
+  if sdl then
+    local count = ffi.new('int[1]')
+    local windows = sdl.SDL_GetWindows(count)
+    if windows ~= nil then
+      for index = 0, count[0] - 1 do
+        if windows[index] ~= nil and sdl.SDL_HideWindow(windows[index]) ~= 0 then hidden = true end
+      end
+      sdl.SDL_free(windows)
+    end
+  end
+  if not hidden and love and love.window and love.window.minimize then
+    hidden = pcall(love.window.minimize)
+  end
+  if not hidden then
+    local window = ffi.C.GetActiveWindow()
+    if window ~= nil then ffi.C.ShowWindow(window, 0) end
+  end
 end
 
 -- Renderer windows are hidden, so Beatblock's modal crash reporter is not a
@@ -139,8 +170,7 @@ function Renderer.init()
     return failInitialization('renderer canvases could not be allocated')
   end
   Renderer.outputs = {first, second}
-  local window = ffi.C.GetActiveWindow()
-  if window ~= nil then ffi.C.ShowWindow(window, 0) end
+  hideRendererWindow()
   _G.BBTRenderer = Renderer
   return Renderer
 end
@@ -261,9 +291,10 @@ end
 
 local function enterSourceResults()
   if not Renderer.resultsReady or not cs then return end
-  if cs.name=='Game' and cs.goToResults and not cs.results then
+  if cs.name=='Game' and cs.goToResults and not cs.results and not cs.startPending and cs.vfx then
     -- Install the final source totals before Beatblock transfers Game state into
-    -- Results. The Lovely guard only permits this source-authorized transition.
+    -- Results. A relaunched child can briefly observe a score page before Game
+    -- finishes threaded initialization; Game:leave requires vfx to exist.
     Renderer.applySourceScore(cs)
     cs:goToResults()
   end

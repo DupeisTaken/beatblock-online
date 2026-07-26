@@ -387,8 +387,14 @@ function BBT.cancelChartSelection(selector)
 end
 
 local function selectedPackagePath(levelPath)
-  local probe = levelPath .. 'manifest.json'
-  local real = love.filesystem.getRealDirectory(probe)
+  -- SongSelect accepts both manifest-based charts and legacy level.json
+  -- packages. Resolve the same file that made the row selectable, and keep the
+  -- UTF-8 virtual path untouched when joining it to the physical mount root.
+  local real
+  for _, metadata in ipairs({'manifest.json', 'level.json'}) do
+    real = love.filesystem.getRealDirectory(levelPath .. metadata)
+    if real then break end
+  end
   if not real then return nil end
   if string.lower(string.sub(real, -4)) == '.zip' then return real end
   local finalCharacter = string.sub(real, -1)
@@ -423,6 +429,10 @@ function BBT.onChartSelected(selector, levelPath, variantName)
   local officialSelection = BBT.selectingOfficialChart
   local selectionMode = BBT.chartSelectionMode
   local previousSelection = BBT.chartSelectionPrevious
+  -- The selected row is authoritative. Using its filename avoids deriving a
+  -- package path from the rendered/localized song title, which may contain
+  -- punctuation or multi-byte UTF-8 characters.
+  levelPath = type(item.filename) == 'string' and item.filename or levelPath
   local variantInfo = selector.getVariantInfo and selector:getVariantInfo(item, variantName) or nil
   local packagePath = not officialSelection and selectedPackagePath(levelPath) or nil
   BBT.localChart = {
@@ -432,7 +442,7 @@ function BBT.onChartSelected(selector, levelPath, variantName)
     variantInfo = variantInfo,
     levelData = selector.levelData,
     soundData = selector.preloadSoundData,
-    songName = item.name or (item.rawMetadata and item.rawMetadata.songName) or 'Unknown chart',
+    songName = (item.rawMetadata and item.rawMetadata.songName) or item.name or 'Unknown chart',
     expectedMaxHits = expectedMaxHits(selector.levelData),
     official = officialSelection,
   }
@@ -551,8 +561,8 @@ local function emitRenderKeyframe(current, results, forceScore, scoreMax)
   })
 end
 
-local function emitScoreDelta(critical)
-  local current = totals()
+local function emitScoreDelta(critical, current)
+  current = current or totals()
   local songTimeMs = 0
   if cs and cs.source and cs.source.tell then
     local ok, value = pcall(cs.source.tell, cs.source)
@@ -622,7 +632,13 @@ function BBT.installHooks()
         local offset = savedata and savedata.options and savedata.options.game
           and tonumber(savedata.options.game.inputOffset) or 0
         local judgementBeat = beat
-        if self.msToBeat then judgementBeat = beat - self:msToBeat(offset) end
+        -- LadybugManager calls this native method with dot syntax and no
+        -- receiver. Preserve that valid call shape while using the active game
+        -- manager for the optional offset conversion.
+        local manager = self or (cs and cs.gm)
+        if manager and manager.msToBeat then
+          judgementBeat = beat - manager:msToBeat(offset)
+        end
         -- Keep the exact native edge and its already offset-adjusted judgement
         -- position. The renderer must not reinterpret it using the host save.
         BBT.send('input.tap', {
@@ -693,9 +709,32 @@ function BBT.onQuit()
   BBT.invalidate('Player quit the run', true)
   BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId, quit = true })
 end
+local function resultsTotals(forceScore, scoreMax)
+  local current = totals()
+  if forceScore ~= nil then
+    local finalMax = tonumber(scoreMax) or 100
+    current.maxHits = finalMax
+    current.misses = math.max(0, finalMax - (tonumber(forceScore) or 0))
+    current.barelies = 0
+  elseif current.maxHits == 0 then
+    -- Match Game:goToResults' zero-note guard.
+    current.maxHits = 1
+  end
+
+  -- Show Results sets exitingLevel during GameManager's event pass. When it
+  -- shares a frame with the last tap, Beatblock skips updateTaps and derives
+  -- Results from maxHits and penalties anyway. Publish the same terminal
+  -- interpretation instead of leaving the host on the previous live divisor.
+  current.currentMaxHits = current.maxHits
+  current.hits = math.max(current.hits, math.max(0, current.maxHits - current.misses))
+  return current
+end
 function BBT.onResults(forceScore, scoreMax)
-  flushScoreDelta(true)
-  emitRenderKeyframe(nil, true, forceScore, scoreMax)
+  -- Results is a terminal scoring boundary even when the final gameplay frame
+  -- made no hooked mutation. Always queue this snapshot before run.finished.
+  local final = resultsTotals(forceScore, scoreMax)
+  if emitScoreDelta(true, final) then BBT.scoreDirty=false end
+  emitRenderKeyframe(final, true, forceScore, scoreMax)
   BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId })
 end
 

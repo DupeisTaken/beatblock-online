@@ -61,7 +61,7 @@ Accepted content is extracted by hash under BBT's read-only Online cache, not th
 
 The host owns the authoritative revisioned **Host Plan**. A granted Commentator sees it read-only and must explicitly enable **This PC** after a performance warning. This may start up to four hidden Beatblock renderer children. If the chart is missing, assignments and text remain visible but video stays disabled until local matching or an accepted host transfer succeeds.
 
-Only active assigned Player telemetry is relayed, and only to authorized Commentators that enabled mirroring. Stable protocol-v3 render-source IDs map remote samples into local Stream A–D frame rings. Featured text exports and video use the same delayed clock. Only the featured renderer receives audio; the previous featured child is stopped before the new one starts audibly.
+Only active assigned Player telemetry is relayed, and only to authorized Commentators that enabled mirroring. Stable protocol-v3 render-source IDs map remote samples into local Stream A–D frame rings. Featured text exports and video use the same delayed clock. Renderer children stay muted; the OBS Player Stream captures and delays the visible main Beatblock process through OBS Application Audio Capture.
 
 Long renderer failures are bounded in the workspace. **Details** opens the full message without hiding slot controls. See [OBS setup](obs-setup.md) for source and application-audio configuration.
 

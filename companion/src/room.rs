@@ -1996,6 +1996,46 @@ mod tests {
     }
 
     #[test]
+    fn terminal_results_snapshot_completes_a_preempted_final_opportunity() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        let mut long_chart = chart();
+        long_chart.expected_max_hits = 1_157;
+        room.lock_chart(long_chart, false).unwrap();
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        room.schedule_start(false, 2_000).unwrap();
+
+        let score = |hits, current_max_hits| {
+            json!({
+                "progress": current_max_hits as f64 / 1_157.0,
+                "totals": {
+                    "hits": hits,
+                    "misses": 10,
+                    "barelies": 0,
+                    "combo": 0,
+                    "maxCombo": 500,
+                    "currentMaxHits": current_max_hits,
+                    "maxHits": 1_157,
+                    "mineHits": 0
+                }
+            })
+        };
+        room.ingest_score(&host, "results-boundary", 0, &score(1_146, 1_156))
+            .unwrap();
+        room.ingest_score(&host, "results-boundary", 1, &score(1_147, 1_157))
+            .unwrap();
+        room.finish_run(&host, "results-boundary").unwrap();
+
+        let participant = room.player(&host).unwrap();
+        assert_eq!(participant.validity, RunValidity::Valid);
+        assert_eq!(participant.invalid_reason, None);
+        assert_eq!(participant.totals.current_max_hits, 1_157);
+        assert_eq!(participant.accuracy, 99.13);
+        assert_eq!(participant.set_total, 99.13);
+    }
+
+    #[test]
     fn score_totals_preserve_the_lock_and_detect_initial_or_counter_gaps() {
         let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
         let host = room.snapshot.host_session_id.clone();

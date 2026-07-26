@@ -111,6 +111,10 @@ pub struct RendererManager {
     tap_cursors: Mutex<HashMap<String, u64>>,
     sample_cursors: Mutex<HashMap<String, u32>>,
     score_cursors: Mutex<HashMap<String, u64>>,
+    // A freshly launched child must not consume telemetry retained from the
+    // run that just ended. It stays preloaded and parked until begin_run opens
+    // a new publication generation.
+    awaiting_run_start: Mutex<HashSet<String>>,
     sync_epoch: Mutex<Option<SyncEpoch>>,
     frame_observations: Mutex<HashMap<String, (u64, u64, u64)>>,
 }
@@ -198,6 +202,7 @@ impl RendererManager {
             tap_cursors: Mutex::new(HashMap::new()),
             sample_cursors: Mutex::new(HashMap::new()),
             score_cursors: Mutex::new(HashMap::new()),
+            awaiting_run_start: Mutex::new(HashSet::new()),
             sync_epoch: Mutex::new(None),
             frame_observations: Mutex::new(HashMap::new()),
         })
@@ -533,6 +538,10 @@ impl RendererManager {
             .lock()
             .expect("renderer score sequences poisoned")
             .clear();
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .clear();
         // A renderer process may already be preloading the next chart. Remove
         // the previous run's committed playing/capture flags so that child can
         // only advance again after this run supplies delayed samples.
@@ -664,10 +673,15 @@ impl RendererManager {
     }
 
     pub fn write_aligned_inputs(&self, now_us: u64) {
+        let awaiting_run_start = self
+            .awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .clone();
         let slots = self
             .slots()
             .into_iter()
-            .filter(|slot| slot.active)
+            .filter(|slot| slot.active && !awaiting_run_start.contains(&slot.id))
             .collect::<Vec<_>>();
         if slots.is_empty() {
             return;
@@ -923,13 +937,7 @@ impl RendererManager {
             bail!("assign a participant before launching the renderer");
         }
         self.kill_process(slot_id);
-        self.create_frame_ring(&slot)?;
-        // Relaunching an unchanged slot (for a new chart or feature switch)
-        // does not pass through configure. Zero the existing mapped section in
-        // place: Windows rejects truncating a file while this process still
-        // owns its mapping, and the new child will observe these same pages.
-        self.reset_input_map(&slot.id)?;
-        self.reset_score_map(&slot.id)?;
+        self.prepare_slot_launch(&slot)?;
         let mut command = self.renderer_command(
             &slot,
             game_executable,
@@ -954,6 +962,25 @@ impl RendererManager {
             current.healthy = false;
             current.last_error = None;
         }
+        Ok(())
+    }
+
+    fn prepare_slot_launch(&self, slot: &RendererSlot) -> Result<()> {
+        // Close the publication gate before resetting stable mappings. Without
+        // this barrier the 60 Hz writer can immediately republish the previous
+        // match's final input/results into the new child, making it leave Game
+        // before threaded initialization has constructed Game.vfx.
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .insert(slot.id.clone());
+        self.create_frame_ring(slot)?;
+        // Relaunching an unchanged slot (for a new chart or feature switch)
+        // does not pass through configure. Zero the existing mapped section in
+        // place: Windows rejects truncating a file while this process still
+        // owns its mapping, and the new child will observe these same pages.
+        self.reset_input_map(&slot.id)?;
+        self.reset_score_map(&slot.id)?;
         Ok(())
     }
 
@@ -989,7 +1016,10 @@ impl RendererManager {
             .env("BBT_RENDERER_HEIGHT", slot.height.to_string())
             .env("BBT_RENDERER_FPS", slot.fps.to_string())
             .env("BBT_RENDERER_DELAY_MS", slot.delay_ms.to_string())
-            .env("BBT_RENDERER_AUDIO", if slot.featured { "1" } else { "0" })
+            // Renderer processes are never desktop audio authorities. Keeping
+            // every child muted prevents duplicated playback; OBS audio must
+            // come from the main Beatblock process or explicit audio routing.
+            .env("BBT_RENDERER_AUDIO", "0")
             .env("BBT_RENDERER_CHART", chart_path)
             .env("BBT_RENDERER_VARIANT", variant)
             .env("APPDATA", renderer_profile)
@@ -1052,6 +1082,10 @@ impl RendererManager {
             .lock()
             .expect("renderer score cursors poisoned")
             .remove(&reset.id);
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .remove(&reset.id);
         *self
             .sync_epoch
             .lock()
@@ -1059,8 +1093,6 @@ impl RendererManager {
     }
 
     /// Stops only the child process while preserving its desired slot config.
-    /// Feature switches use this to silence the old audio source before either
-    /// process is relaunched with its new authority.
     pub fn stop_process(&self, slot_id: &str) {
         self.kill_process(slot_id);
     }
@@ -1248,6 +1280,10 @@ impl RendererManager {
         self.score_cursors
             .lock()
             .expect("renderer score cursors poisoned")
+            .clear();
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
             .clear();
         *self
             .sync_epoch
@@ -1582,7 +1618,7 @@ mod tests {
         assert_eq!(env("APPDATA"), Some(profile.clone()));
         assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("A")));
-        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
+        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("0")));
         assert_eq!(
             env("BBT_RENDERER_ERROR_PATH"),
             Some(manager.error_path("A"))
@@ -2029,6 +2065,87 @@ mod tests {
         assert!(manager.input_sources.lock().unwrap().is_empty());
         assert!(manager.render_samples.lock().unwrap().is_empty());
         assert!(manager.render_scores.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relaunched_renderer_cannot_republish_previous_results_before_next_run() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-renderer-relaunch-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        let slot = manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(250),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        manager.begin_run();
+        manager.push_render_anchor("player-1", 0.0, 0.0);
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
+                session_id: 1,
+                sequence: 1,
+                run_time_us: 1_000_000,
+                beat: 100.0,
+                paddle_angle: 45.0,
+                tap_mask: 0,
+                flags: FLAG_PLAYING,
+            },
+            2_000_000,
+        );
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 1,
+                run_time_us: 1_000_000,
+                accuracy: 99.5,
+                average_offset: 1.25,
+                totals: ScoreTotals::default(),
+                results: true,
+            },
+        );
+        manager.write_aligned_inputs(2_250_000);
+        assert_eq!(
+            u32::from_le_bytes(
+                std::fs::read(manager.score_path("A")).unwrap()[4..8]
+                    .try_into()
+                    .unwrap()
+            ),
+            1
+        );
+
+        manager.prepare_slot_launch(&slot).unwrap();
+        manager.write_aligned_inputs(2_266_667);
+        assert!(
+            std::fs::read(manager.state_path("A"))
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0),
+            "a relaunched child must remain parked on a zero input page"
+        );
+        assert!(
+            std::fs::read(manager.score_path("A"))
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0),
+            "a relaunched child must not receive the previous results marker"
+        );
+
+        manager.begin_run();
+        assert!(
+            !manager.awaiting_run_start.lock().unwrap().contains("A"),
+            "the next run must release the relaunch publication barrier"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

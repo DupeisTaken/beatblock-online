@@ -177,6 +177,35 @@ async fn changing_the_host_custom_chart_verifies_against_the_new_lock() {
 }
 
 #[tokio::test]
+async fn special_character_chart_path_and_title_survive_selection() {
+    let root = temporary("game-command-special-title");
+    let chart = root.join("Camellia - LORELEI - SLUMPAGE ∕ Poison And÷or Affections");
+    std::fs::create_dir_all(&chart).unwrap();
+    std::fs::write(chart.join("level.json"), b"legacy competition chart").unwrap();
+    let app = state(root.clone(), &"f".repeat(64)).await;
+    let title = "Camellia - LORELEI - SLUMPAGE / Poison And÷or Affections";
+    let level_path = "Custom Levels/LORELEI - SLUMPAGE ÷/";
+    let mut command = chart_command(
+        "room.chart_select_request",
+        chart.to_str().unwrap(),
+        "Hard",
+        1,
+    );
+    command.payload["songName"] = json!(title);
+    command.payload["levelPath"] = json!(level_path);
+
+    game_commands::handle(&app, &command).await.unwrap();
+
+    let snapshot = app.room.read().await.snapshot.clone();
+    assert_eq!(snapshot.chart.as_ref().unwrap().song_name, title);
+    assert_eq!(
+        app.selected_chart_path.read().await.as_deref(),
+        Some(level_path)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn host_can_disable_custom_chart_transfer_for_the_room() {
     let root = temporary("game-command-transfer-disabled");
     let chart = root.join("chart");

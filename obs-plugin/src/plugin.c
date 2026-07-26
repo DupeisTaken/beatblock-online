@@ -13,9 +13,13 @@ OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-online-obs", "en-US")
 #define FRAME_VERSION 2
 #define MAPPING_RETRY_NS 500000000ULL
 #define STALE_FRAME_NS 1500000000ULL
+#define PROCESS_AUDIO_SOURCE_ID "wasapi_process_output_capture"
+#define DEFAULT_AUDIO_WINDOW "Beatblock:SDL_app:Beatblock.exe"
+#define DEFAULT_AUDIO_DELAY_MS 500
 
 struct bbt_video {
     obs_source_t *source;
+    obs_source_t *audio_source;
     gs_texture_t *texture;
     char slot;
     uint32_t width;
@@ -33,6 +37,80 @@ struct bbt_video {
     size_t mapped_size;
     wchar_t path[MAX_PATH * 2];
 };
+
+static bool reroute_audio_source(obs_source_t *audio_source, obs_source_t *target)
+{
+    calldata_t params = {0};
+    calldata_set_ptr(&params, "target", target);
+    bool routed = proc_handler_call(obs_source_get_proc_handler(audio_source),
+        "reroute_audio", &params);
+    calldata_free(&params);
+    return routed;
+}
+
+static void destroy_audio_source(struct bbt_video *ctx)
+{
+    obs_source_set_audio_active(ctx->source, false);
+    if (!ctx->audio_source)
+        return;
+    reroute_audio_source(ctx->audio_source, NULL);
+    obs_source_remove_active_child(ctx->source, ctx->audio_source);
+    obs_source_release(ctx->audio_source);
+    ctx->audio_source = NULL;
+}
+
+static void update_audio_source(struct bbt_video *ctx, obs_data_t *settings)
+{
+    if (!obs_data_get_bool(settings, "capture_audio")) {
+        destroy_audio_source(ctx);
+        return;
+    }
+
+    const char *window = obs_data_get_string(settings, "audio_window");
+    if (!window || !*window)
+        window = DEFAULT_AUDIO_WINDOW;
+    obs_data_t *audio_settings = obs_data_create();
+    obs_data_set_string(audio_settings, "window", window);
+    // Matches OBS's WINDOW_PRIORITY_EXE. The title/class still disambiguate the
+    // ordinary visible game from unrelated processes when available.
+    obs_data_set_int(audio_settings, "priority", 2);
+
+    if (!ctx->audio_source) {
+        char name[256];
+        snprintf(name, sizeof(name), "%s (Beatblock audio)",
+            obs_source_get_name(ctx->source));
+        ctx->audio_source = obs_source_create_private(PROCESS_AUDIO_SOURCE_ID,
+            name, audio_settings);
+        if (!ctx->audio_source) {
+            blog(LOG_WARNING,
+                "[Beatblock Online] OBS Application Audio Capture is unavailable; "
+                "the Player Stream will remain video-only");
+            obs_data_release(audio_settings);
+            obs_source_set_audio_active(ctx->source, false);
+            return;
+        }
+        if (!obs_source_add_active_child(ctx->source, ctx->audio_source) ||
+            !reroute_audio_source(ctx->audio_source, ctx->source)) {
+            blog(LOG_WARNING,
+                "[Beatblock Online] OBS Application Audio Capture could not be "
+                "attached to the Player Stream");
+            destroy_audio_source(ctx);
+            obs_data_release(audio_settings);
+            return;
+        }
+    } else {
+        obs_source_update(ctx->audio_source, audio_settings);
+    }
+    obs_data_release(audio_settings);
+
+    int64_t delay_ms = obs_data_get_int(settings, "audio_delay_ms");
+    if (delay_ms < 0)
+        delay_ms = 0;
+    if (delay_ms > 2000)
+        delay_ms = 2000;
+    obs_source_set_sync_offset(ctx->source, delay_ms * 1000000LL);
+    obs_source_set_audio_active(ctx->source, true);
+}
 
 static void close_frame_mapping(struct bbt_video *ctx)
 {
@@ -171,6 +249,7 @@ static void video_update(void *data, obs_data_t *settings)
         requested_slot -= ('a' - 'A');
     if (requested_slot < 'A' || requested_slot > 'D')
         requested_slot = 'A';
+    update_audio_source(ctx, settings);
     if (ctx->slot == requested_slot && ctx->path[0])
         return;
     ctx->slot = requested_slot;
@@ -193,6 +272,7 @@ static void *video_create(obs_data_t *settings, obs_source_t *source)
 static void video_destroy(void *data)
 {
     struct bbt_video *ctx = data;
+    destroy_audio_source(ctx);
     clear_video_frame(ctx);
     close_frame_mapping(ctx);
     bfree(ctx);
@@ -201,6 +281,9 @@ static void video_destroy(void *data)
 static void video_defaults(obs_data_t *settings)
 {
     obs_data_set_default_string(settings, "slot", "A");
+    obs_data_set_default_bool(settings, "capture_audio", true);
+    obs_data_set_default_string(settings, "audio_window", DEFAULT_AUDIO_WINDOW);
+    obs_data_set_default_int(settings, "audio_delay_ms", DEFAULT_AUDIO_DELAY_MS);
 }
 
 static obs_properties_t *video_properties(void *data)
@@ -214,6 +297,13 @@ static obs_properties_t *video_properties(void *data)
     obs_property_list_add_string(slot, "Stream C", "C");
     obs_property_list_add_string(slot, "Stream D", "D");
     obs_properties_add_text(props, "status", obs_module_text("ManagerHint"), OBS_TEXT_INFO);
+    obs_properties_add_bool(props, "capture_audio", obs_module_text("CaptureAudio"));
+    obs_properties_add_text(props, "audio_window", obs_module_text("AudioWindow"),
+        OBS_TEXT_DEFAULT);
+    obs_properties_add_int_slider(props, "audio_delay_ms", obs_module_text("AudioDelay"),
+        0, 2000, 50);
+    obs_properties_add_text(props, "audio_status", obs_module_text("AudioHint"),
+        OBS_TEXT_INFO);
     return props;
 }
 
@@ -306,7 +396,7 @@ static void video_render(void *data, gs_effect_t *effect)
 static struct obs_source_info video_info = {
     .id = "beatblock_online_player_stream",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
+    .output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_CUSTOM_DRAW,
     .get_name = video_name,
     .create = video_create,
     .destroy = video_destroy,

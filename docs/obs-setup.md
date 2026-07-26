@@ -17,7 +17,15 @@ CPU buffer and GPU texture. It also closes and retries the file mapping at a
 bounded cadence, allowing a stopped or atomically replaced renderer ring to
 recover without recreating the OBS source.
 
-The plugin exposes video sources only. Use OBS Application Audio Capture for the featured renderer. Exactly one child is audible: feature switching stops the previous audio process before the new featured child is enabled, and audio follows the configured delayed clock.
+The source automatically creates a private OBS Application Audio Capture child,
+routes its samples through the Player Stream, and applies a 500 ms sync offset
+matching the default video delay. It targets the visible main Beatblock window;
+hidden renderer children are always muted so they cannot double desktop audio.
+Enable audio on exactly one Player Stream in a multi-stream scene. If the main
+window has a nonstandard title/class, edit **Audio target (OBS window selector)**.
+When Advanced Export uses another delay, set the source's **Audio sync delay**
+to that same value. On an OBS build without Application Audio Capture support,
+the source logs a warning and continues video-only instead of failing to load.
 
 Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode publishes Beatblock's complete native composition: chart backgrounds and video, decorative entities, blocks, hit feedback, chart and Online HUDs, palette/accessibility conversion, and screen-space effects. Optional Clean mode uses the native base gameplay canvas without the final on-top composition, but still applies Beatblock's palette/accessibility shader; it no longer exposes red palette-index artwork or removes chart-authored scenery. Both modes preserve the source aspect ratio, and capture continues through Beatblock's native Results state. Disposable renderer profiles always select Beatblock's built-in default (`none`) Cranky costume instead of inheriting a costume from the host save.
 
@@ -79,7 +87,7 @@ cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 
 Renderers normalize chart-directory paths, resolve named variants to their
 manifest objects, and satisfy Beatblock's threaded audio-preload gate with an
-empty preload table before entering Game state. The renderer child's numeric
+empty preload table before entering Game state. Every renderer child's numeric
 audio settings are zeroed before Beatblock loads that chart's song. They read delayed input from
 `stream-X.bbtstate`, draw in a hidden and muted Beatblock process, pace capture
 at the configured FPS, and publish `stream-X.bbtframe`. LÖVE 12 asynchronous

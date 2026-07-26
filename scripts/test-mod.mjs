@@ -78,19 +78,33 @@ function decodeRgbaPng(buffer) {
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(resolve(root, path), 'utf8');
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const [core, dashboard, components, online, ipc, renderer, hooks, commands, readme, obsPlugin] =
-  await Promise.all([
-    read('mod/shared/bbt/core.lua'),
-    read('mod/shared/bbt/dashboard_model.lua'),
-    read('mod/shared/bbt/dashboard_components.lua'),
-    read('mod/shared/bbt/online_state.lua'),
-    read('mod/shared/bbt/ipc_thread.lua'),
-    read('mod/shared/bbt/renderer.lua'),
-    read('mod/shared/lovely/hooks.toml'),
-    read('companion/src/game_commands.rs'),
-    read('README.md'),
-    read('obs-plugin/src/plugin.c'),
-  ]);
+const [
+  core,
+  dashboard,
+  components,
+  online,
+  ipc,
+  renderer,
+  hooks,
+  commands,
+  readme,
+  obsPlugin,
+  companionRenderer,
+  obsLocale,
+] = await Promise.all([
+  read('mod/shared/bbt/core.lua'),
+  read('mod/shared/bbt/dashboard_model.lua'),
+  read('mod/shared/bbt/dashboard_components.lua'),
+  read('mod/shared/bbt/online_state.lua'),
+  read('mod/shared/bbt/ipc_thread.lua'),
+  read('mod/shared/bbt/renderer.lua'),
+  read('mod/shared/lovely/hooks.toml'),
+  read('companion/src/game_commands.rs'),
+  read('README.md'),
+  read('obs-plugin/src/plugin.c'),
+  read('companion/src/renderer.rs'),
+  read('obs-plugin/data/locale/en-US.ini'),
+]);
 const onlineIcon = await readFile(resolve(root, 'mod/shared/assets/online.png'));
 const decodedOnlineIcon = decodeRgbaPng(onlineIcon);
 if (decodedOnlineIcon.width !== 72 || decodedOnlineIcon.height !== 72)
@@ -153,6 +167,9 @@ for (const contract of [
   [core, 'local officialSelection = BBT.selectingOfficialChart'],
   [core, 'official = officialSelection'],
   [core, 'local function chartPreloadReady(levelData, soundData)'],
+  [core, "for _, metadata in ipairs({'manifest.json', 'level.json'}) do"],
+  [core, "levelPath = type(item.filename) == 'string' and item.filename or levelPath"],
+  [core, 'songName = (item.rawMetadata and item.rawMetadata.songName) or item.name'],
   [core, 'previous.menuMusicManager:stop()'],
   [core, 'local renderInterval = inGame and 1 / 60 or 1 / 5'],
   [core, 'local renderPlaying = inGame and not cs.startPending and not cs.paused'],
@@ -161,6 +178,9 @@ for (const contract of [
   [core, 'results = results == true'],
   [core, 'if inGame then emitRenderKeyframe(nil, false) end'],
   [core, 'function BBT.onResults(forceScore, scoreMax)'],
+  [core, 'local manager = self or (cs and cs.gm)'],
+  [core, 'local function resultsTotals(forceScore, scoreMax)'],
+  [core, 'if emitScoreDelta(true, final) then BBT.scoreDirty=false end'],
   [core, "function BBT.shouldBlockPause()\n  return BBT.context.lobbyId ~= 'offline'\nend"],
   [hooks, 'if BBT and BBT.shouldBlockPause() then return end'],
   [core, "['render.sample'] = 'bbt_render_latest'"],
@@ -257,6 +277,25 @@ if (hooks.includes('states/AtomMap.lua'))
   throw new Error('Online chart selection still patches the brittle Atom Map state');
 if (renderer.includes('readbackTextureAsync, output, function'))
   throw new Error('Renderer still uses the obsolete callback-style LÖVE readback API');
+if (
+  !renderer.includes('SDL_GetWindows') ||
+  !renderer.includes('bool SDL_HideWindow(void*)') ||
+  !renderer.includes('hideRendererWindow()')
+)
+  throw new Error('Renderer window hiding does not use the child-owned SDL window');
+if (renderer.includes('int SDL_HideWindow(void*)'))
+  throw new Error('Renderer uses the wrong ABI width for SDL_HideWindow boolean results');
+if (!renderer.includes('not cs.startPending and cs.vfx'))
+  throw new Error('Renderer can enter Results before Game threaded initialization is complete');
+for (const lifecycleContract of [
+  'awaiting_run_start: Mutex<HashSet<String>>',
+  '!awaiting_run_start.contains(&slot.id)',
+  'self.prepare_slot_launch(&slot)?',
+  '.env("BBT_RENDERER_AUDIO", "0")',
+]) {
+  if (!companionRenderer.includes(lifecycleContract))
+    throw new Error(`Renderer relaunch contract is missing ${lifecycleContract}`);
+}
 if (!obsPlugin.includes('read_committed_sequence(header)'))
   throw new Error('OBS source does not confirm read-only sequence snapshots around its frame copy');
 if (obsPlugin.includes('InterlockedCompareExchange64'))
@@ -266,6 +305,24 @@ if (
   !obsPlugin.includes('gs_effect_set_texture_srgb(image, ctx->texture)')
 )
   throw new Error('OBS custom-draw source does not bind its frame texture to the base effect');
+for (const audioContract of [
+  '#define PROCESS_AUDIO_SOURCE_ID "wasapi_process_output_capture"',
+  'obs_source_create_private(PROCESS_AUDIO_SOURCE_ID',
+  'obs_source_add_active_child(ctx->source, ctx->audio_source)',
+  '"reroute_audio"',
+  'obs_source_set_audio_active(ctx->source, true)',
+  'obs_source_remove_active_child(ctx->source, ctx->audio_source)',
+  'OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_CUSTOM_DRAW',
+  'obs_data_set_default_bool(settings, "capture_audio", true)',
+  'obs_source_set_sync_offset(ctx->source, delay_ms * 1000000LL)',
+]) {
+  if (!obsPlugin.includes(audioContract))
+    throw new Error(`OBS integrated application-audio contract is missing ${audioContract}`);
+}
+for (const localeContract of ['CaptureAudio=', 'AudioWindow=', 'AudioDelay=', 'AudioHint=']) {
+  if (!obsLocale.includes(localeContract))
+    throw new Error(`OBS audio settings locale is missing ${localeContract}`);
+}
 const playerViewCapture = 'BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded)';
 if (!hooks.includes(playerViewCapture))
   throw new Error('Renderer capture hook does not receive raw and final shaded gameplay');
@@ -495,6 +552,36 @@ for (const capability of [
 }
 if (!core.includes('if sent then BBT.runSequence = BBT.runSequence + 1 end'))
   throw new Error('Rejected score IPC writes still create false run-sequence gaps');
+const tapInputHook = core.slice(
+  core.indexOf('GameManager.getTapInputs = function(self, ...)'),
+  core.indexOf('GameManager.updateTaps = function(self, ...)'),
+);
+if (
+  !tapInputHook.includes('local manager = self or (cs and cs.gm)') ||
+  !tapInputHook.includes('if manager and manager.msToBeat then') ||
+  tapInputHook.includes('if self.msToBeat')
+)
+  throw new Error(
+    'Tap-input telemetry assumes a GameManager receiver and will crash Ladybug dot calls',
+  );
+const resultsBoundary = core.slice(
+  core.indexOf('local function resultsTotals(forceScore, scoreMax)'),
+  core.indexOf('function BBT.shouldHoldStart()'),
+);
+for (const contract of [
+  'current.currentMaxHits = current.maxHits',
+  'current.hits = math.max(current.hits, math.max(0, current.maxHits - current.misses))',
+  'local final = resultsTotals(forceScore, scoreMax)',
+  'emitScoreDelta(true, final)',
+]) {
+  if (!resultsBoundary.includes(contract))
+    throw new Error(`Results terminal-score regression contract is missing ${contract}`);
+}
+if (
+  resultsBoundary.indexOf('emitScoreDelta(true, final)') >
+  resultsBoundary.indexOf("BBT.send('run.finished'")
+)
+  throw new Error('Results completion is queued before its terminal score snapshot');
 if (
   !core.includes('local MAX_STANDARD_OUTBOUND = 480') ||
   !core.includes("['run.finished'] = true")
