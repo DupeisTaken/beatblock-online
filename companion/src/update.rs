@@ -95,9 +95,9 @@ mod tests {
     #[test]
     fn preview_build_finds_a_newer_preview_release() {
         let check = evaluate_releases(
-            "0.3.0-beta.2",
+            "0.3.0-beta.3",
             r#"[
-                {"tag_name":"v0.3.0-beta.3","html_url":"https://example.test/beta-3","draft":false,"prerelease":true},
+                {"tag_name":"v0.3.0-beta.4","html_url":"https://example.test/beta-4","draft":false,"prerelease":true},
                 {"tag_name":"not-a-version","html_url":"https://example.test/notes","draft":false,"prerelease":false},
                 {"tag_name":"v0.4.0-beta.1","html_url":"https://example.test/draft","draft":true,"prerelease":true}
             ]"#,
@@ -107,11 +107,11 @@ mod tests {
         assert!(check.update_available());
         assert_eq!(
             check.latest_version,
-            Some(Version::parse("0.3.0-beta.3").unwrap())
+            Some(Version::parse("0.3.0-beta.4").unwrap())
         );
         assert_eq!(
             check.release_url.as_deref(),
-            Some("https://example.test/beta-3")
+            Some("https://example.test/beta-4")
         );
     }
 

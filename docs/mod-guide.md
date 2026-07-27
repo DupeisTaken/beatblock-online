@@ -39,7 +39,7 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Setlist** selects official/custom charts, builds the ordered room set, and exposes Up/Down/Remove for the selected row. Results return the host here; advancing opens the correct selector for local verification.
 - **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; **Advanced Export** edits mode, resolution, FPS, and delay per stream and warns on 1080p60.
 - **History** lists saved match summaries.
-- **Settings** controls the gameplay HUD and the host's pre-race **Run Checks** policy, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**. Competitive checks remain the default; casual mode permits retries and ordered-event recovery while retaining structural score validation and DNF completion rules.
+- **Settings** controls the gameplay HUD and the host's pre-race **Run Checks** policy, shows the installed version and Stable/Preview channel, checks GitHub Releases for a newer compatible build, shows protocol/runtime details and the isolated transfer-cache size, and provides **Clear Cache**. Update checks run asynchronously with a bounded timeout; stable builds ignore prereleases, while preview builds can offer a newer preview and open its release page. Competitive checks remain the default; casual mode permits retries and ordered-event recovery while retaining structural score validation and DNF completion rules.
 - **Help** explains roles, controls, chart transfer, and player troubleshooting without granting room controls. Runtime errors remain visible in the footer, while complete INVALID/DNF reasons live in **Run Details**.
 
 Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
@@ -50,6 +50,12 @@ open, so hosts can add several charts without reopening the tool each time.
 ## Chart matching and host fallback
 
 For every locked chart, Online tries the current selection and managed hash/path indexes before asking the Player. Official charts are local-only. For a custom chart, **Select Local Chart** verifies the canonical package hash, variant, and note count. If the host enabled transfers, **Request Host Transfer** requests the original archive (or a bounded archive produced from the host's selected directory).
+
+Chart selection uses Beatblock's authoritative UTF-8 package filename instead
+of deriving a path from the rendered song title. Punctuation, division signs,
+and other Unicode characters are therefore preserved. Both current
+`manifest.json` packages and legacy `level.json` packages participate in local
+matching.
 
 The offer shows size and whether script/executable content exists. Normal packages can be accepted once or with **Trust This Room**, which auto-accepts later ordinary packages only for that live room. Script/executable content always requires a separate confirmation and never inherits room trust.
 

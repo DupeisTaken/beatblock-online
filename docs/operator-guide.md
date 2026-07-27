@@ -111,6 +111,7 @@ Open **Setlist** from the bottom utility bar.
 
 - **Select Official** uses Beatblock's official selector and never redistributes official content.
 - **Select Custom** locks a custom chart for local hash, variant, and note-count verification. When chart transfers are enabled, Players still search locally first and can then request the authenticated host fallback. Official charts remain local-only.
+- Custom selection preserves Beatblock's authoritative UTF-8 package filename and raw song metadata, so punctuation and Unicode in chart names do not need to be renamed. Both `manifest.json` and legacy `level.json` custom packages are supported.
 - **Add Official/Custom** creates an ordered set. Select a row, then use **Up**, **Down**, or **Remove** to edit its play order. After Results, the completed boundary is locked so an unplayed chart cannot be moved behind it and silently skipped.
 - After Results, the host returns to Setlist. **Next Chart** / **Continue to Next Chart** locks the next entry and opens the matching official or custom selector so a playing host can verify it locally. If the set is complete, add another entry first.
 

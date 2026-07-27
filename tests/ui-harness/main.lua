@@ -85,14 +85,14 @@ for index,id in ipairs({'A','B','C','D'}) do
 end
 
 BBT={
-  version='0.3.0-beta.2',protocolVersion=3,
+  version='0.3.0-beta.3',protocolVersion=3,
   context={sessionId='host-1',playerName='Host',lobbyId='visual-room'},
   lastLobby=roomFixture,companionConnected=true,runtimeStarting=false,connected=true,
   chartVerified=true,hudEnabled=true,settings={hostAddress='192.168.1.24',hostPort=32145,hudEnabled=true},
   renderers=baseRenderers,history={
     {name='Friday Finals',status='CLOSED'},{name='Practice Room',status='SET COMPLETE'},
   },
-  diagnostics={protocolVersion=3,runtimeVersion='0.3.0-beta.2',peerCount=14},
+  diagnostics={protocolVersion=3,runtimeVersion='0.3.0-beta.3',peerCount=14},
   runtimeSnapshot={joinAddress='203.0.113.24:32145',connection='hosting',chartCacheSizeLabel='384.5 MB / 2 GB'},
 }
 function BBT.currentPlayer()

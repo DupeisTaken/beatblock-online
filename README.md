@@ -2,11 +2,12 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The current prerelease candidate is [`v0.3.0-beta.2`](docs/releases/v0.3.0-beta.2.md).
-It hardens per-attempt scoring and reconnect recovery, adds host-selectable
-competitive checks, rejects duplicate usernames, clears retained player state,
-sources OBS accuracy and Results from the delayed player stream, supports custom
-OBS installation folders, and clears stale per-stream text when assignments end.
+The current prerelease candidate is [`v0.3.0-beta.3`](docs/releases/v0.3.0-beta.3.md).
+It fixes Ladybug chart crashes and false final-note DNF results, accepts custom
+chart titles and paths containing Unicode or punctuation, adds release-aware
+version checking in Settings, prevents stale renderer Results from crashing a
+relaunched broadcast child, and routes synchronized game audio through the
+native OBS 32 Player Stream source.
 
 ## Player quick start
 
@@ -103,6 +104,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
+- [v0.3.0-beta.3 release notes](docs/releases/v0.3.0-beta.3.md)
 - [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
