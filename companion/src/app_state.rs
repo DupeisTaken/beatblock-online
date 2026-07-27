@@ -1476,19 +1476,17 @@ impl AppState {
                     if room_changed {
                         self.broadcast_room().await?;
                     }
+                } else if envelope.kind == "room.removed" {
+                    let reason = envelope
+                        .payload
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Removed from the room")
+                        .to_owned();
+                    self.leave_room().await?;
+                    self.emit_error(reason);
                 } else {
-                    if envelope.kind == "room.removed" {
-                        let reason = envelope
-                            .payload
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Removed from the room")
-                            .to_owned();
-                        self.leave_room().await?;
-                        self.emit_error(reason);
-                    } else {
-                        self.apply_host_message(&session_id, envelope).await?;
-                    }
+                    self.apply_host_message(&session_id, envelope).await?;
                 }
             }
             NetworkEvent::RenderSample { session_id, sample } => {

@@ -70,9 +70,7 @@ fn evaluate_releases(current: &str, body: &str) -> Result<UpdateCheck> {
         .into_iter()
         .filter(|release| !release.draft)
         .filter_map(|release| {
-            let tag = release
-                .tag_name
-                .trim_start_matches(|character| character == 'v' || character == 'V');
+            let tag = release.tag_name.trim_start_matches(['v', 'V']);
             let version = Version::parse(tag).ok()?;
             if (release.prerelease || !version.pre.is_empty()) && !include_prereleases {
                 return None;
