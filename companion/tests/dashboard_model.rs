@@ -30,9 +30,9 @@ local function player(name, role, admitted, verified, ready)
 end
 local function lobby(lifecycle, chart, participants, setlist, index)
   return {id='room-1',name='Room',lifecycle=lifecycle,chart=chart,participants=participants or {},
-    setlist=setlist or {},currentSetlistIndex=index,hostSessionId='Host'}
+    setlist=setlist or {},currentSetlistIndex=index,hostSessionId='Host',allowChartTransfers=true}
 end
-local chart={songName='Signal',variant='Hard',official=false}
+local chart={songName='Signal',variant='Hard',official=false,transferMode='host_transfer'}
 local host=player('Host','host',true,true,true)
 local ready=player('Ready','player',true,true,true)
 local waiting=player('Waiting','player',true,false,false)
@@ -43,8 +43,13 @@ assert(Dashboard.phase({runtimeReady=false,runtimeStarting=true})=='runtime_star
 assert(Dashboard.primary({runtimeReady=false,runtimeStarting=false}).id=='open_installer')
 assert(Dashboard.primary({runtimeReady=true}).id=='host_room')
 assert(Dashboard.primary({runtimeReady=true,room=lobby('forming',nil,{host}),me=host,isHost=true}).id=='select_chart')
-assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{waiting}),me=waiting}).id=='locate_chart')
-assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{waiting}),me=waiting,chartVerified=true}).id=='locate_chart')
+assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{waiting}),me=waiting}).id=='request_chart')
+assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{waiting}),me=waiting,chartVerified=true}).id=='request_chart')
+local manualOnly=lobby('chart_locked',chart,{waiting})
+manualOnly.allowChartTransfers=false
+assert(Dashboard.primary({runtimeReady=true,room=manualOnly,me=waiting}).id=='locate_chart')
+local verifyOnly={songName='Signal',variant='Hard',official=false,transferMode='verify_only'}
+assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',verifyOnly,{waiting}),me=waiting}).id=='locate_chart')
 waiting.verified=true
 assert(Dashboard.primary({runtimeReady=true,room=lobby('chart_locked',chart,{waiting}),me=waiting,chartVerified=true}).id=='ready')
 assert(Dashboard.primary({runtimeReady=true,room=lobby('ready',chart,{host,ready}),me=host,isHost=true}).id=='start_race')
@@ -108,8 +113,9 @@ assert(Dashboard.canBroadcast({me=spectator,isHost=false})==false)
 
 fn execute(source: &str) {
     let library_path = std::env::var_os("BBT_UI_FIXTURE")
+        .or_else(|| std::env::var_os("BBT_GAME_FIXTURE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"E:\beatblock-online\.test\ui-harness"))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock"))
         .join("lua51.dll");
     let wide = library_path
         .as_os_str()

@@ -1,4 +1,5 @@
 use crate::{
+    compatibility::GameBuildIdentity,
     exports::ExportPublisher,
     game_commands,
     journal::JournalPublisher,
@@ -34,12 +35,57 @@ const MAX_PEER_STATE_PAYLOAD_BYTES: usize = 4 * 1024;
 const MAX_PEER_TELEMETRY_PAYLOAD_BYTES: usize = 8 * 1024;
 const MAX_QUEUED_TRANSFER_BUILDS: usize = 4;
 
+pub struct HostRoomOptions {
+    pub room_name: String,
+    pub password: String,
+    pub port: u16,
+    pub admission_mode: AdmissionMode,
+    pub host_participating: bool,
+    pub validity_checks_enabled: bool,
+    pub require_same_game_build: bool,
+}
+
 fn validated_room_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 {
         anyhow::bail!("room name must contain 1-80 characters");
     }
     Ok(name.to_owned())
+}
+
+fn transferable_chart_for_participant(
+    snapshot: &RoomSnapshot,
+    session_id: &str,
+    requested_hash: &str,
+) -> Result<ChartLock> {
+    let participant = snapshot
+        .participants
+        .iter()
+        .find(|participant| participant.session_id == session_id)
+        .context("local participant is not in the room roster")?;
+    if !participant.admitted || !participant.connected {
+        anyhow::bail!("join and receive host admission before requesting a chart");
+    }
+    if participant.role == ParticipantRole::Spectator {
+        anyhow::bail!("spectators do not need the locked gameplay chart");
+    }
+    if participant.verified {
+        anyhow::bail!("the local chart already matches the host lock");
+    }
+    let chart = snapshot
+        .chart
+        .as_ref()
+        .context("the host has not locked a chart")?;
+    if chart.hash != requested_hash {
+        anyhow::bail!("the chart transfer request is stale; use the current host lock");
+    }
+    if !snapshot.allow_chart_transfers
+        || chart.official
+        || chart.transfer_mode != ChartTransferMode::HostTransfer
+    {
+        anyhow::bail!("this chart is local-only or the host disabled transfers");
+    }
+    Ok(chart.clone())
 }
 
 /// Builds the first authoritative room image before networking exposes it.
@@ -51,12 +97,14 @@ fn initial_host_room(
     admission_mode: AdmissionMode,
     host_participating: bool,
     validity_checks_enabled: bool,
+    require_same_game_build: bool,
 ) -> Result<RoomEngine> {
     let mut room = RoomEngine::host(room_name, host_name, admission_mode);
     if !host_participating {
         room.set_host_participating(false)?;
     }
     room.set_validity_checks(validity_checks_enabled)?;
+    room.set_same_game_build_required(require_same_game_build)?;
     Ok(room)
 }
 
@@ -156,6 +204,21 @@ struct ReconnectRequest {
     password: String,
     display_name: String,
     role: ParticipantRole,
+    game_build: Option<GameBuildIdentity>,
+}
+
+impl ReconnectRequest {
+    async fn join(&self, network: &NetworkHub) -> Result<String> {
+        network
+            .join_with_game_build(
+                self.address,
+                &self.password,
+                &self.display_name,
+                self.role,
+                self.game_build.clone(),
+            )
+            .await
+    }
 }
 
 struct TemporaryFileCleanup {
@@ -183,6 +246,45 @@ mod tests {
 
     fn temporary(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("bbt-app-{label}-{}", rand::random::<u64>()))
+    }
+
+    #[tokio::test]
+    async fn local_hello_uses_the_displayed_upstream_build_hash() {
+        let root = temporary("game-attestation");
+        let game = root.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("Beatblock.exe"), b"fixture").unwrap();
+        let config = CompanionConfig {
+            game_directory: Some(game.to_string_lossy().into_owned()),
+            ..CompanionConfig::default()
+        };
+        let (state, _) = AppState::new(root.clone(), "token".into(), config).unwrap();
+        state
+            .ingest(Envelope::new(
+                "client.hello",
+                1,
+                json!({
+                    "instanceId":"fixture-game",
+                    "clientVersion":env!("CARGO_PKG_VERSION"),
+                    "gameVersion":"1.7.1a (Early Access)[D40B7083]",
+                    "distribution":"standalone",
+                    "mods":[]
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let client = state.client.read().await;
+        assert_eq!(
+            client.get("gameBuildId").and_then(Value::as_str),
+            Some("d40b7083")
+        );
+        assert_eq!(
+            client.get("gameBuildSource").and_then(Value::as_str),
+            Some("displayed_build_hash")
+        );
+        drop(client);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -225,6 +327,7 @@ mod tests {
             AdmissionMode::HostApproval,
             false,
             false,
+            true,
         )
         .unwrap();
         let host = room
@@ -244,11 +347,88 @@ mod tests {
             AdmissionMode::HostApproval,
             true,
             true,
+            false,
         )
         .unwrap();
         assert_eq!(playing.snapshot.participants[0].role, ParticipantRole::Host);
         assert!(!playing.snapshot.participants[0].ready);
         assert!(playing.snapshot.validity_checks_enabled);
+        assert!(!playing.snapshot.require_same_game_build);
+    }
+
+    #[test]
+    fn transfer_requests_require_an_admitted_mismatched_player_and_exact_lock() {
+        let mut room = RoomEngine::host(
+            "Transfer".into(),
+            "Host".into(),
+            AdmissionMode::HostApproval,
+        );
+        room.lock_chart(
+            ChartLock {
+                hash: "a".repeat(64),
+                package_name: "Chart".into(),
+                song_name: "Signal".into(),
+                variant: "Hard".into(),
+                expected_max_hits: 100,
+                official: false,
+                transfer_mode: ChartTransferMode::HostTransfer,
+            },
+            false,
+        )
+        .unwrap();
+        let peer = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+
+        assert!(
+            transferable_chart_for_participant(&room.snapshot, &peer, &"a".repeat(64)).is_err()
+        );
+        room.admit(&peer, true, ParticipantRole::Player).unwrap();
+        assert_eq!(
+            transferable_chart_for_participant(&room.snapshot, &peer, &"a".repeat(64))
+                .unwrap()
+                .hash,
+            "a".repeat(64)
+        );
+        assert!(
+            transferable_chart_for_participant(&room.snapshot, &peer, &"b".repeat(64)).is_err()
+        );
+
+        room.set_verified(&peer, true, None).unwrap();
+        assert!(
+            transferable_chart_for_participant(&room.snapshot, &peer, &"a".repeat(64)).is_err()
+        );
+        room.set_verified(&peer, false, Some("mismatch".into()))
+            .unwrap();
+        room.set_role(&peer, ParticipantRole::Spectator).unwrap();
+        assert!(
+            transferable_chart_for_participant(&room.snapshot, &peer, &"a".repeat(64)).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_room_reconnect_preserves_game_build_identity() {
+        let build =
+            GameBuildIdentity::from_displayed_version("1.7.1a (Early Access)[d40b7083]").unwrap();
+        let (host_events, _host_receiver) = mpsc::channel(8);
+        let host = NetworkHub::new(host_events);
+        let address = host
+            .start_host_with_game_build(0, "correct horse".into(), Some(build.clone()), true)
+            .await
+            .unwrap();
+        let (client_events, _client_receiver) = mpsc::channel(8);
+        let client = NetworkHub::new(client_events);
+        let request = ReconnectRequest {
+            address,
+            password: "correct horse".into(),
+            display_name: "Reconnecting player".into(),
+            role: ParticipantRole::Player,
+            game_build: Some(build),
+        };
+
+        request.join(&client).await.unwrap();
+        client.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test]
@@ -273,6 +453,75 @@ mod tests {
             .admit(&pending, true, ParticipantRole::Player)
             .unwrap();
         assert!(state.require_admitted_peer(&pending).await.is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn host_rejects_ineligible_network_chart_requests_before_packaging() {
+        let root = temporary("transfer-request-authority");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let mut room = RoomEngine::host(
+            "Transfer".into(),
+            "Host".into(),
+            AdmissionMode::HostApproval,
+        );
+        room.lock_chart(
+            ChartLock {
+                hash: "a".repeat(64),
+                package_name: "Chart".into(),
+                song_name: "Signal".into(),
+                variant: "Hard".into(),
+                expected_max_hits: 100,
+                official: false,
+                transfer_mode: ChartTransferMode::HostTransfer,
+            },
+            false,
+        )
+        .unwrap();
+        let peer = room
+            .request_join("Player", ParticipantRole::Player)
+            .unwrap();
+        *state.room.write().await = room;
+        state.is_host.store(true, Ordering::Release);
+
+        let request = || NetworkEvent::Envelope {
+            session_id: peer.clone(),
+            envelope: Envelope::new(
+                "chart.transfer_request",
+                0,
+                json!({"chartHash":"a".repeat(64)}),
+            ),
+        };
+        assert!(state.handle_network_event(request()).await.is_err());
+        assert!(state.active_transfer_builds.read().await.is_empty());
+
+        state
+            .room
+            .write()
+            .await
+            .admit(&peer, true, ParticipantRole::Spectator)
+            .unwrap();
+        let spectator_error = state
+            .handle_network_event(request())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(spectator_error.contains("spectators"));
+        assert!(state.active_transfer_builds.read().await.is_empty());
+
+        {
+            let mut room = state.room.write().await;
+            room.set_role(&peer, ParticipantRole::Player).unwrap();
+            room.set_verified(&peer, true, None).unwrap();
+        }
+        let verified_error = state
+            .handle_network_event(request())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(verified_error.contains("already matches"));
+        assert!(state.active_transfer_builds.read().await.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -723,6 +972,7 @@ pub struct AppState {
     transfer_build_slots: Arc<Semaphore>,
     transfer_install_slot: Arc<Semaphore>,
     last_auto_match_hash: Arc<RwLock<Option<String>>>,
+    last_auto_request_hash: Arc<RwLock<Option<String>>>,
     ipc_client_id: Arc<RwLock<Option<String>>>,
     control_in_flight: Arc<AtomicBool>,
     reconnect_request: Arc<RwLock<Option<ReconnectRequest>>>,
@@ -767,8 +1017,10 @@ impl AppState {
                 lobby: Arc::new(RwLock::new(lobby)),
                 config: Arc::new(RwLock::new(config)),
                 client: Arc::new(RwLock::new(json!({
-                    "clientVersion":"0.3.0-beta.3",
-                    "gameBuildHash":"unknown",
+                    "clientVersion":env!("CARGO_PKG_VERSION"),
+                    "gameVersion":Value::Null,
+                    "gameBuildId":Value::Null,
+                    "gameBuildSource":Value::Null,
                     "distribution":"standalone",
                     "mods":[]
                 }))),
@@ -801,6 +1053,7 @@ impl AppState {
                 transfer_build_slots: Arc::new(Semaphore::new(1)),
                 transfer_install_slot: Arc::new(Semaphore::new(1)),
                 last_auto_match_hash: Arc::new(RwLock::new(None)),
+                last_auto_request_hash: Arc::new(RwLock::new(None)),
                 ipc_client_id: Arc::new(RwLock::new(None)),
                 control_in_flight: Arc::new(AtomicBool::new(false)),
                 reconnect_request: Arc::new(RwLock::new(None)),
@@ -866,7 +1119,10 @@ impl AppState {
         self.apply_host_message(&session_id, message).await
     }
 
-    async fn apply_local(&self, message: Envelope) -> Result<()> {
+    async fn apply_local(&self, mut message: Envelope) -> Result<()> {
+        if message.kind == "client.hello" {
+            self.normalize_local_game_build(&mut message).await?;
+        }
         self.validate(&message)?;
         if message.kind == "client.ping" {
             let _ = self.events.send(Envelope::new(
@@ -947,6 +1203,60 @@ impl AppState {
         }
         let _ = self.events.send(message);
         Ok(())
+    }
+
+    /// Beatblock already exposes the exact upstream build token in the version
+    /// it draws on its menu. Normalize that value once and use it for room
+    /// interoperability rather than maintaining an executable allowlist.
+    async fn normalize_local_game_build(&self, message: &mut Envelope) -> Result<()> {
+        let payload = message
+            .payload
+            .as_object_mut()
+            .context("client.hello payload must be an object")?;
+        let displayed = payload
+            .get("gameVersion")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let identity = match GameBuildIdentity::from_displayed_version(displayed) {
+            Ok(identity) => identity,
+            Err(display_error) => {
+                let directory = self
+                    .config
+                    .read()
+                    .await
+                    .game_directory
+                    .clone()
+                    .context(
+                        "Beatblock build identity and configured game directory are unavailable",
+                    )
+                    .with_context(|| display_error.to_string())?;
+                tokio::task::spawn_blocking(move || {
+                    GameBuildIdentity::from_game_directory(Path::new(&directory))
+                })
+                .await
+                .context("Beatblock build identity worker stopped")??
+            }
+        };
+        payload.insert(
+            "gameVersion".into(),
+            json!(identity.displayed_version.clone()),
+        );
+        payload.insert("gameBuildId".into(), json!(identity.build_id.clone()));
+        payload.insert(
+            "gameBuildSource".into(),
+            serde_json::to_value(&identity.source)?,
+        );
+        payload.insert("gameBuild".into(), serde_json::to_value(identity)?);
+        Ok(())
+    }
+
+    async fn local_game_build_identity(&self) -> Result<GameBuildIdentity> {
+        let client = self.client.read().await;
+        let value = client
+            .get("gameBuild")
+            .cloned()
+            .context("launch Beatblock and open Online before hosting or joining")?;
+        serde_json::from_value(value).context("read the normalized Beatblock build identity")
     }
 
     /// Converts ordered, source-authored render events into the same cached
@@ -1297,23 +1607,18 @@ impl AppState {
                         room_changed = true;
                     } else if envelope.kind == "chart.transfer_request" {
                         let room = self.room.read().await.snapshot.clone();
-                        let chart = room
-                            .chart
-                            .context("a chart must be locked before transfer")?;
                         let requested_hash = envelope
                             .payload
                             .get("chartHash")
                             .and_then(Value::as_str)
                             .context("chart transfer request requires chartHash")?;
-                        if requested_hash != chart.hash {
-                            anyhow::bail!("chart transfer request does not match the active lock");
-                        }
-                        if chart.official
-                            || chart.transfer_mode != ChartTransferMode::HostTransfer
-                            || !room.allow_chart_transfers
-                        {
-                            anyhow::bail!("the locked chart is local-only");
-                        }
+                        // Re-check transfer eligibility at the authoritative
+                        // host boundary before any path access or archive work.
+                        // The earlier generic admission check is insufficient:
+                        // spectators and already-verified players are admitted
+                        // but must not be able to consume packaging capacity.
+                        let chart =
+                            transferable_chart_for_participant(&room, &session_id, requested_hash)?;
                         let selected = PathBuf::from(
                             self.selected_chart_path
                                 .read()
@@ -1710,18 +2015,9 @@ impl AppState {
         if !self.is_host.load(Ordering::Acquire) {
             anyhow::bail!("room closed while waiting to prepare the chart package");
         }
-        self.require_admitted_peer(&session_id).await?;
-        let queued_hash = self
-            .room
-            .read()
-            .await
-            .snapshot
-            .chart
-            .as_ref()
-            .map(|active| active.hash.clone());
-        if queued_hash.as_deref() != Some(chart.hash.as_str()) {
-            anyhow::bail!("the locked chart changed before its package could be prepared");
-        }
+        let queued_snapshot = self.room.read().await.snapshot.clone();
+        transferable_chart_for_participant(&queued_snapshot, &session_id, &chart.hash)
+            .context("chart transfer eligibility changed while waiting for the packager")?;
         let request_id = uuid::Uuid::new_v4().to_string();
         let outgoing = self
             .data_dir
@@ -1738,18 +2034,9 @@ impl AppState {
         if !self.is_host.load(Ordering::Acquire) {
             anyhow::bail!("room closed while preparing the chart package");
         }
-        let active_hash = self
-            .room
-            .read()
-            .await
-            .snapshot
-            .chart
-            .as_ref()
-            .map(|active| active.hash.clone());
-        if active_hash.as_deref() != Some(chart_hash.as_str()) {
-            anyhow::bail!("the locked chart changed while preparing its package");
-        }
-        self.require_admitted_peer(&session_id).await?;
+        let active_snapshot = self.room.read().await.snapshot.clone();
+        transferable_chart_for_participant(&active_snapshot, &session_id, &chart_hash)
+            .context("chart transfer eligibility changed while preparing its package")?;
         let header = ChartTransferHeader {
             request_id,
             name: offer.name,
@@ -1874,15 +2161,16 @@ impl AppState {
         self.renderer.push_player_state(session_id, state);
     }
 
-    pub async fn host_room(
-        &self,
-        room_name: String,
-        password: String,
-        port: u16,
-        admission_mode: AdmissionMode,
-        host_participating: bool,
-        validity_checks_enabled: bool,
-    ) -> Result<SocketAddr> {
+    pub async fn host_room(&self, options: HostRoomOptions) -> Result<SocketAddr> {
+        let HostRoomOptions {
+            room_name,
+            password,
+            port,
+            admission_mode,
+            host_participating,
+            validity_checks_enabled,
+            require_same_game_build,
+        } = options;
         let room_name = validated_room_name(&room_name)?;
         self.cancel_reconnect();
         self.cancel_nat_renewal();
@@ -1896,9 +2184,19 @@ impl AppState {
             admission_mode,
             host_participating,
             validity_checks_enabled,
+            require_same_game_build,
         )?;
         let session_id = room.snapshot.host_session_id.clone();
-        let local_address = match self.network.start_host(port, password).await {
+        let game_build = if require_same_game_build {
+            Some(self.local_game_build_identity().await?)
+        } else {
+            self.local_game_build_identity().await.ok()
+        };
+        let local_address = match self
+            .network
+            .start_host_with_game_build(port, password, game_build, require_same_game_build)
+            .await
+        {
             Ok(address) => address,
             Err(error) => {
                 self.reset_offline_state().await;
@@ -1997,9 +2295,10 @@ impl AppState {
         self.release_nat_mapping().await;
         self.is_host.store(false, Ordering::Relaxed);
         *self.connection_status.write().await = "connecting".into();
+        let game_build = self.local_game_build_identity().await.ok();
         let session = match self
             .network
-            .join(address, password, display_name, role)
+            .join_with_game_build(address, password, display_name, role, game_build.clone())
             .await
         {
             Ok(session) => session,
@@ -2013,6 +2312,7 @@ impl AppState {
             password: password.to_owned(),
             display_name: display_name.to_owned(),
             role,
+            game_build,
         });
         *self.local_session_id.write().await = Some(session.clone());
         *self.connection_status.write().await = "connected".into();
@@ -2114,6 +2414,30 @@ impl AppState {
         self.broadcast_room().await
     }
 
+    pub async fn set_same_game_build_required(&self, required: bool) -> Result<()> {
+        self.require_host()?;
+        if required {
+            anyhow::bail!(
+                "Same Build cannot be re-enabled for an active room; create a new room to restore strict matching"
+            );
+        }
+        self.room
+            .write()
+            .await
+            .set_same_game_build_required(false)?;
+        self.network.relax_host_game_build_policy().await;
+        self.broadcast_room().await
+    }
+
+    pub async fn set_auto_request_chart_transfers(&self, enabled: bool) -> Result<()> {
+        self.require_host()?;
+        self.room
+            .write()
+            .await
+            .set_auto_request_chart_transfers(enabled)?;
+        self.broadcast_room().await
+    }
+
     pub async fn kick(&self, session_id: &str) -> Result<()> {
         self.require_host()?;
         let _ = self
@@ -2164,6 +2488,7 @@ impl AppState {
         self.active_transfer_builds.write().await.clear();
         self.network.clear_incoming_chart_transfers().await;
         *self.last_auto_match_hash.write().await = None;
+        *self.last_auto_request_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.is_host.store(false, Ordering::Relaxed);
         *self.local_session_id.write().await = None;
@@ -2298,12 +2623,41 @@ impl AppState {
         }
     }
 
+    /// Requests the exact current custom chart as an admitted, mismatched
+    /// participant. The host still creates an offer and the existing
+    /// participant-owned consent checks decide whether any bytes may arrive.
+    pub async fn request_chart_transfer(&self, requested_hash: &str) -> Result<()> {
+        if self.is_host.load(Ordering::Relaxed) {
+            anyhow::bail!("the host already owns the locked chart package");
+        }
+        let session_id = self
+            .local_session_id
+            .read()
+            .await
+            .clone()
+            .context("not connected to a room")?;
+        let snapshot = self.room.read().await.snapshot.clone();
+        let chart = transferable_chart_for_participant(&snapshot, &session_id, requested_hash)?;
+        self.network
+            .broadcast(Envelope::new(
+                "chart.transfer_request",
+                0,
+                json!({"chartHash":chart.hash}),
+            ))
+            .await;
+        Ok(())
+    }
+
     /// Checks known local paths and BBT-managed imports before presenting the
-    /// transfer fallback. A hash is attempted once per lock revision so the
-    /// 20 Hz room snapshot stream never causes repeated filesystem scans.
+    /// transfer fallback. A hash is scanned once per lock revision so the
+    /// 20 Hz room snapshot stream never causes repeated filesystem work. When
+    /// the host opts into automatic requests, a failed scan sends at most one
+    /// request for that exact lock.
     async fn try_auto_match_locked_chart(&self) {
         let snapshot = self.room.read().await.snapshot.clone();
-        let Some(chart) = snapshot.chart else { return };
+        let Some(chart) = snapshot.chart.clone() else {
+            return;
+        };
         let Some(session_id) = self.local_session_id.read().await.clone() else {
             return;
         };
@@ -2312,61 +2666,83 @@ impl AppState {
                 && participant.role != ParticipantRole::Spectator
                 && !participant.verified
         });
-        if !needs_match
-            || self.last_auto_match_hash.read().await.as_deref() == Some(chart.hash.as_str())
-        {
+        if !needs_match {
             return;
         }
-        *self.last_auto_match_hash.write().await = Some(chart.hash.clone());
-        let mut candidates = Vec::new();
-        if let Some(path) = self.chart_paths.read().await.get(&chart.hash).cloned() {
-            candidates.push(PathBuf::from(path));
-        }
-        if let Some(path) = self.selected_chart_path.read().await.clone() {
-            candidates.push(PathBuf::from(path));
-        }
-        let cache = self.data_dir.join("chart-cache");
-        if let Ok(entries) = std::fs::read_dir(&cache) {
-            for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
-                if std::fs::read_to_string(entry.path().join(".bbt-chart-hash"))
-                    .ok()
-                    .is_some_and(|value| value.trim() == chart.hash)
-                {
-                    candidates.push(entry.path());
+
+        let already_scanned =
+            self.last_auto_match_hash.read().await.as_deref() == Some(chart.hash.as_str());
+        if !already_scanned {
+            *self.last_auto_match_hash.write().await = Some(chart.hash.clone());
+            let mut candidates = Vec::new();
+            if let Some(path) = self.chart_paths.read().await.get(&chart.hash).cloned() {
+                candidates.push(PathBuf::from(path));
+            }
+            if let Some(path) = self.selected_chart_path.read().await.clone() {
+                candidates.push(PathBuf::from(path));
+            }
+            let cache = self.data_dir.join("chart-cache");
+            if let Ok(entries) = std::fs::read_dir(&cache) {
+                for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                    if std::fs::read_to_string(entry.path().join(".bbt-chart-hash"))
+                        .ok()
+                        .is_some_and(|value| value.trim() == chart.hash)
+                    {
+                        candidates.push(entry.path());
+                    }
                 }
             }
-        }
-        let expected = chart.hash.clone();
-        let hash_cache = self.data_dir.join("chart-hash-index");
-        let matched = tokio::task::spawn_blocking(move || {
-            candidates.into_iter().find(|candidate| {
-                crate::chart_hash::canonical_chart_hash_cached(candidate, &hash_cache)
-                    .ok()
-                    .is_some_and(|actual| actual.hash == expected)
+            let expected = chart.hash.clone();
+            let hash_cache = self.data_dir.join("chart-hash-index");
+            let matched = tokio::task::spawn_blocking(move || {
+                candidates.into_iter().find(|candidate| {
+                    crate::chart_hash::canonical_chart_hash_cached(candidate, &hash_cache)
+                        .ok()
+                        .is_some_and(|actual| actual.hash == expected)
+                })
             })
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some(path) = matched {
-            let text = path.to_string_lossy().into_owned();
-            *self.selected_chart_path.write().await = Some(text.clone());
-            self.chart_paths
-                .write()
-                .await
-                .insert(chart.hash.clone(), text);
-            self.network
-                .broadcast(Envelope::new(
-                    "chart.status",
+            .await
+            .ok()
+            .flatten();
+            if let Some(path) = matched {
+                let text = path.to_string_lossy().into_owned();
+                *self.selected_chart_path.write().await = Some(text.clone());
+                self.chart_paths
+                    .write()
+                    .await
+                    .insert(chart.hash.clone(), text);
+                self.network
+                    .broadcast(Envelope::new(
+                        "chart.status",
+                        0,
+                        json!({"verified":true,"reason":null}),
+                    ))
+                    .await;
+                let _ = self.events.send(Envelope::new(
+                    "chart.verification",
                     0,
-                    json!({"verified":true,"reason":null}),
-                ))
-                .await;
-            let _ = self.events.send(Envelope::new(
-                "chart.verification",
-                0,
-                json!({"verified":true,"hash":chart.hash,"automatic":true}),
-            ));
+                    json!({"verified":true,"hash":chart.hash,"automatic":true}),
+                ));
+                return;
+            }
+        }
+
+        let already_requested =
+            self.last_auto_request_hash.read().await.as_deref() == Some(chart.hash.as_str());
+        if snapshot.auto_request_chart_transfers && !already_requested {
+            match self.request_chart_transfer(&chart.hash).await {
+                Ok(()) => {
+                    *self.last_auto_request_hash.write().await = Some(chart.hash.clone());
+                    let _ = self.events.send(Envelope::new(
+                        "chart.transfer_requested",
+                        0,
+                        json!({"chartHash":chart.hash,"automatic":true}),
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "automatic chart transfer request was not sent");
+                }
+            }
         }
     }
 
@@ -2424,6 +2800,7 @@ impl AppState {
         self.trusted_transfer_rooms.write().await.clear();
         self.active_transfer_builds.write().await.clear();
         *self.last_auto_match_hash.write().await = None;
+        *self.last_auto_request_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.network
             .shutdown_with_reason("Room closed by host")
@@ -2860,12 +3237,7 @@ impl AppState {
                 }
                 match tokio::time::timeout(
                     remaining.min(std::time::Duration::from_secs(5)),
-                    state.network.join(
-                        request.address,
-                        &request.password,
-                        &request.display_name,
-                        request.role,
-                    ),
+                    request.join(&state.network),
                 )
                 .await
                 {
@@ -2949,6 +3321,7 @@ impl AppState {
         self.active_transfer_builds.write().await.clear();
         self.network.clear_incoming_chart_transfers().await;
         *self.last_auto_match_hash.write().await = None;
+        *self.last_auto_request_hash.write().await = None;
         let _ = std::fs::remove_dir_all(self.data_dir.join("transfer-outgoing"));
         self.is_host.store(false, Ordering::Relaxed);
         *self.reconnect_request.write().await = None;
@@ -3071,6 +3444,7 @@ impl AppState {
 
     pub async fn publish_runtime_snapshot(&self) -> Result<()> {
         let chart_cache_bytes = crate::transfer::cache_size(&self.data_dir.join("chart-cache"));
+        let client = self.client.read().await.clone();
         let _ = self.events.send(Envelope::new(
             "runtime.snapshot",
             0,
@@ -3097,6 +3471,11 @@ impl AppState {
                 "diagnostics":{
                     "protocolVersion":crate::model::PROTOCOL_VERSION,
                     "runtimeVersion":env!("CARGO_PKG_VERSION"),
+                    "testedBeatblockVersion":crate::compatibility::TESTED_BEATBLOCK_VERSION,
+                    "testedBeatblockBuildId":crate::compatibility::TESTED_BEATBLOCK_BUILD_ID,
+                    "detectedBeatblockVersion":client.get("gameVersion").cloned().unwrap_or(Value::Null),
+                    "detectedBeatblockBuildId":client.get("gameBuildId").cloned().unwrap_or(Value::Null),
+                    "detectedBeatblockBuildSource":client.get("gameBuildSource").cloned().unwrap_or(Value::Null),
                     "peerCount":self.network.peer_count().await,
                     "rendererBudgetWarning":self.renderer.budget_warning(),
                     "firewallInstalled":self.config.read().await.firewall_installed,

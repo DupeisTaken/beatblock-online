@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const fixture = resolve(process.env.BBT_UI_FIXTURE ?? 'E:/beatblock-online/.test/ui-harness');
+const fixture = resolve(process.env.BBT_UI_FIXTURE ?? resolve(root, '.test/ui-harness'));
 const baselines = resolve(root, 'tests/ui-baselines');
 // A reviewer may have reports/ui open in an image viewer. Allow a fresh
 // destination so verification never needs to close that application or

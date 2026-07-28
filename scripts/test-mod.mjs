@@ -91,6 +91,10 @@ const [
   obsPlugin,
   companionRenderer,
   obsLocale,
+  obsAudioTest,
+  compatibilitySource,
+  appState,
+  packageManifestText,
 ] = await Promise.all([
   read('mod/shared/bbt/core.lua'),
   read('mod/shared/bbt/dashboard_model.lua'),
@@ -104,7 +108,12 @@ const [
   read('obs-plugin/src/plugin.c'),
   read('companion/src/renderer.rs'),
   read('obs-plugin/data/locale/en-US.ini'),
+  read('obs-plugin/tests/audio-target.c'),
+  read('companion/src/compatibility.rs'),
+  read('companion/src/app_state.rs'),
+  read('package.json'),
 ]);
+const packageManifest = JSON.parse(packageManifestText);
 const onlineIcon = await readFile(resolve(root, 'mod/shared/assets/online.png'));
 const decodedOnlineIcon = decodeRgbaPng(onlineIcon);
 if (decodedOnlineIcon.width !== 72 || decodedOnlineIcon.height !== 72)
@@ -159,6 +168,12 @@ for (const contract of [
   [core, 'pendingRequestDeadlineMs'],
   [core, "message.type == 'runtime.disconnected'"],
   [core, 'CLIENT_INSTANCE_ID'],
+  [core, "gameVersion=type(version)=='string' and version or ''"],
+  [appState, 'async fn normalize_local_game_build'],
+  [appState, 'GameBuildIdentity::from_displayed_version(displayed)'],
+  [online, "'COMPATIBILITY'"],
+  [online, "'BBT v'..tostring(BBT.version"],
+  [online, 'diagnostics.detectedBeatblockBuildId'],
   [core, "BBT.send('client.ping'"],
   [core, "message.type == 'runtime.heartbeat'"],
   [core, 'function BBT.cancelChartSelection(selector)'],
@@ -206,7 +221,7 @@ for (const contract of [
   [renderer, 'cLevel = chart'],
   [renderer, "chart = chart .. '/'"],
   [renderer, "pcall(dpf.loadJson, chart .. 'manifest.json')"],
-  [renderer, "if type(value) == 'number' then savedata.options.audio[key] = 0 end"],
+  [renderer, "if type(value) == 'number' then audioOptions[key] = 0 end"],
   [renderer, 'cs:init(chart, variantInfo, nil, {})'],
   [renderer, 'sdfunc.save = function() end'],
   [renderer, 'Renderer.originalErrorHandler = love.errorhandler'],
@@ -247,6 +262,7 @@ for (const contract of [
   [online, 'st:setBgDraw(function(self)'],
   [components, 'font:getHeight()'],
   [components, 'height < 22'],
+  [components, 'button_label_overflow:'],
   [online, 'local focused=enabled~=false and register'],
   [online, 'local nextByte=value:byte(finalByte+1)'],
   [ipc, 'local pendingSend = nil'],
@@ -263,6 +279,25 @@ if (core.includes('function BBT.onPause()') || hooks.includes('BBT.onPause()'))
   throw new Error(
     'Online pause handling must block the native pause instead of invalidating afterward',
   );
+if (online.includes('ONLINE  /  PROTOCOL V3'))
+  throw new Error('Online header still shows the protocol instead of the product version');
+const testedVersion = compatibilitySource.match(
+  /TESTED_BEATBLOCK_VERSION:\s*&str\s*=\s*"([^"]+)"/,
+)?.[1];
+const testedBuildId = compatibilitySource.match(
+  /TESTED_BEATBLOCK_BUILD_ID:\s*&str\s*=\s*"([0-9a-f]+)"/,
+)?.[1];
+if (
+  testedVersion !== packageManifest.beatblockCompatibility?.testedVersion ||
+  testedBuildId !== packageManifest.beatblockCompatibility?.testedBuildId ||
+  !core.includes(`testedBeatblockVersion = '${testedVersion}'`)
+) {
+  throw new Error('Release, Rust, and Lua Beatblock compatibility metadata drifted');
+}
+if (!compatibilitySource.includes('DisplayedBuildHash'))
+  throw new Error('Runtime no longer prefers Beatblock’s displayed upstream build hash');
+if (/executable_sha256|CERTIFIED_GAME_BUILDS/.test(compatibilitySource))
+  throw new Error('Compatibility regressed to a per-executable maintenance allowlist');
 if (!core.includes("anchor.sent = BBT.send('render.anchor'"))
   throw new Error('First-note anchors do not retry after bounded IPC backpressure');
 if (ipc.includes('"version":2'))
@@ -279,19 +314,29 @@ if (renderer.includes('readbackTextureAsync, output, function'))
   throw new Error('Renderer still uses the obsolete callback-style LÖVE readback API');
 if (
   !renderer.includes('SDL_GetWindows') ||
-  !renderer.includes('bool SDL_HideWindow(void*)') ||
-  !renderer.includes('hideRendererWindow()')
+  !renderer.includes('bool SDL_MinimizeWindow(void*)') ||
+  !renderer.includes('minimizeRendererWindow()')
 )
-  throw new Error('Renderer window hiding does not use the child-owned SDL window');
-if (renderer.includes('int SDL_HideWindow(void*)'))
-  throw new Error('Renderer uses the wrong ABI width for SDL_HideWindow boolean results');
+  throw new Error('Renderer window minimization does not use the child-owned SDL window');
+if (renderer.includes('int SDL_MinimizeWindow(void*)'))
+  throw new Error('Renderer uses the wrong ABI width for SDL_MinimizeWindow boolean results');
+for (const rendererAudioContract of [
+  "windowTitle = 'Beatblock Online Renderer ' .. rendererSlot",
+  'pcall(love.window.setTitle, Renderer.windowTitle)',
+  'audioOptions.muteOnFocusLoss = false',
+  'love.audio.setVolume(1)',
+  'cs.source:setVolume(Renderer.audioEnabled and 1 or 0)',
+]) {
+  if (!renderer.includes(rendererAudioContract))
+    throw new Error(`Renderer background-audio contract is missing ${rendererAudioContract}`);
+}
 if (!renderer.includes('not cs.startPending and cs.vfx'))
   throw new Error('Renderer can enter Results before Game threaded initialization is complete');
 for (const lifecycleContract of [
   'awaiting_run_start: Mutex<HashSet<String>>',
   '!awaiting_run_start.contains(&slot.id)',
   'self.prepare_slot_launch(&slot)?',
-  '.env("BBT_RENDERER_AUDIO", "0")',
+  '.env("BBT_RENDERER_AUDIO", "1")',
 ]) {
   if (!companionRenderer.includes(lifecycleContract))
     throw new Error(`Renderer relaunch contract is missing ${lifecycleContract}`);
@@ -314,14 +359,32 @@ for (const audioContract of [
   'obs_source_remove_active_child(ctx->source, ctx->audio_source)',
   'OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_CUSTOM_DRAW',
   'obs_data_set_default_bool(settings, "capture_audio", true)',
-  'obs_source_set_sync_offset(ctx->source, delay_ms * 1000000LL)',
+  'build_audio_window(ctx->slot, window, sizeof(window))',
+  'obs_data_set_int(audio_settings, "priority", OBS_WINDOW_PRIORITY_TITLE)',
+  'obs_source_set_sync_offset(ctx->source, 0)',
+  'obs_source_set_sync_offset(ctx->audio_source, sync_ms * 1000000LL)',
+  'obs_data_set_default_int(settings, "audio_sync_ms", DEFAULT_AUDIO_SYNC_MS)',
 ]) {
   if (!obsPlugin.includes(audioContract))
     throw new Error(`OBS integrated application-audio contract is missing ${audioContract}`);
 }
-for (const localeContract of ['CaptureAudio=', 'AudioWindow=', 'AudioDelay=', 'AudioHint=']) {
+if (obsPlugin.includes('DEFAULT_AUDIO_WINDOW') || obsPlugin.includes('"audio_window"'))
+  throw new Error('OBS audio routing still permits a host/global window target');
+if (obsPlugin.includes('obs_data_get_int(settings, "audio_delay_ms")'))
+  throw new Error('OBS audio routing still reads the obsolete host-audio delay setting');
+if (obsPlugin.includes('obs_source_set_sync_offset(ctx->source, sync_ms * 1000000LL)'))
+  throw new Error('OBS fine sync incorrectly shifts combined Player Stream video and audio');
+for (const localeContract of ['CaptureAudio=', 'AudioSync=', 'AudioHint=']) {
   if (!obsLocale.includes(localeContract))
     throw new Error(`OBS audio settings locale is missing ${localeContract}`);
+}
+for (const nativeAudioContract of [
+  '#define BBT_AUDIO_TARGET_TEST',
+  'Beatblock Online Renderer A:SDL_app:Beatblock.exe',
+  'Beatblock Online Renderer D:SDL_app:Beatblock.exe',
+]) {
+  if (!obsAudioTest.includes(nativeAudioContract))
+    throw new Error(`OBS native audio-target test is missing ${nativeAudioContract}`);
 }
 const playerViewCapture = 'BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded)';
 if (!hooks.includes(playerViewCapture))
@@ -506,6 +569,8 @@ const requiredCommands = [
   'room.role_set',
   'room.host_play_set',
   'room.validity_checks_set',
+  'room.game_build_policy_set',
+  'room.chart_transfer_policy_set',
   'room.commentator_set',
   'room.kick',
   'setlist.remove',
@@ -539,7 +604,8 @@ for (const capability of [
   'READY',
   'START RACE',
   'PLAY NEXT RACE',
-  'CONTINUE TO NEXT CHART',
+  'ADD CUST.',
+  'NEXT CHART',
   'ADVANCED OBS EXPORT',
   '1920 x 1080',
   'BROADCAST',
@@ -656,7 +722,7 @@ for (const distribution of ['standalone', 'beatblock-plus']) {
   const packagedIcon = await readFile(resolve(root, `mod/${distribution}/assets/online.png`));
   if (hash(onlineIcon) !== hash(packagedIcon))
     throw new Error(`${distribution}/assets/online.png was not generated from the shared asset`);
-  const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.3.0-beta.3.zip`);
+  const archive = resolve(root, `mod/releases/beatblock-online-${distribution}-0.4.0-alpha.1.zip`);
   const entries = new Set(
     listZipEntries(await readFile(archive), `${distribution} release ZIP`).map((entry) =>
       entry.replaceAll('\\', '/'),

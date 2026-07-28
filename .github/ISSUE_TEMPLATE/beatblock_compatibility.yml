@@ -1,0 +1,65 @@
+name: Installer incompatible with latest Beatblock release
+description: Report that a new Beatblock update no longer installs, injects, starts Online, or joins rooms correctly
+title: '[Beatblock compatibility]: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Beatblock Online accepts newer Beatblock builds by default. Use this category when a Beatblock update breaks the installer or runtime so maintainers can schedule an adapter update. Before reporting, read the [compatibility policy](https://github.com/DupeisTaken/beatblock-online/blob/main/docs/compatibility.md).
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I reproduced this with the latest Beatblock Online release.
+          required: true
+        - label: I launched Beatblock once after its update and retried the installer.
+          required: true
+        - label: I removed passwords, tokens, usernames, and private paths from attachments.
+          required: true
+  - type: input
+    id: online_version
+    attributes:
+      label: Beatblock Online version
+      placeholder: v0.3.0-beta.3
+    validations:
+      required: true
+  - type: input
+    id: beatblock_version
+    attributes:
+      label: Beatblock version shown in the top-right corner
+      description: Copy the complete value, including the bracketed build token.
+      placeholder: 1.7.1a (Early Access)[d40b7083]
+    validations:
+      required: true
+  - type: dropdown
+    id: failure_stage
+    attributes:
+      label: Failure stage
+      options:
+        - Installer rejects or cannot locate the game
+        - Installer completes but Online is missing
+        - Online opens but the runtime fails
+        - Same-build room join is rejected unexpectedly
+        - Chart or judgement behavior differs after the update
+        - Renderer or OBS integration fails after the update
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Attach the installer log, runtime log, screenshot, and the exact error. Do not upload the game executable or copyrighted game archives.
+    validations:
+      required: true

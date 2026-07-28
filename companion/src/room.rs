@@ -28,7 +28,9 @@ impl RoomEngine {
                 lifecycle: RoomLifecycle::Forming,
                 admission_mode: AdmissionMode::HostApproval,
                 allow_chart_transfers: true,
+                auto_request_chart_transfers: false,
                 validity_checks_enabled: true,
+                require_same_game_build: true,
                 participants: Vec::new(),
                 chart: None,
                 setlist: Vec::new(),
@@ -57,7 +59,9 @@ impl RoomEngine {
             lifecycle: RoomLifecycle::Forming,
             admission_mode,
             allow_chart_transfers: true,
+            auto_request_chart_transfers: false,
             validity_checks_enabled: true,
+            require_same_game_build: true,
             participants: vec![Participant {
                 session_id: host_id,
                 display_name: host_name,
@@ -277,6 +281,36 @@ impl RoomEngine {
             bail!("run validity checks can only change before a race");
         }
         self.snapshot.validity_checks_enabled = enabled;
+        self.touch();
+        Ok(())
+    }
+
+    pub fn set_same_game_build_required(&mut self, required: bool) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("Beatblock build matching can only change before a race");
+        }
+        self.snapshot.require_same_game_build = required;
+        self.touch();
+        Ok(())
+    }
+
+    /// Controls whether mismatched participants ask the host for a transfer
+    /// offer automatically after local chart discovery fails. This never
+    /// bypasses the participant's package or executable-content consent.
+    pub fn set_auto_request_chart_transfers(&mut self, enabled: bool) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("automatic chart requests can only change before a race");
+        }
+        if enabled && !self.snapshot.allow_chart_transfers {
+            bail!("automatic chart requests require chart transfers to be enabled");
+        }
+        self.snapshot.auto_request_chart_transfers = enabled;
         self.touch();
         Ok(())
     }
@@ -1240,6 +1274,22 @@ mod tests {
             song_name: name.into(),
             ..chart()
         }
+    }
+
+    #[test]
+    fn automatic_chart_requests_are_opt_in_and_pre_race_only() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        assert!(!room.snapshot.auto_request_chart_transfers);
+
+        room.set_auto_request_chart_transfers(true).unwrap();
+        assert!(room.snapshot.auto_request_chart_transfers);
+
+        room.snapshot.lifecycle = RoomLifecycle::Playing;
+        assert!(room.set_auto_request_chart_transfers(false).is_err());
+
+        room.snapshot.lifecycle = RoomLifecycle::Forming;
+        room.snapshot.allow_chart_transfers = false;
+        assert!(room.set_auto_request_chart_transfers(true).is_err());
     }
 
     fn scheduled_room(validity_checks_enabled: bool) -> (RoomEngine, String) {

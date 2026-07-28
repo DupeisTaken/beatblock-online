@@ -7,12 +7,15 @@ $lovelySource = Join-Path $root 'lovely-source'
 $lovelyArchive = Join-Path $root 'lovely-x86_64-pc-windows-msvc.zip'
 
 try {
-    New-Item -ItemType Directory -Path $game, $mods, $lovelySource -Force | Out-Null
+    New-Item -ItemType Directory -Path $game, $mods, $lovelySource, (Join-Path $game 'packed') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $game 'Beatblock.exe') -Value 'test executable'
+    foreach ($relative in @('love.dll', 'lua51.dll', 'packed\data.zip', 'packed\obj.zip', 'packed\states.zip')) {
+        Set-Content -LiteralPath (Join-Path $game $relative) -Value 'test game file'
+    }
     Set-Content -LiteralPath (Join-Path $lovelySource 'version.dll') -Value 'test Lovely proxy'
     Compress-Archive -Path (Join-Path $lovelySource '*') -DestinationPath $lovelyArchive
 
-    & $installer -GameDir $game -ModsDir $mods -Distribution standalone -LovelyArchive $lovelyArchive -AllowUnknownBuild
+    & $installer -GameDir $game -ModsDir $mods -Distribution standalone -LovelyArchive $lovelyArchive
     if (-not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) {
         throw 'Lovely archive installation did not copy version.dll beside Beatblock.exe.'
     }
@@ -27,14 +30,14 @@ try {
     $bbp = Join-Path $mods 'BeatblockPlus'
     New-Item -ItemType Directory -Path $bbp -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $bbp 'mod.json') -Value '{"id":"beatblock-plus","version":"2.1.0"}'
-    & $installer -GameDir $game -ModsDir $mods -Distribution beatblock-plus -AllowUnknownBuild
+    & $installer -GameDir $game -ModsDir $mods -Distribution beatblock-plus
     if (-not (Test-Path -LiteralPath (Join-Path $mods 'BeatblockOnline\mod.json'))) {
         throw 'BeatblockPlus installation did not create the expected manifest path.'
     }
 
     $duplicateRejected = $false
     try {
-        & $installer -GameDir $game -ModsDir $mods -Distribution beatblock-plus -AllowUnknownBuild
+        & $installer -GameDir $game -ModsDir $mods -Distribution beatblock-plus
     } catch {
         $duplicateRejected = $_.Exception.Message -like '*already exists*'
     }

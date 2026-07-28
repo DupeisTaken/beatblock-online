@@ -17,15 +17,28 @@ CPU buffer and GPU texture. It also closes and retries the file mapping at a
 bounded cadence, allowing a stopped or atomically replaced renderer ring to
 recover without recreating the OBS source.
 
-The source automatically creates a private OBS Application Audio Capture child,
-routes its samples through the Player Stream, and applies a 500 ms sync offset
-matching the default video delay. It targets the visible main Beatblock window;
-hidden renderer children are always muted so they cannot double desktop audio.
-Enable audio on exactly one Player Stream in a multi-stream scene. If the main
-window has a nonstandard title/class, edit **Audio target (OBS window selector)**.
-When Advanced Export uses another delay, set the source's **Audio sync delay**
-to that same value. On an OBS build without Application Audio Capture support,
-the source logs a warning and continues video-only instead of failing to load.
+The source automatically creates a private OBS Application Audio Capture child
+and routes its samples through the Player Stream. Stream A-D resolves only the
+matching `Beatblock Online Renderer A-D` process, so the mixer receives the
+song and hitsounds from the same reconstructed player view instead of the host
+game. Renderer audio already follows the delayed renderer clock, so **Audio
+fine sync** defaults to 0 ms; use it only to compensate for a measured
+capture-device difference.
+
+Renderer windows remain minimized rather than fully hidden. OBS's Application
+Audio Capture includes minimized windows in process discovery but rejects
+windows whose Windows visibility flag is cleared. The unique title plus title
+priority prevents four identical `Beatblock.exe`/`SDL_app` processes from being
+confused with one another or with the host game, and OBS reconnects to that
+title after the runtime relaunches a slot. On an OBS build without Application
+Audio Capture support, the source logs a warning and continues video-only
+instead of failing to load.
+
+Windows process-loopback capture copies a process's output; it does not silence
+that process on the desktop endpoint. OBS uses the default pre-volume loopback,
+so the renderer session can be muted in Windows Volume Mixer without muting the
+capture, or routed to a non-monitored/virtual output. Muting audio inside
+Beatblock gives OBS silence.
 
 Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode publishes Beatblock's complete native composition: chart backgrounds and video, decorative entities, blocks, hit feedback, chart and Online HUDs, palette/accessibility conversion, and screen-space effects. Optional Clean mode uses the native base gameplay canvas without the final on-top composition, but still applies Beatblock's palette/accessibility shader; it no longer exposes red palette-index artwork or removes chart-authored scenery. Both modes preserve the source aspect ratio, and capture continues through Beatblock's native Results state. Disposable renderer profiles always select Beatblock's built-in default (`none`) Cranky costume instead of inheriting a costume from the host save.
 
@@ -87,10 +100,12 @@ cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 
 Renderers normalize chart-directory paths, resolve named variants to their
 manifest objects, and satisfy Beatblock's threaded audio-preload gate with an
-empty preload table before entering Game state. Every renderer child's numeric
-audio settings are zeroed before Beatblock loads that chart's song. They read delayed input from
-`stream-X.bbtstate`, draw in a hidden and muted Beatblock process, pace capture
-at the configured FPS, and publish `stream-X.bbtframe`. LÖVE 12 asynchronous
+empty preload table before entering Game state. Each renderer disables
+Beatblock's focus-loss mute, restores its master/song volume, and adopts the
+stable title `Beatblock Online Renderer X` before it is minimized. It reads
+delayed input from `stream-X.bbtstate`, draws and plays audio in that isolated
+Beatblock process, paces capture at the configured FPS, and publishes
+`stream-X.bbtframe`. LÖVE 12 asynchronous
 texture reads return `GraphicsReadback` requests; the adapter polls two
 independent requests and commits only completed image data. Per-slot tickets
 discard superseded results. A capture exception is written to

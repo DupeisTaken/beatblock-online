@@ -239,6 +239,58 @@ async fn host_can_disable_custom_chart_transfer_for_the_room() {
 }
 
 #[tokio::test]
+async fn host_can_opt_in_to_automatic_transfer_requests_before_a_race() {
+    let root = temporary("game-command-auto-transfer-policy");
+    let app = state(root.clone(), &"f".repeat(64)).await;
+    assert!(!app.room.read().await.snapshot.auto_request_chart_transfers);
+
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.chart_transfer_policy_set",
+            1,
+            json!({"autoRequest":true}),
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(app.room.read().await.snapshot.auto_request_chart_transfers);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn host_can_relax_same_build_matching_but_not_reenable_it_in_place() {
+    let root = temporary("game-build-policy");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.game_build_policy_set",
+            1,
+            json!({"requestId":"build-any","required":false}),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!app.room.read().await.snapshot.require_same_game_build);
+
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.game_build_policy_set",
+            2,
+            json!({"requestId":"build-same","required":true}),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!app.room.read().await.snapshot.require_same_game_build);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn appending_a_setlist_chart_preserves_the_active_chart_and_host_verification() {
     let root = temporary("game-command-append");
     let first = root.join("first");

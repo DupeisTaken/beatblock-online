@@ -140,7 +140,7 @@ local function openForm(self,mode,spectator)
       displayName=tostring(BBT.context and BBT.context.playerName or 'Player'),
       name='Beatblock Room', address=tostring(settings.hostAddress or '127.0.0.1'),
       port=tostring(settings.hostPort or 32145), password='', hostParticipating=true,
-      validityChecksEnabled=true,
+      validityChecksEnabled=true, requireSameGameBuild=true, autoRequestChartTransfers=false,
     },
     fields=mode=='host' and {'displayName','name','port','password'} or {'displayName','address','port','password'},
     index=1,
@@ -174,8 +174,10 @@ local function submitForm(self)
     requestId=BBT.command('room.host_request',{
       displayName=values.displayName,name=values.name,password=values.password,
       port=port,hostApproval=true,allowChartTransfers=true,
+      autoRequestChartTransfers=values.autoRequestChartTransfers==true,
       hostParticipating=values.hostParticipating~=false,
       validityChecksEnabled=values.validityChecksEnabled~=false,
+      requireSameGameBuild=values.requireSameGameBuild~=false,
     })
   else
     requestId=BBT.command('room.join_request',{
@@ -189,20 +191,31 @@ end
 
 local function header(self)
   ui:text('BBT  /  ONLINE',12,7,170,'left','white')
-  local status=BBT.companionConnected and 'ONLINE  /  PROTOCOL V3' or (BBT.runtimeStarting and 'STARTING ONLINE' or 'RUNTIME OFFLINE')
+  local runtimeStatus=BBT.companionConnected and 'ONLINE' or (BBT.runtimeStarting and 'STARTING' or 'RUNTIME OFFLINE')
+  local status='BBT v'..tostring(BBT.version or 'UNKNOWN')..'  /  '..runtimeStatus
   ui:text(status,300,7,288,'right',BBT.companionConnected and 'green' or 'yellow')
   local room=currentRoom()
+  local primary=Dashboard.primary(context())
   ui:panel(12,27,576,44)
   if room then
     local chart=room.chart
     ui:text(room.name or 'ONLINE SESSION',22,34,220,'left','muted')
     ui:text(chart and (chart.songName or chart.packageName) or 'NO CHART SELECTED',22,49,300,'left',chart and 'white' or 'yellow')
-    if chart then ui:text((chart.variant or '')..(chart.official and '  /  OFFICIAL' or '  /  CUSTOM'),325,34,125,'right','muted') end
+    if chart and primary.id~='request_chart' then
+      ui:text((chart.variant or '')..(chart.official and '  /  OFFICIAL' or '  /  CUSTOM'),325,34,125,'right','muted')
+    end
   else
     ui:text('ONLINE SESSION',22,34,220,'left','muted')
     ui:text(BBT.companionConnected and 'READY TO CONNECT' or 'LOCAL RUNTIME REQUIRED',22,49,300,'left',BBT.companionConnected and 'green' or 'yellow')
   end
-  local primary=Dashboard.primary(context())
+  if primary.id=='request_chart' then
+    button(self,'session_local_chart',325,36,122,26,'FIND LOCAL',function()
+      local active=currentRoom()
+      if active and active.chart then
+        if active.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
+      end
+    end,'cyan')
+  end
   button(self,'session_primary',454,36,124,26,primary.label,function() runPrimary(self,primary) end,primary.tone,primary.enabled)
 end
 
@@ -214,6 +227,11 @@ function runPrimary(self,item)
     local room=currentRoom()
     if room and room.chart then
       if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
+    end
+  elseif item.id=='request_chart' then
+    local room=currentRoom()
+    if room and room.chart then
+      BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
     end
   elseif item.id=='ready' then BBT.command('room.ready_request',{ready=true})
   elseif item.id=='start_race' then BBT.command('room.start_request',{force=false})
@@ -294,7 +312,8 @@ local function participantActionButtons(self,target,x,y,w)
       if not isHost() then
         button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()
           BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
-        end,'yellow',not room.chart.official and room.chart.transferMode=='host_transfer')
+        end,'yellow',room.allowChartTransfers~=false
+          and not room.chart.official and room.chart.transferMode=='host_transfer')
         y=y+29
       end
     elseif target.role~='spectator' and target.ready
@@ -492,24 +511,19 @@ local function drawSetlist(self)
   button(self,'setlist_official',395,105,181,25,'SELECT OFFICIAL',function() BBT.openOfficialSelect('host') end,'cyan',canEdit)
   button(self,'setlist_custom',395,136,181,25,'SELECT CUSTOM',function() BBT.openChartSelect('host') end,'cyan',canEdit)
   button(self,'setlist_add_official',395,167,86,25,'ADD OFF.',function() BBT.openOfficialSelect('setlist') end,'green',canEdit)
-  button(self,'setlist_add_custom',490,167,86,25,'ADD CUSTOM',function() BBT.openChartSelect('setlist') end,'green',canEdit)
+  button(self,'setlist_add_custom',490,167,86,25,'ADD CUST.',function() BBT.openChartSelect('setlist') end,'green',canEdit)
 
   local selection=self.setlistSelection or 1
   local resultsLocked=room.lifecycle=='results' or room.lifecycle=='set_complete'
   local activeSelection=(room.currentSetlistIndex or -1)+1
   local canMoveSelection=not resultsLocked or selection>activeSelection
-  button(self,'setlist_up',395,198,55,25,'UP',function()
+  button(self,'setlist_up',395,198,47,25,'UP',function()
     local target=selection-1
     BBT.command('setlist.move',{from=selection-1,to=target-1})
     self.setlistSelection=target
   end,'white',canEdit and #entries>1 and selection>1 and canMoveSelection
     and (not resultsLocked or selection-1>activeSelection))
-  button(self,'setlist_down',456,198,55,25,'DOWN',function()
-    local target=selection+1
-    BBT.command('setlist.move',{from=selection-1,to=target-1})
-    self.setlistSelection=target
-  end,'white',canEdit and #entries>1 and selection<#entries and canMoveSelection)
-  button(self,'setlist_remove',517,198,59,25,'REMOVE',function()
+  button(self,'setlist_remove',448,198,75,25,'REMOVE',function()
     local entry=entries[selection]
     openConfirm(self,'REMOVE CHART','Remove '..bounded(entry and (entry.chart.songName or entry.chart.packageName) or 'this chart',28)..' from the setlist?','REMOVE',function()
       BBT.command('setlist.remove',{index=selection-1})
@@ -519,10 +533,15 @@ local function drawSetlist(self)
     room.currentSetlistIndex==selection-1
     and (room.lifecycle=='results' or room.lifecycle=='set_complete')
   ))
+  button(self,'setlist_down',529,198,47,25,'DOWN',function()
+    local target=selection+1
+    BBT.command('setlist.move',{from=selection-1,to=target-1})
+    self.setlistSelection=target
+  end,'white',canEdit and #entries>1 and selection<#entries and canMoveSelection)
 
   local index=room.currentSetlistIndex
   local canAdvance=(room.lifecycle=='results') and index~=nil and index+1<#entries
-  button(self,'setlist_next',395,229,181,25,'CONTINUE TO NEXT CHART',function()
+  button(self,'setlist_next',395,229,181,25,'NEXT CHART',function()
     runPrimary(self,{id='advance_set'})
   end,'green',isHost() and canAdvance)
   ui:wrapped(isHost() and 'Select a row, then reorder or remove it.' or 'The host controls this ordered set.',395,265,181,2,'muted')
@@ -703,47 +722,78 @@ end
 
 local function drawSettings(self)
   ui:panel(12,78,360,225,'SETTINGS')
-  ui:panel(379,78,209,225,'RUNTIME')
+  ui:panel(379,78,209,225,'COMPATIBILITY')
   local settings=BBT.settings or {}
   local room=currentRoom()
   local checksEnabled=not room or room.validityChecksEnabled~=false
+  local sameBuildRequired=not room or room.requireSameGameBuild~=false
+  local autoRequests=room and room.autoRequestChartTransfers==true
   local checksEditable=isHost() and room and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready')
+  local transferEditable=checksEditable and room.allowChartTransfers~=false
   local checksStatus=not room and 'NO ACTIVE ROOM'
     or (not isHost() and ((checksEnabled and 'ON' or 'OFF')..' / HOST CONTROLLED'))
     or (not checksEditable and ((checksEnabled and 'ON' or 'OFF')..' / LOCKED'))
     or (checksEnabled and 'ON / COMPETITIVE' or 'OFF / CASUAL')
   local rows={
     {'GAMEPLAY HUD',settings.hudEnabled==false and 'OFF' or 'ON'},
-    {'CHART TRANSFERS',room and (room.allowChartTransfers==false and 'OFF' or 'ON') or 'HOST DEFAULT: ON'},
+    {'CHART TRANSFERS',not room and 'HOST DEFAULT: MANUAL'
+      or (room.allowChartTransfers==false and 'OFF'
+      or (autoRequests and 'ON / AUTO REQUEST' or 'ON / MANUAL REQUEST'))},
     {'RUN CHECKS',checksStatus},
+    {'GAME BUILD',not room and 'HOST DEFAULT: SAME'
+      or (sameBuildRequired and 'EXACT MATCH' or 'ANY / HOST OVERRIDE')},
     {'TRANSFER CACHE',tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB')},
-    {'PROTOCOL','V3 ONLY'},
   }
   for index,row in ipairs(rows) do
-    local y=104+(index-1)*22
+    local y=102+(index-1)*19
     ui:text(row[1],24,y,145,'left','muted'); ui:text(row[2],169,y,189,'right','white')
   end
-  button(self,'settings_hud',24,218,104,25,'HUD',function()
+  button(self,'settings_hud',24,239,54,25,'HUD',function()
     BBT.command('settings.update',{hudEnabled=not (settings.hudEnabled~=false)})
   end,'cyan')
-  button(self,'settings_validity',134,218,108,25,checksEnabled and 'DISABLE' or 'ENABLE',function()
+  button(self,'settings_validity',82,239,66,25,checksEnabled and 'CHECKS' or 'NO CHECK',function()
     local run=function() BBT.command('room.validity_checks_set',{enabled=not checksEnabled}) end
     if checksEnabled then
       openConfirm(self,'DISABLE RUN CHECKS','Retries and missing score events will not invalidate plays. Counter bounds and DNF completion rules remain active.','DISABLE',run)
     else run() end
   end,checksEnabled and 'yellow' or 'green',checksEditable)
-  button(self,'settings_clear_cache',248,218,110,25,'CLEAR CACHE',function()
+  button(self,'settings_build_policy',152,239,66,25,sameBuildRequired and 'SAME' or 'ANY',function()
+    openConfirm(self,'ALLOW MIXED BUILDS','Players on different Beatblock builds may have different chart data or judgement windows. This cannot be reversed without creating a new room.','ALLOW',function()
+      BBT.command('room.game_build_policy_set',{required=false})
+    end)
+  end,sameBuildRequired and 'yellow' or 'muted',checksEditable and sameBuildRequired)
+  button(self,'settings_transfer_policy',222,239,60,25,autoRequests and 'AUTO' or 'MANUAL',function()
+    BBT.command('room.chart_transfer_policy_set',{autoRequest=not autoRequests})
+  end,autoRequests and 'green' or 'cyan',transferEditable)
+  button(self,'settings_clear_cache',286,239,72,25,'CACHE',function()
     openConfirm(self,'CLEAR TRANSFER CACHE','Remove inactive BBT-managed chart packages? The active chart is protected.','CLEAR',function()
       BBT.command('chart.cache_clear',{})
     end)
   end,'yellow')
-  ui:text('CONNECTION',391,107,185,'left','muted')
-  ui:text((BBT.runtimeSnapshot and BBT.runtimeSnapshot.connection) or 'LOCAL',391,125,185,'left','green')
-  ui:text('JOIN ADDRESS',391,153,185,'left','muted')
-  ui:text((BBT.runtimeSnapshot and BBT.runtimeSnapshot.joinAddress) or '—',391,171,185,'left','white')
-  button(self,'settings_logs',391,211,185,25,'OPEN LOGS',function() BBT.command('paths.open_logs',{}) end,'white')
-  button(self,'settings_exports',391,242,185,25,'OPEN EXPORTS',function() BBT.command('paths.open_exports',{}) end,'white')
-  button(self,'settings_diagnostics',391,273,185,25,'REFRESH DIAGNOSTICS',function() BBT.command('diagnostics.get',{}) end,'cyan')
+  local diagnostics=BBT.diagnostics or {}
+  local runtimeVersion=tostring(diagnostics.runtimeVersion or 'OFFLINE')
+  local runtimeMatch=BBT.companionConnected and runtimeVersion==tostring(BBT.version)
+  local protocolVersion=tonumber(diagnostics.protocolVersion) or tonumber(BBT.protocolVersion) or 0
+  local protocolMatch=BBT.companionConnected and protocolVersion==tonumber(BBT.protocolVersion)
+  local testedVersion=tostring(diagnostics.testedBeatblockVersion or BBT.testedBeatblockVersion or 'UNKNOWN')
+  local detectedVersion=tostring(diagnostics.detectedBeatblockVersion or 'START GAME')
+  local detectedBuild=tostring(diagnostics.detectedBeatblockBuildId or '')
+  local compatibilityRows={
+    {'ONLINE','v'..tostring(BBT.version or 'UNKNOWN'),'white'},
+    {'RUNTIME',runtimeVersion=='OFFLINE' and runtimeVersion or 'v'..runtimeVersion,runtimeMatch and 'green' or 'yellow'},
+    {'PROTOCOL','V'..tostring(protocolVersion)..(protocolMatch and ' / MATCH' or ' / CHECK'),protocolMatch and 'green' or 'yellow'},
+    {'TESTED ON',testedVersion..'+','cyan'},
+  }
+  for index,row in ipairs(compatibilityRows) do
+    local y=106+(index-1)*22
+    ui:text(row[1],391,y,72,'left','muted')
+    ui:text(row[2],463,y,113,'right',row[3])
+  end
+  ui:text('GAME '..bounded(detectedVersion,24),391,194,185,'left','muted')
+  if detectedBuild~='' then ui:text('BUILD ['..detectedBuild:sub(1,12)..']',391,207,185,'left','cyan') end
+  button(self,'settings_logs',391,226,89,25,'LOGS',function() BBT.command('paths.open_logs',{}) end,'white')
+  button(self,'settings_exports',487,226,89,25,'EXPORTS',function() BBT.command('paths.open_exports',{}) end,'white')
+  button(self,'settings_diagnostics',391,260,185,25,'REFRESH DIAGNOSTICS',function() BBT.command('diagnostics.get',{}) end,'cyan')
 end
 
 local function drawHelp(self)
@@ -751,7 +801,7 @@ local function drawHelp(self)
   ui:text('ROOM ROLES',24,106,160,'left','cyan')
   ui:wrapped('Player competes. Spectator watches. Commentator is a host-granted Spectator permission that can mirror the Host Plan to this PC.',24,124,262,6,'muted')
   ui:text('CHARTS & TRANSFER',310,106,250,'left','cyan')
-  ui:wrapped('Online searches local charts first. Custom packages may be transferred with consent; scripts always need separate confirmation. Cache entries are managed by BBT.',310,124,254,7,'muted')
+  ui:wrapped('Online searches local charts first. Players can request custom packages; hosts may automate only that request. Consent remains local and scripts always need separate confirmation.',310,124,254,7,'muted')
   ui:text('CONTROLS',24,216,160,'left','cyan')
   ui:wrapped('Arrows navigate  •  Enter selects  •  Esc returns one layer  •  Mouse uses the same focus.',24,234,262,4,'muted')
   ui:text('TROUBLESHOOTING',310,216,250,'left','cyan')
@@ -786,7 +836,7 @@ local function drawModal(self)
     -- it separate from editable fields so text input and deletion continue to
     -- target only the last selected text box.
     local isHostForm=modal.mode=='host'
-    ui:panel(118,isHostForm and 16 or 60,364,isHostForm and 322 or 240,modal.title)
+    ui:panel(118,isHostForm and 7 or 60,364,isHostForm and 346 or 240,modal.title)
     for index,key in ipairs(modal.fields) do
       local y=(isHostForm and 52 or 96)+(index-1)*(isHostForm and 32 or 38)
       local labels={displayName='DISPLAY NAME',name='ROOM NAME',address='HOST ADDRESS',port='UDP PORT',password='PASSWORD'}
@@ -809,14 +859,22 @@ local function drawModal(self)
       chip(self,'form_checks_off',363,206,101,'OFF',modal.values.validityChecksEnabled==false,function()
         modal.values.validityChecksEnabled=false; modal.error=nil
       end,'yellow')
-      local note=modal.values.validityChecksEnabled==false and 'CASUAL / RETRIES ALLOWED'
-        or (modal.values.hostParticipating==false and 'COMPETITIVE / HOST DIRECTS' or 'COMPETITIVE / HOST PLAYS')
-      ui:text(note,261,235,203,'center','muted')
+      ui:text('SAME BUILD',136,240,124,'left','muted')
+      chip(self,'form_build_same',261,236,96,'REQUIRE',modal.values.requireSameGameBuild~=false,function()
+        modal.values.requireSameGameBuild=true; modal.error=nil
+      end,'green')
+      chip(self,'form_build_any',363,236,101,'ALLOW ANY',modal.values.requireSameGameBuild==false,function()
+        modal.values.requireSameGameBuild=false; modal.error=nil
+      end,'yellow')
+      local note=modal.values.requireSameGameBuild==false and 'CASUAL / MIXED BUILDS'
+        or (modal.values.validityChecksEnabled==false and 'CASUAL / RETRIES ALLOWED'
+        or (modal.values.hostParticipating==false and 'COMPETITIVE / HOST DIRECTS' or 'COMPETITIVE / HOST PLAYS'))
+      ui:text(note,261,265,203,'center','muted')
     end
-    local actionY=isHostForm and 265 or 252
+    local actionY=isHostForm and 289 or 252
     button(self,'form_submit',261,actionY,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
     button(self,'form_cancel',366,actionY,98,27,'CANCEL',function() closeModal(self) end,'white')
-    if modal.error then ui:text(modal.error,136,isHostForm and 298 or 282,328,'center','red') end
+    if modal.error then ui:text(modal.error,136,isHostForm and 322 or 282,328,'center','red') end
   elseif modal.kind=='details' then
     ui:panel(94,60,412,240,modal.title)
     ui:wrapped(bounded(modal.message,512),114,95,372,10,'red')

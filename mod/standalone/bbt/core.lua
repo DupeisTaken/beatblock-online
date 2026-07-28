@@ -1,6 +1,7 @@
 local BBT = {
-  version = '0.3.0-beta.3',
+  version = '0.4.0-alpha.1',
   protocolVersion = 3,
+  testedBeatblockVersion = '1.7.1a',
   sequence = 0,
   runSequence = 0,
   snapshotTimer = 0,
@@ -28,7 +29,6 @@ local BBT = {
   scoreDirty = false,
 }
 
-local SUPPORTED_GAME_BUILD = 'c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b'
 local CLIENT_INSTANCE_ID = tostring(os.time())..'-'..tostring(math.random(100000,999999))
 local DEFAULT_COMMAND_TIMEOUT_MS = 10000
 local COMMAND_TIMEOUT_MS = {
@@ -215,7 +215,17 @@ function BBT.startOnlineRuntime()
     local pathChannel = love.thread.getChannel('bbt_mod_path')
     pathChannel:clear(); pathChannel:push(BBT.modPath)
     thread:start()
-    BBT.send('client.hello', { instanceId=CLIENT_INSTANCE_ID, clientVersion = BBT.version, gameBuildHash = SUPPORTED_GAME_BUILD, distribution = BBT.distribution, mods = {} })
+    -- The Lua process is not a trust boundary. `version` is Beatblock's own
+    -- menu label, including the bracketed upstream build token shown in the
+    -- top-right corner. The runtime validates and normalizes that value before
+    -- any room handshake, with a streamed game-content digest as its fallback.
+    BBT.send('client.hello', {
+      instanceId=CLIENT_INSTANCE_ID,
+      clientVersion=BBT.version,
+      gameVersion=type(version)=='string' and version or '',
+      distribution=BBT.distribution,
+      mods={},
+    })
   else
     BBT.sessionActive = false
     BBT.lastError = 'Could not start the Beatblock Online runtime IPC: ' .. tostring(thread)

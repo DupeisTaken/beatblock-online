@@ -180,6 +180,13 @@ function Dashboard.primary(context)
     return action('watch_room','SPECTATING ROOM','Rankings and room state update live.','cyan',false)
   end
   if me and me.role ~= 'spectator' and not chartVerified then
+    local hostCanTransfer=not isHost
+      and current.allowChartTransfers~=false
+      and current.chart.official~=true
+      and current.chart.transferMode=='host_transfer'
+    if hostCanTransfer then
+      return action('request_chart','REQUEST HOST','Ask the host for the exact locked package. You still approve the offer before download.','yellow')
+    end
     return action('locate_chart','FIND MATCHING CHART','Select the exact chart package and variant locked by the host.','yellow')
   end
   if me and not me.ready then

@@ -1016,10 +1016,10 @@ impl RendererManager {
             .env("BBT_RENDERER_HEIGHT", slot.height.to_string())
             .env("BBT_RENDERER_FPS", slot.fps.to_string())
             .env("BBT_RENDERER_DELAY_MS", slot.delay_ms.to_string())
-            // Renderer processes are never desktop audio authorities. Keeping
-            // every child muted prevents duplicated playback; OBS audio must
-            // come from the main Beatblock process or explicit audio routing.
-            .env("BBT_RENDERER_AUDIO", "0")
+            // Each slot owns the exact song and hitsounds visible in its
+            // reconstructed stream. OBS captures this child by its stable
+            // per-slot window title instead of attaching to the host game.
+            .env("BBT_RENDERER_AUDIO", "1")
             .env("BBT_RENDERER_CHART", chart_path)
             .env("BBT_RENDERER_VARIANT", variant)
             .env("APPDATA", renderer_profile)
@@ -1618,7 +1618,7 @@ mod tests {
         assert_eq!(env("APPDATA"), Some(profile.clone()));
         assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("A")));
-        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("0")));
+        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
         assert_eq!(
             env("BBT_RENDERER_ERROR_PATH"),
             Some(manager.error_path("A"))

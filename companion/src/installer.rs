@@ -177,8 +177,7 @@ pub struct ComponentStatus {
 pub struct TargetInspection {
     pub game_directory: PathBuf,
     pub valid: bool,
-    pub supported_build: bool,
-    pub fingerprint: Option<String>,
+    pub compatible_layout: bool,
     pub distribution: Distribution,
     pub install_state: String,
     pub managed_elsewhere: Option<PathBuf>,
@@ -205,7 +204,7 @@ pub struct InstallStatus {
     pub beatblock_plus_present: bool,
     pub runtime_present: bool,
     pub obs_plugin_present: bool,
-    pub supported_build: bool,
+    pub compatible_layout: bool,
     pub runtime_bundled: bool,
     pub lovely_bundled: bool,
     pub obs_plugin_bundled: bool,
@@ -300,10 +299,10 @@ impl Installer {
             .err()
             .map(ToString::to_string)
             .unwrap_or_default();
-        let fingerprint = valid
-            .then(|| sha256_file(&selected.join("Beatblock.exe")).ok())
-            .flatten();
-        let supported_build = fingerprint.as_deref() == Some(supported_game_hash());
+        // Exact identity comes from Beatblock's own displayed build token once
+        // the game starts. Newer structurally valid releases are installable
+        // without publishing a new installer allowlist.
+        let compatible_layout = valid;
         let mods_directory = self
             .mods_directory()
             .unwrap_or_else(|| self.data_dir.join("Mods"));
@@ -387,23 +386,16 @@ impl Installer {
             "Game build",
             if !valid {
                 ComponentState::Broken
-            } else if supported_build {
+            } else {
                 ComponentState::Ready
-            } else {
-                ComponentState::Attention
             },
-            if !valid {
-                "Invalid"
-            } else if supported_build {
-                "Supported"
-            } else {
-                "Uncertified"
-            },
+            if !valid { "Invalid" } else { "Compatible" },
             "—",
-            fingerprint
-                .as_deref()
-                .map(short_hash)
-                .unwrap_or_else(|| validation_message.clone()),
+            if valid {
+                "Supported Beatblock layout; exact build identity is checked in-game".into()
+            } else {
+                validation_message.clone()
+            },
         ));
         components.push(component(
             "In-game adapter",
@@ -576,15 +568,14 @@ impl Installer {
         TargetInspection {
             game_directory: selected.to_owned(),
             valid,
-            supported_build,
-            fingerprint,
+            compatible_layout,
             distribution,
             install_state: state.into(),
             managed_elsewhere,
             repair_required,
             components,
             message: if valid {
-                "This selected folder will be modified. Online competition requires a certified build.".into()
+                "Compatible Beatblock layout detected. Newer game builds are accepted by default; exact room matching happens after Beatblock starts.".into()
             } else {
                 validation_message
             },
@@ -601,10 +592,9 @@ impl Installer {
         let beatblock_plus_present = mods_directory
             .as_ref()
             .is_some_and(|path| find_beatblock_plus(path));
-        let supported_build = game_directory
+        let compatible_layout = game_directory
             .as_ref()
-            .and_then(|path| sha256_file(&path.join("Beatblock.exe")).ok())
-            .is_some_and(|hash| hash == supported_game_hash());
+            .is_some_and(|path| validate_game_directory(path).is_ok());
         let runtime_present = manifest
             .as_ref()
             .and_then(|value| value.runtime_path.as_ref())
@@ -618,17 +608,18 @@ impl Installer {
             beatblock_plus_present,
             runtime_present,
             obs_plugin_present,
-            supported_build,
+            compatible_layout,
             runtime_bundled: !RUNTIME_PAYLOAD.is_empty(),
             lovely_bundled: !LOVELY_PAYLOAD.is_empty(),
             obs_plugin_bundled: !OBS_PLUGIN_PAYLOAD.is_empty(),
             firewall_installed: manifest
                 .as_ref()
                 .is_some_and(|value| value.firewall_installed),
-            message: if supported_build {
-                "Supported Beatblock build detected".into()
+            message: if compatible_layout {
+                "Compatible Beatblock layout detected; the running game reports its exact build"
+                    .into()
             } else {
-                "Beatblock was not found or its build is not certified for competition".into()
+                "Beatblock was not found or its required game files are missing".into()
             },
         }
     }
@@ -755,7 +746,7 @@ impl Installer {
     fn install_with_progress_platform<F>(
         &self,
         explicit_game_directory: Option<PathBuf>,
-        allow_unknown_build: bool,
+        _allow_unknown_build: bool,
         requested_distribution: Option<Distribution>,
         firewall_public: bool,
         apply_platform_changes: bool,
@@ -778,10 +769,6 @@ impl Installer {
             .context("Beatblock was not found; choose the folder containing Beatblock.exe")?;
         validate_game_directory(&game_directory)?;
         let managed_manifest = self.load_manifest()?;
-        let hash = sha256_file(&game_directory.join("Beatblock.exe"))?;
-        if hash != supported_game_hash() && !allow_unknown_build {
-            bail!("this Beatblock build is not certified; repair or update Beatblock first");
-        }
         let mods_directory = self
             .mods_directory()
             .context("Windows APPDATA is unavailable")?;
@@ -1201,13 +1188,9 @@ impl Installer {
             2,
             "Inspecting managed components",
         ));
-        let allow_unknown = sha256_file(&manifest.game_directory.join("Beatblock.exe"))
-            .ok()
-            .as_deref()
-            != Some(supported_game_hash());
         let result = self.install_with_progress_platform(
             Some(manifest.game_directory),
-            allow_unknown,
+            false,
             // Re-detect BeatblockPlus during repair. This automatically heals
             // an adapter mismatch if BeatblockPlus was added or removed after
             // the original BBT installation.
@@ -2046,14 +2029,6 @@ pub fn distribution_label(value: Distribution) -> &'static str {
     }
 }
 
-fn short_hash(value: &str) -> String {
-    if value.len() > 16 {
-        format!("{}…", &value[..16])
-    } else {
-        value.into()
-    }
-}
-
 fn file_matches(path: &Path, expected: &[u8]) -> bool {
     std::fs::read(path)
         .ok()
@@ -2613,10 +2588,6 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
-fn supported_game_hash() -> &'static str {
-    "c91d0853feb12aceb66a821eb5cdffb9c25acf69268bb2cf7451fa42f864de6b"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2669,10 +2640,13 @@ mod tests {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock")
             });
         assert!(validate_game_directory(&root).is_ok());
-        assert_eq!(
-            sha256_file(&root.join("Beatblock.exe")).unwrap(),
-            supported_game_hash()
+        let installer = Installer::with_mods_directory(
+            root.join(".bbt-test-data"),
+            root.join(".bbt-test-mods"),
         );
+        let inspection = installer.inspect_target(&root);
+        assert!(inspection.compatible_layout);
+        assert_eq!(inspection.components[0].label, "Compatible");
     }
 
     #[test]
@@ -2692,14 +2666,14 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_unicode_game_folder_is_valid_but_uncertified() {
+    fn arbitrary_unicode_game_folder_is_valid_without_a_build_allowlist() {
         let root = std::env::temp_dir().join(format!("BBT Player 测试 {}", rand::random::<u64>()));
         let game = root.join("My Beatblock Copy");
         fake_game(&game);
         let installer = Installer::with_mods_directory(root.join("data"), root.join("mods"));
         let inspection = installer.inspect_target(&game);
         assert!(inspection.valid);
-        assert!(!inspection.supported_build);
+        assert!(inspection.compatible_layout);
         assert_eq!(inspection.install_state, "NOT INSTALLED");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2849,27 +2823,17 @@ mod tests {
         let legacy_mod = fake_managed_legacy_mod(&mods);
         let installer = Installer::with_mods_directory(data.clone(), mods.clone());
 
-        let rejected = installer.install_with_progress_platform(
-            Some(game.clone()),
-            false,
-            Some(Distribution::Standalone),
-            false,
-            false,
-            |_| {},
-        );
-        assert!(rejected.unwrap_err().to_string().contains("not certified"));
-        assert!(!mods.join("BeatblockOnline").exists());
-        assert!(legacy_runtime.is_file());
-        assert!(legacy_mod.is_dir());
-
         let mut progress = Vec::new();
-        let manifest = install_isolated(
-            &installer,
-            &game,
-            Some(Distribution::Standalone),
-            &mut progress,
-        )
-        .unwrap();
+        let manifest = installer
+            .install_with_progress_platform(
+                Some(game.clone()),
+                false,
+                Some(Distribution::Standalone),
+                false,
+                false,
+                |event| progress.push(event),
+            )
+            .unwrap();
         assert_eq!(manifest.distribution, Distribution::Standalone);
         assert!(!manifest.firewall_installed);
         assert!(!legacy_runtime.exists());

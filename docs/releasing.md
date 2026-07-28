@@ -42,8 +42,8 @@ executable for Explorer and taskbar rendering.
 `.github/workflows/release.yml` runs on the pinned `windows-2022` hosted image:
 
 - A manual **Run workflow** build validates and uploads a 14-day workflow artifact without publishing a release.
-- Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and generated release notes. A mismatched tag fails before the native build.
-- Tags containing `-` (for example, `v0.3.0-beta.3`) publish as prereleases.
+- Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and generated release notes. A mismatched tag fails before the native build. The display title is generated as `v<Online version> for Beatblock <tested version>+` from `package.json`; the Git tag itself stays semver-only for update tooling.
+- Tags containing `-` (for example, `v0.4.0-alpha.1`) publish as prereleases.
 
 Third-party actions are pinned to full commit SHAs. The build job has read-only repository access plus the OIDC permissions needed to produce GitHub artifact attestations. A separate environment-gated publication job is the only job with `contents: write`; it downloads the reviewed workflow artifact and publishes those exact files. CI and release generation also regenerate the protocol schema and fail if the checked-in schema drifts from the TypeScript source.
 
@@ -59,8 +59,28 @@ The workflow produces GitHub artifact attestations for the installer, OBS plugin
 Create and push a release tag only after the normal CI checks pass:
 
 ```powershell
-git tag -a v0.3.0-beta.3 -m "Beatblock Online v0.3.0-beta.3"
-git push origin v0.3.0-beta.3
+git tag -a v0.4.0-alpha.1 -m "Beatblock Online v0.4.0-alpha.1"
+git push origin v0.4.0-alpha.1
 ```
 
 The GitHub Actions run is the source of published binaries. Do not commit generated executables or DLLs back into the repository.
+
+## Extending the tested Beatblock baseline
+
+The installer is forward-compatible by default; do not add executable hashes or
+publish an installer only to allow a routine Beatblock update.
+
+1. Preserve `.reference` and place the new upstream build in separate tested and
+   untouched folders. Record the complete displayed version and bracketed build
+   token.
+2. Run installer, injection, official/custom chart, score, reconnect, transfer,
+   renderer, and OBS validation against the disposable tested copy.
+3. If the build passes, update `package.json` `beatblockCompatibility`, the
+   matching Rust/Lua tested-baseline constants, and the compatibility table.
+   Contract tests must reject drift between those three representations.
+4. If the build fails, triage the dedicated **Installer incompatible with latest
+   Beatblock release** issue and fix the adapter. Do not weaken same-build room
+   matching to hide gameplay differences.
+5. The next Online release title will automatically advertise the newer tested
+   baseline. Previously published installers continue accepting later game
+   layouts unless the upstream change caused a real incompatibility.

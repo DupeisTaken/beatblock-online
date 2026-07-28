@@ -8,14 +8,12 @@ param(
 
     [string] $ModsDir,
     [string] $LovelyArchive,
-    [switch] $AllowUnknownBuild,
     [switch] $Force,
     [switch] $Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$fixturePath = Join-Path $repoRoot 'mod\fixtures\patch-signatures.json'
 
 function Get-FullPath([string] $Path) {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
@@ -78,20 +76,20 @@ if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "Beatblock.exe was not found in '$gameRoot'. In Steam use Manage > Browse local files and pass that folder."
 }
 
-$fixture = Get-Content -LiteralPath $fixturePath -Raw | ConvertFrom-Json
-$expectedHash = $fixture.reference.beatblockExeSha256
-$savedWhatIfPreference = $WhatIfPreference
-try {
-    $WhatIfPreference = $false
-    $actualHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-} finally {
-    $WhatIfPreference = $savedWhatIfPreference
-}
-if ($actualHash -ne $expectedHash -and -not $AllowUnknownBuild) {
-    throw "Unsupported Beatblock.exe ($actualHash). Expected $expectedHash. Use -AllowUnknownBuild only for non-competitive development."
-}
-if ($actualHash -ne $expectedHash) {
-    Write-Warning 'Installing onto an unknown Beatblock build. Competitive races will remain blocked.'
+# Compatibility is derived from Beatblock's displayed build token after the
+# adapter starts. The install path deliberately validates structure rather than
+# maintaining an executable-hash allowlist for every upstream game release.
+$requiredGameFiles = @(
+    'love.dll',
+    'lua51.dll',
+    'packed\data.zip',
+    'packed\obj.zip',
+    'packed\states.zip'
+)
+foreach ($relative in $requiredGameFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $gameRoot $relative) -PathType Leaf)) {
+        throw "The selected folder is missing required Beatblock file '$relative'."
+    }
 }
 
 $versionDll = Join-Path $gameRoot 'version.dll'

@@ -19,7 +19,7 @@ import {
 import { Value } from '@sinclair/typebox/value';
 
 describe('Beatblock score derivation', () => {
-  it('keeps run-check policy optional for protocol-v3 compatibility', () => {
+  it('keeps pre-race room policies optional for protocol-v3 compatibility', () => {
     const room = {
       id: 'room',
       name: 'Room',
@@ -36,6 +36,10 @@ describe('Beatblock score derivation', () => {
     };
     expect(Value.Check(RoomSnapshotSchema, room)).toBe(true);
     expect(Value.Check(RoomSnapshotSchema, { ...room, validityChecksEnabled: false })).toBe(true);
+    expect(Value.Check(RoomSnapshotSchema, { ...room, autoRequestChartTransfers: true })).toBe(
+      true,
+    );
+    expect(Value.Check(RoomSnapshotSchema, { ...room, requireSameGameBuild: false })).toBe(true);
   });
 
   it('accepts Rust-shaped snapshots with absent optional result fields', () => {
@@ -245,8 +249,10 @@ describe('Beatblock score derivation', () => {
   it('validates the runtime client hello ownership key', () => {
     const hello = {
       instanceId: 'game-123',
-      clientVersion: '0.3.0-beta.3',
-      gameBuildHash: 'a'.repeat(64),
+      clientVersion: '0.4.0-alpha.1',
+      gameVersion: '1.7.1a (Early Access)[d40b7083]',
+      gameBuildId: 'd40b7083',
+      gameBuildSource: 'displayed_build_hash',
       distribution: 'standalone',
       mods: [],
     };

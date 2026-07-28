@@ -31,10 +31,12 @@ if (sourceOnly) {
   process.exit(0);
 }
 
-// Patch acceptance is intentionally tied to the isolated `.test` game copy;
-// release validation must never inspect or launch the user's Steam install.
-const reference = resolve(root, '.test/Beatblock/packed');
-const gameExecutable = resolve(root, '.test/Beatblock/Beatblock.exe');
+// Patch acceptance is intentionally tied to an isolated game copy; release
+// validation must never inspect or launch the user's Steam install. Worktrees
+// can point at the retained fixture without duplicating proprietary archives.
+const gameFixture = resolve(process.env.BBT_GAME_FIXTURE ?? resolve(root, '.test/Beatblock'));
+const reference = resolve(gameFixture, 'packed');
+const gameExecutable = resolve(gameFixture, 'Beatblock.exe');
 const blocks = hooks.match(/\[\[patches\]\][\s\S]*?(?=\[\[patches\]\]|$)/g) ?? [];
 let sourceValidated = 0;
 for (const block of blocks) {

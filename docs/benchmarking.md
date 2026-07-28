@@ -12,7 +12,7 @@ Windows file lock can leave a directory behind.
 
 Treat these separately from persistent development assets:
 
-- `E:\beatblock-online\.test\ui-harness` is the intentionally retained, ignored
+- `<repository>\.test\ui-harness` is the intentionally retained, ignored
   LÖVE fixture used by `BBT_UI_FIXTURE`.
 - `tests/ui-baselines` is tracked review evidence and must not be cleaned.
 - `reports/ui`, `reports/obs-stream`, `artifacts`, `release`,

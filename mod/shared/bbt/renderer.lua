@@ -1,3 +1,6 @@
+local rendererSlot = tostring(os.getenv('BBT_RENDERER_STREAM') or 'A'):upper()
+if not rendererSlot:match('^[A-D]$') then rendererSlot = 'A' end
+
 local Renderer = {
   active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil,
   -- Full is the fidelity-first default: it retains the native backdrop, HUD,
@@ -8,6 +11,8 @@ local Renderer = {
   height = tonumber(os.getenv('BBT_RENDERER_HEIGHT')) or 720,
   fps = tonumber(os.getenv('BBT_RENDERER_FPS')) or 60,
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
+  streamSlot = rendererSlot,
+  windowTitle = 'Beatblock Online Renderer ' .. rendererSlot,
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0,
   lastScoreSequence = 0, sourceAccuracy = nil, sourceOffset = 0,
   sourceScore = nil, resultsReady = false,
@@ -33,7 +38,7 @@ if ok then ffi.cdef[[
   BOOL UnmapViewOfFile(const void*); BOOL CloseHandle(HANDLE);
   int MultiByteToWideChar(unsigned int, DWORD, const char*, int, wchar_t*, int);
   void* GetActiveWindow(void); int ShowWindow(void*, int);
-  void** SDL_GetWindows(int*); bool SDL_HideWindow(void*); void SDL_free(void*);
+  void** SDL_GetWindows(int*); bool SDL_MinimizeWindow(void*); void SDL_free(void*);
 ]] end
 
 local sdl = nil
@@ -70,27 +75,28 @@ local function unmapFile(mapped)
   if mapped.handle ~= nil then ffi.C.CloseHandle(mapped.handle); mapped.handle = nil end
 end
 
-local function hideRendererWindow()
+local function minimizeRendererWindow()
   -- GetActiveWindow is often nil when the child was launched behind OBS. Ask
-  -- SDL for this process's windows first so background launches are hidden as
-  -- reliably as foreground launches.
-  local hidden = false
+  -- SDL for this process's windows first. OBS Application Audio Capture ignores
+  -- fully hidden windows, but explicitly includes minimized windows, so the
+  -- child must remain discoverable without covering the player's desktop.
+  local minimized = false
   if sdl then
     local count = ffi.new('int[1]')
     local windows = sdl.SDL_GetWindows(count)
     if windows ~= nil then
       for index = 0, count[0] - 1 do
-        if windows[index] ~= nil and sdl.SDL_HideWindow(windows[index]) ~= 0 then hidden = true end
+        if windows[index] ~= nil and sdl.SDL_MinimizeWindow(windows[index]) then minimized = true end
       end
       sdl.SDL_free(windows)
     end
   end
-  if not hidden and love and love.window and love.window.minimize then
-    hidden = pcall(love.window.minimize)
+  if not minimized and love and love.window and love.window.minimize then
+    minimized = pcall(love.window.minimize)
   end
-  if not hidden then
+  if not minimized then
     local window = ffi.C.GetActiveWindow()
-    if window ~= nil then ffi.C.ShowWindow(window, 0) end
+    if window ~= nil then ffi.C.ShowWindow(window, 6) end
   end
 end
 
@@ -108,6 +114,9 @@ local function reportError(message)
 end
 
 function Renderer.shutdown()
+  if Renderer.audioEnabled and love and love.audio and love.audio.setVolume then
+    pcall(love.audio.setVolume, 0)
+  end
   unmapFile(Renderer.inputs)
   unmapFile(Renderer.scores)
   unmapFile(Renderer.frames)
@@ -148,6 +157,10 @@ function Renderer.init()
   if Renderer.mode ~= 'clean' and Renderer.mode ~= 'full' then
     return failInitialization('renderer mode must be clean or full')
   end
+  if not (love and love.window and love.window.setTitle)
+    or not pcall(love.window.setTitle, Renderer.windowTitle) then
+    return failInitialization('renderer window title could not be assigned')
+  end
   Renderer.frameSize = Renderer.width * Renderer.height * 4
   Renderer.frameInterval = 1 / math.max(1, Renderer.fps)
   Renderer.frames = mapFile(Renderer.framePath, 64 + 1920 * 1080 * 4 * 3)
@@ -170,7 +183,7 @@ function Renderer.init()
     return failInitialization('renderer canvases could not be allocated')
   end
   Renderer.outputs = {first, second}
-  hideRendererWindow()
+  minimizeRendererWindow()
   _G.BBTRenderer = Renderer
   return Renderer
 end
@@ -235,12 +248,16 @@ function Renderer.start()
     savedata.options.aprilFools.randomPaddleOffset = false
   end
   Renderer.useDefaultCostume()
-  -- Gameplay's Play Song event expects preloadSoundData to be a table even
-  -- when it has no matching preloaded track. Zero the disposable child's audio
-  -- settings before that event takes the normal synchronous-load fallback.
-  if not Renderer.audioEnabled and savedata and savedata.options and savedata.options.audio then
-    for key, value in pairs(savedata.options.audio) do
-      if type(value) == 'number' then savedata.options.audio[key] = 0 end
+  -- Beatblock's love.focus handler may already have globally muted this
+  -- background process. Disable future focus-loss muting and restore the
+  -- renderer's master volume before the Play Song fallback creates its source.
+  local audioOptions = savedata and savedata.options and savedata.options.audio
+  if Renderer.audioEnabled then
+    if audioOptions then audioOptions.muteOnFocusLoss = false end
+    if love and love.audio and love.audio.setVolume then love.audio.setVolume(1) end
+  elseif audioOptions then
+    for key, value in pairs(audioOptions) do
+      if type(value) == 'number' then audioOptions[key] = 0 end
     end
   end
   -- Beatblock's background loader reads the global cLevel even though Game:init
@@ -255,7 +272,9 @@ function Renderer.start()
   -- preserves that shape and lets Beatblock load the song without attempting
   -- to index a boolean sentinel.
   cs:init(chart, variantInfo, nil, {})
-  if not Renderer.audioEnabled and cs.source and cs.source.setVolume then cs.source:setVolume(0) end
+  if cs.source and cs.source.setVolume then
+    cs.source:setVolume(Renderer.audioEnabled and 1 or 0)
+  end
 end
 
 function Renderer.applySourceScore(target)

@@ -1,9 +1,28 @@
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#define AUDIO_WINDOW_FORMAT "Beatblock Online Renderer %c:SDL_app:Beatblock.exe"
+#define DEFAULT_AUDIO_SYNC_MS 0
+
+static char normalize_stream_slot(char slot)
+{
+    if (slot >= 'a' && slot <= 'd')
+        slot -= ('a' - 'A');
+    return slot >= 'A' && slot <= 'D' ? slot : 'A';
+}
+
+static void build_audio_window(char slot, char *window, size_t size)
+{
+    snprintf(window, size, AUDIO_WINDOW_FORMAT, normalize_stream_slot(slot));
+}
+
+#ifndef BBT_AUDIO_TARGET_TEST
+
 #include <obs-module.h>
 #include <graphics/graphics.h>
 #include <util/platform.h>
 #include <windows.h>
-#include <stdint.h>
-#include <stdio.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-online-obs", "en-US")
@@ -14,8 +33,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("beatblock-online-obs", "en-US")
 #define MAPPING_RETRY_NS 500000000ULL
 #define STALE_FRAME_NS 1500000000ULL
 #define PROCESS_AUDIO_SOURCE_ID "wasapi_process_output_capture"
-#define DEFAULT_AUDIO_WINDOW "Beatblock:SDL_app:Beatblock.exe"
-#define DEFAULT_AUDIO_DELAY_MS 500
+#define OBS_WINDOW_PRIORITY_TITLE 0
 
 struct bbt_video {
     obs_source_t *source;
@@ -50,9 +68,14 @@ static bool reroute_audio_source(obs_source_t *audio_source, obs_source_t *targe
 
 static void destroy_audio_source(struct bbt_video *ctx)
 {
+    // beta.3 placed its host-audio delay on the combined Player Stream source.
+    // Always clear that inherited runtime offset; fine sync belongs only to the
+    // private audio child so it can change relative to the video frames.
+    obs_source_set_sync_offset(ctx->source, 0);
     obs_source_set_audio_active(ctx->source, false);
     if (!ctx->audio_source)
         return;
+    obs_source_set_sync_offset(ctx->audio_source, 0);
     reroute_audio_source(ctx->audio_source, NULL);
     obs_source_remove_active_child(ctx->source, ctx->audio_source);
     obs_source_release(ctx->audio_source);
@@ -61,19 +84,23 @@ static void destroy_audio_source(struct bbt_video *ctx)
 
 static void update_audio_source(struct bbt_video *ctx, obs_data_t *settings)
 {
+    // beta.3 stored its 500 ms adjustment on the combined Player Stream.
+    // Clear it even when Application Audio Capture is unavailable so an
+    // upgraded video-only source cannot inherit that stale delay.
+    obs_source_set_sync_offset(ctx->source, 0);
     if (!obs_data_get_bool(settings, "capture_audio")) {
         destroy_audio_source(ctx);
         return;
     }
 
-    const char *window = obs_data_get_string(settings, "audio_window");
-    if (!window || !*window)
-        window = DEFAULT_AUDIO_WINDOW;
+    char window[128];
+    build_audio_window(ctx->slot, window, sizeof(window));
     obs_data_t *audio_settings = obs_data_create();
     obs_data_set_string(audio_settings, "window", window);
-    // Matches OBS's WINDOW_PRIORITY_EXE. The title/class still disambiguate the
-    // ordinary visible game from unrelated processes when available.
-    obs_data_set_int(audio_settings, "priority", 2);
+    // Every renderer uses Beatblock.exe and SDL_app, so its stable slot title
+    // is the only selector that cannot accidentally attach to the host game or
+    // another Player Stream's child.
+    obs_data_set_int(audio_settings, "priority", OBS_WINDOW_PRIORITY_TITLE);
 
     if (!ctx->audio_source) {
         char name[256];
@@ -103,12 +130,12 @@ static void update_audio_source(struct bbt_video *ctx, obs_data_t *settings)
     }
     obs_data_release(audio_settings);
 
-    int64_t delay_ms = obs_data_get_int(settings, "audio_delay_ms");
-    if (delay_ms < 0)
-        delay_ms = 0;
-    if (delay_ms > 2000)
-        delay_ms = 2000;
-    obs_source_set_sync_offset(ctx->source, delay_ms * 1000000LL);
+    int64_t sync_ms = obs_data_get_int(settings, "audio_sync_ms");
+    if (sync_ms < 0)
+        sync_ms = 0;
+    if (sync_ms > 2000)
+        sync_ms = 2000;
+    obs_source_set_sync_offset(ctx->audio_source, sync_ms * 1000000LL);
     obs_source_set_audio_active(ctx->source, true);
 }
 
@@ -244,21 +271,20 @@ static void video_update(void *data, obs_data_t *settings)
 {
     struct bbt_video *ctx = data;
     const char *slot = obs_data_get_string(settings, "slot");
-    char requested_slot = slot && *slot ? slot[0] : 'A';
-    if (requested_slot >= 'a' && requested_slot <= 'd')
-        requested_slot -= ('a' - 'A');
-    if (requested_slot < 'A' || requested_slot > 'D')
-        requested_slot = 'A';
+    char requested_slot = normalize_stream_slot(slot && *slot ? slot[0] : 'A');
+    if (ctx->slot != requested_slot || !ctx->path[0]) {
+        ctx->slot = requested_slot;
+        build_path(ctx);
+        close_frame_mapping(ctx);
+        clear_video_frame(ctx);
+        ctx->sequence = 0;
+        ctx->last_frame_ns = 0;
+        ctx->next_mapping_attempt_ns = 0;
+    }
+    // The private WASAPI source must see the new slot before it resolves the
+    // renderer title. OBS restarts process-loopback capture when this selector
+    // changes and reconnects to the same title after a child relaunch.
     update_audio_source(ctx, settings);
-    if (ctx->slot == requested_slot && ctx->path[0])
-        return;
-    ctx->slot = requested_slot;
-    build_path(ctx);
-    close_frame_mapping(ctx);
-    clear_video_frame(ctx);
-    ctx->sequence = 0;
-    ctx->last_frame_ns = 0;
-    ctx->next_mapping_attempt_ns = 0;
 }
 
 static void *video_create(obs_data_t *settings, obs_source_t *source)
@@ -282,8 +308,10 @@ static void video_defaults(obs_data_t *settings)
 {
     obs_data_set_default_string(settings, "slot", "A");
     obs_data_set_default_bool(settings, "capture_audio", true);
-    obs_data_set_default_string(settings, "audio_window", DEFAULT_AUDIO_WINDOW);
-    obs_data_set_default_int(settings, "audio_delay_ms", DEFAULT_AUDIO_DELAY_MS);
+    // This new key deliberately ignores the beta.3 host-audio delay persisted
+    // under audio_delay_ms. Renderer audio already shares the delayed child
+    // clock with its video and therefore starts with no additional offset.
+    obs_data_set_default_int(settings, "audio_sync_ms", DEFAULT_AUDIO_SYNC_MS);
 }
 
 static obs_properties_t *video_properties(void *data)
@@ -298,9 +326,7 @@ static obs_properties_t *video_properties(void *data)
     obs_property_list_add_string(slot, "Stream D", "D");
     obs_properties_add_text(props, "status", obs_module_text("ManagerHint"), OBS_TEXT_INFO);
     obs_properties_add_bool(props, "capture_audio", obs_module_text("CaptureAudio"));
-    obs_properties_add_text(props, "audio_window", obs_module_text("AudioWindow"),
-        OBS_TEXT_DEFAULT);
-    obs_properties_add_int_slider(props, "audio_delay_ms", obs_module_text("AudioDelay"),
+    obs_properties_add_int_slider(props, "audio_sync_ms", obs_module_text("AudioSync"),
         0, 2000, 50);
     obs_properties_add_text(props, "audio_status", obs_module_text("AudioHint"),
         OBS_TEXT_INFO);
@@ -416,3 +442,5 @@ bool obs_module_load(void)
     blog(LOG_INFO, "[Beatblock Online] OBS player stream source registered");
     return true;
 }
+
+#endif

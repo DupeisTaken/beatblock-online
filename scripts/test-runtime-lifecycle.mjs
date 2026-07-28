@@ -6,29 +6,34 @@ import { buildRuntimeLifecycleReport } from './runtime-lifecycle-report.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const cargoTarget = resolve(root, process.env.CARGO_TARGET_DIR ?? 'companion/target');
-const executable = resolve(cargoTarget, 'release/BeatblockOnlineRuntime.exe');
+const explicitRuntime = process.env.BBT_RUNTIME_EXE;
+const executable = explicitRuntime
+  ? resolve(explicitRuntime)
+  : resolve(cargoTarget, 'release/BeatblockOnlineRuntime.exe');
 const data = resolve(root, '.test/runtime-lifecycle-data');
 const reportPath = resolve(root, 'reports/trial-runs/runtime-lifecycle-latest.json');
 await rm(data, { recursive: true, force: true });
 await mkdir(data, { recursive: true });
 
-// This gate must measure the current source tree, not whichever ignored release
-// executable happened to be left by an earlier build.
-const build = spawnSync(
-  'cargo',
-  [
-    'build',
-    '--manifest-path',
-    resolve(root, 'companion/Cargo.toml'),
-    '--release',
-    '--locked',
-    '--bin',
-    'BeatblockOnlineRuntime',
-  ],
-  { cwd: root, encoding: 'utf8', windowsHide: true },
-);
-if (build.status !== 0) {
-  throw new Error(`could not build the lifecycle runtime:\n${build.stdout}\n${build.stderr}`);
+// The aggregate trial passes the runtime it built in the immediately preceding
+// step. Standalone lifecycle runs still build from the current source tree.
+if (!explicitRuntime) {
+  const build = spawnSync(
+    'cargo',
+    [
+      'build',
+      '--manifest-path',
+      resolve(root, 'companion/Cargo.toml'),
+      '--release',
+      '--locked',
+      '--bin',
+      'BeatblockOnlineRuntime',
+    ],
+    { cwd: root, encoding: 'utf8', windowsHide: true },
+  );
+  if (build.status !== 0) {
+    throw new Error(`could not build the lifecycle runtime:\n${build.stdout}\n${build.stderr}`);
+  }
 }
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -113,7 +118,7 @@ const readyPromise = new Promise((resolveReady, reject) => {
   });
 });
 socket.write(
-  `${JSON.stringify({ version: 3, type: 'client.hello', sequence: 0, runTimeUs: 0, payload: { instanceId: 'lifecycle-trial', clientVersion: 'test', distribution: 'standalone' } })}\n`,
+  `${JSON.stringify({ version: 3, type: 'client.hello', sequence: 0, runTimeUs: 0, payload: { instanceId: 'lifecycle-trial', clientVersion: 'test', gameVersion: '1.7.1a (Early Access)[d40b7083]', distribution: 'standalone' } })}\n`,
 );
 const ready = await readyPromise;
 if (ready.type !== 'runtime.ready' || ready.version !== 3)

@@ -1,5 +1,5 @@
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, HostRoomOptions},
     chart_hash::canonical_chart_hash_cached,
     model::{
         AdmissionRequest, ChartHashRequest, ChartLock, CompanionConfig, HostRoomRequest,
@@ -204,9 +204,15 @@ async fn get_diagnostics(
         .filter(|(_, address)| address.is_ipv4())
         .map(|(name, address)| json!({"adapter":name,"address":address.to_string()}))
         .collect::<Vec<_>>();
+    let client = state.client.read().await.clone();
     Ok(Json(json!({
         "protocolVersion": crate::model::PROTOCOL_VERSION,
         "runtimeVersion": env!("CARGO_PKG_VERSION"),
+        "testedBeatblockVersion": crate::compatibility::TESTED_BEATBLOCK_VERSION,
+        "testedBeatblockBuildId": crate::compatibility::TESTED_BEATBLOCK_BUILD_ID,
+        "detectedBeatblockVersion": client.get("gameVersion").cloned().unwrap_or(Value::Null),
+        "detectedBeatblockBuildId": client.get("gameBuildId").cloned().unwrap_or(Value::Null),
+        "detectedBeatblockBuildSource": client.get("gameBuildSource").cloned().unwrap_or(Value::Null),
         "connection": state.connection_status.read().await.clone(),
         "hosting": state.is_host.load(std::sync::atomic::Ordering::Relaxed),
         "peerCount": state.network.peer_count().await,
@@ -265,16 +271,17 @@ async fn host_room(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
-        .host_room(
-            request.name,
-            request.password,
-            request.port.unwrap_or(DEFAULT_HOST_PORT),
-            request
+        .host_room(HostRoomOptions {
+            room_name: request.name,
+            password: request.password,
+            port: request.port.unwrap_or(DEFAULT_HOST_PORT),
+            admission_mode: request
                 .admission_mode
                 .unwrap_or(crate::model::AdmissionMode::HostApproval),
-            request.host_participating.unwrap_or(true),
-            request.validity_checks_enabled.unwrap_or(true),
-        )
+            host_participating: request.host_participating.unwrap_or(true),
+            validity_checks_enabled: request.validity_checks_enabled.unwrap_or(true),
+            require_same_game_build: request.require_same_game_build.unwrap_or(true),
+        })
         .await
     {
         Ok(address) => Json(json!({

@@ -12,6 +12,7 @@ import {
   sha256Hex,
 } from './verify-release.mjs';
 import { validateReleaseTag } from './verify-release-tag.mjs';
+import { releaseDisplayTitle } from './release-title.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -67,21 +68,47 @@ test('release version metadata and generated asset names stay aligned', async ()
 
 test('tagged releases must exactly match the package version', () => {
   assert.deepEqual(
-    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-beta.3', version: '0.3.0-beta.3' }),
-    { tagged: true, expected: 'v0.3.0-beta.3' },
+    validateReleaseTag({ refType: 'tag', refName: 'v0.4.0-alpha.1', version: '0.4.0-alpha.1' }),
+    { tagged: true, expected: 'v0.4.0-alpha.1' },
   );
   assert.throws(
     () =>
       validateReleaseTag({
         refType: 'tag',
-        refName: 'v0.3.0-beta.4',
-        version: '0.3.0-beta.3',
+        refName: 'v0.4.0-alpha.2',
+        version: '0.4.0-alpha.1',
       }),
     /does not match package version/,
   );
   assert.deepEqual(
-    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-beta.3' }),
-    { tagged: false, expected: 'v0.3.0-beta.3' },
+    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.4.0-alpha.1' }),
+    { tagged: false, expected: 'v0.4.0-alpha.1' },
+  );
+});
+
+test('release display titles advertise the tested Beatblock baseline without changing tags', () => {
+  assert.equal(
+    releaseDisplayTitle('v0.4.0-alpha.1', {
+      testedVersion: '1.7.1a',
+      newerBuilds: 'assumed-compatible',
+    }),
+    'v0.4.0-alpha.1 for Beatblock 1.7.1a+',
+  );
+  assert.throws(
+    () =>
+      releaseDisplayTitle('v0.4.0-alpha.1 for Beatblock 1.7.1a', {
+        testedVersion: '1.7.1a',
+        newerBuilds: 'assumed-compatible',
+      }),
+    /invalid tag/,
+  );
+  assert.throws(
+    () =>
+      releaseDisplayTitle('v0.4.0-alpha.1', {
+        testedVersion: '1.7.1a',
+        newerBuilds: 'blocked',
+      }),
+    /policy/,
   );
 });
 

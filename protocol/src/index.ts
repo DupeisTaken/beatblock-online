@@ -115,9 +115,15 @@ export const RoomSnapshotSchema = Type.Object({
   lifecycle: RoomLifecycleSchema,
   admissionMode: Type.Union([Type.Literal('password_only'), Type.Literal('host_approval')]),
   allowChartTransfers: Type.Boolean({ default: true }),
+  // Optional for protocol-v3 compatibility. This policy requests an offer
+  // after local matching fails; it never grants transfer/install consent.
+  autoRequestChartTransfers: Type.Optional(Type.Boolean({ default: false })),
   // Optional keeps protocol-v3 peers compatible; runtimes default omission to
   // strict competitive checking.
   validityChecksEnabled: Type.Optional(Type.Boolean({ default: true })),
+  // Optional preserves protocol-v3 decoding. Hosts default omission to exact
+  // Beatblock build matching and may relax it only before a race.
+  requireSameGameBuild: Type.Optional(Type.Boolean({ default: true })),
   chart: Type.Optional(ChartLockSchema),
   // MAX_PLAYERS already includes the room host.
   participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS }),
@@ -243,7 +249,13 @@ export type ValidityChecksCommand = Static<typeof ValidityChecksCommandSchema>;
 export const ClientHelloSchema = Type.Object({
   instanceId: Type.String({ minLength: 1, maxLength: 96 }),
   clientVersion: Type.String({ minLength: 1 }),
-  gameBuildHash: Type.String({ minLength: 1 }),
+  gameVersion: Type.String({ minLength: 1, maxLength: 160 }),
+  gameBuildId: Type.String({ minLength: 7, maxLength: 80 }),
+  gameBuildSource: Type.Union([
+    Type.Literal('displayed_build_hash'),
+    Type.Literal('displayed_version_digest'),
+    Type.Literal('game_content_digest'),
+  ]),
   distribution: Type.Union([Type.Literal('standalone'), Type.Literal('beatblock-plus')]),
   mods: Type.Array(Type.Object({ id: Type.String(), hash: Type.String() })),
 });

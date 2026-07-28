@@ -104,10 +104,15 @@ if ($LASTEXITCODE -ne 0) { throw 'OBS import-library generation failed.' }
 $build = Join-Path $cache 'build'
 New-Item -ItemType Directory -Force $build | Out-Null
 $pluginSource = Join-Path $root 'obs-plugin\src\plugin.c'
+$audioTargetTest = Join-Path $root 'obs-plugin\tests\audio-target.c'
 $batch = Join-Path $cache 'compile.cmd'
 @"
 @echo off
 call "$devCommand" -arch=x64 >nul
+if errorlevel 1 exit /b %errorlevel%
+cl /nologo /O2 /MD /std:c17 /Fo"$build\\" /Fe"$build\beatblock-online-audio-target-test.exe" "$audioTargetTest"
+if errorlevel 1 exit /b %errorlevel%
+"$build\beatblock-online-audio-target-test.exe"
 if errorlevel 1 exit /b %errorlevel%
 cl /nologo /LD /O2 /MD /std:c17 /DUNICODE /D_UNICODE /I"$source" /I"$(Split-Path -Parent $source)\deps\w32-pthreads" /Fo"$build\\" /Fe"$build\beatblock-online-obs.dll" "$pluginSource" "$importLibrary" /link /INCREMENTAL:NO
 "@ | Set-Content -Encoding ascii $batch

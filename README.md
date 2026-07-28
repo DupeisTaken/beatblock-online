@@ -2,17 +2,16 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The current prerelease candidate is [`v0.3.0-beta.3`](docs/releases/v0.3.0-beta.3.md).
-It fixes Ladybug chart crashes and false final-note DNF results, accepts custom
-chart titles and paths containing Unicode or punctuation, adds release-aware
-version checking in Settings, prevents stale renderer Results from crashing a
-relaunched broadcast child, and routes synchronized game audio through the
-native OBS 32 Player Stream source.
+The current prerelease candidate is [`v0.4.0-alpha.1`](docs/releases/v0.4.0-alpha.1.md).
+It makes the installer forward-compatible with new Beatblock builds while
+keeping exact same-build rooms, improves consent-aware chart transfers and
+setlist readability, exposes release compatibility in-product, and captures
+audio from each isolated renderer in its matching OBS Player Stream.
 
 ## Player quick start
 
 1. Open the [GitHub Releases page](https://github.com/DupeisTaken/beatblock-online/releases), download `BeatblockOnlineInstaller.exe` from the newest release, and run it.
-2. Confirm the **Selected game** card points to the folder you intend to modify. The Install page shows the adapter, OBS source, Windows Firewall profile, and uncertified-build choices together before anything changes. A green **SUPPORTED** badge identifies the certified build.
+2. Confirm the **Selected game** card points to the folder you intend to modify. The Install page shows the adapter, OBS source, and Windows Firewall profile before anything changes. A green **COMPATIBLE** badge identifies a valid Beatblock layout; the running game supplies its exact top-right build token for room matching.
 3. Choose **Install / Update** and follow the concrete phase shown above the progress bar. If progress pauses at the firewall phase, approve the native Windows administrator prompt on the secure desktop once. A result banner and one completion dialog report the final verified outcome; failures include the underlying Windows diagnostic.
 4. Choose **Launch Beatblock** in the completion dialog to verify Lovely initialization, or close the installer and launch normally through Steam.
 5. Open **Online**, then host a room or follow the [Player joining guide](docs/operator-guide.md#join-a-room-as-a-player) with the host's public address, UDP port, and password. When the host uses frp, Players enter the frp server's public address and UDP `remotePort`.
@@ -88,22 +87,25 @@ pnpm build              Reproduce all dependencies and build the Windows release
 Test runs may create owned directories named `bbt-*` under `%TEMP%`. Successful UI
 runs remove their `bbt-ui-*` stage automatically, but a terminated process can
 leave a stage behind. Before deleting leftovers, stop only BBT processes started
-by the test, verify every target is inside `%TEMP%`, and preserve the
-`E:\beatblock-online\.test\ui-harness` fixture. See
+by the test, verify every target is inside `%TEMP%`, and preserve the ignored
+`<repository>\.test\ui-harness` fixture. See
 [temporary artifact hygiene](docs/benchmarking.md#temporary-artifact-hygiene).
 
 ## Detailed documentation
 
 - [Ship-readiness security, correctness, resource, and UX audit](reports/ship-readiness-audit-2026-07-20.md)
+- [v0.4.0-alpha.1 ship-readiness review](reports/ship-readiness-review-v0.4.0-alpha.1.md)
 - [Installation, repair, adapters, and injection](docs/injection.md)
 - [Adaptive Online dashboard and controls](docs/mod-guide.md)
 - [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
+- [Beatblock Online and game-build compatibility](docs/compatibility.md)
 - [OBS streams, local API, and text exports](docs/obs-setup.md)
 - [Protocol v3](docs/protocol.md)
 - [Installer/runtime architecture](docs/architecture.md)
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
+- [v0.4.0-alpha.1 release notes](docs/releases/v0.4.0-alpha.1.md)
 - [v0.3.0-beta.3 release notes](docs/releases/v0.3.0-beta.3.md)
 - [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
@@ -117,6 +119,6 @@ The latest automated gate is [full-capability-latest.md](reports/trial-runs/full
 - `protocol`: protocol v3 JSON Schema and TypeScript conformance implementation; archived v2 remains for compatibility diagnostics.
 - `reports/trial-runs`: machine-readable and Markdown acceptance evidence.
 
-## Current beta scope
+## Current prerelease scope
 
 Windows 10 2004+ and Windows 11 x64 are supported. A room supports 16 players, 32 telemetry spectators, four stable host renderer slots, password admission, optional host approval, synchronized starts, chart verification, authoritative event-derived rankings, SQLite history, and atomic OBS text exports.

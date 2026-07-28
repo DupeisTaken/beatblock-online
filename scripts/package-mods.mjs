@@ -25,7 +25,7 @@ for (const name of distributions) {
   const stagedMod = resolve(stage, 'BeatblockOnline');
   await mkdir(stage, { recursive: true });
   await cp(target, stagedMod, { recursive: true });
-  const archive = resolve(releases, `beatblock-online-${name}-0.3.0-beta.3.zip`);
+  const archive = resolve(releases, `beatblock-online-${name}-0.4.0-alpha.1.zip`);
   const result =
     process.platform === 'win32'
       ? spawnSync(

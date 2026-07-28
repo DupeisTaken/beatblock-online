@@ -299,10 +299,20 @@ pub struct RoomSnapshot {
     pub admission_mode: AdmissionMode,
     #[serde(default = "default_true")]
     pub allow_chart_transfers: bool,
+    /// Host-owned convenience policy. It only asks the host for an offer after
+    /// local matching fails; package acceptance and executable confirmation
+    /// remain participant-owned.
+    #[serde(default)]
+    pub auto_request_chart_transfers: bool,
     /// Competitive integrity verdicts are opt-out per room. Missing fields
     /// from older protocol-v3 snapshots retain strict behavior.
     #[serde(default = "default_true")]
     pub validity_checks_enabled: bool,
+    /// Hosts require the exact Beatblock runtime build by default. This is
+    /// independent of the Online protocol version and can be relaxed for
+    /// casual or compatibility-testing rooms.
+    #[serde(default = "default_true")]
+    pub require_same_game_build: bool,
     pub participants: Vec<Participant>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<ChartLock>,
@@ -524,6 +534,7 @@ pub struct HostRoomRequest {
     pub admission_mode: Option<AdmissionMode>,
     pub host_participating: Option<bool>,
     pub validity_checks_enabled: Option<bool>,
+    pub require_same_game_build: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -613,7 +624,9 @@ mod tests {
             lifecycle: RoomLifecycle::Forming,
             admission_mode: AdmissionMode::HostApproval,
             allow_chart_transfers: true,
+            auto_request_chart_transfers: false,
             validity_checks_enabled: true,
+            require_same_game_build: true,
             participants: vec![participant],
             chart: None,
             setlist: vec![],

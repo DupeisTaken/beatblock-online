@@ -18,8 +18,6 @@ struct Args {
     data_dir: Option<PathBuf>,
     #[arg(long)]
     game_dir: Option<PathBuf>,
-    #[arg(long)]
-    allow_unknown_build: bool,
     #[arg(long, value_parser = ["automatic", "standalone", "beatblock-plus"], default_value = "automatic")]
     method: String,
     #[arg(long)]
@@ -122,7 +120,7 @@ fn run(args: Args) -> Result<()> {
         };
         installer.install_with_optional_obs(
             args.game_dir,
-            args.allow_unknown_build,
+            false,
             distribution,
             args.firewall_public,
             args.install_obs,

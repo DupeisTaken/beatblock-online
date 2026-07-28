@@ -67,7 +67,7 @@ participants[#participants+1]=player('viewer-1','Room Viewer','spectator',true,f
 participants[#participants+1]=player('caster-1','Caster Desk','spectator',true,false,nil,nil,true)
 local roomFixture={
   id='visual-room',name='Saturday Showcase',hostSessionId='host-1',lifecycle='ready',
-  admissionMode='host_approval',allowChartTransfers=true,validityChecksEnabled=true,participants=participants,chart=chart,
+  admissionMode='host_approval',allowChartTransfers=true,validityChecksEnabled=true,requireSameGameBuild=true,participants=participants,chart=chart,
   forceStart=false,currentSetlistIndex=0,createdAtMs=1,updatedAtMs=1,
   setlist={
     {id='set-1',chart=chart,completed=false},
@@ -85,14 +85,22 @@ for index,id in ipairs({'A','B','C','D'}) do
 end
 
 BBT={
-  version='0.3.0-beta.3',protocolVersion=3,
+  version='0.4.0-alpha.1',protocolVersion=3,
+  testedBeatblockVersion='1.7.1a',
   context={sessionId='host-1',playerName='Host',lobbyId='visual-room'},
   lastLobby=roomFixture,companionConnected=true,runtimeStarting=false,connected=true,
   chartVerified=true,hudEnabled=true,settings={hostAddress='192.168.1.24',hostPort=32145,hudEnabled=true},
   renderers=baseRenderers,history={
     {name='Friday Finals',status='CLOSED'},{name='Practice Room',status='SET COMPLETE'},
   },
-  diagnostics={protocolVersion=3,runtimeVersion='0.3.0-beta.3',peerCount=14},
+  diagnostics={
+    protocolVersion=3,runtimeVersion='0.4.0-alpha.1',peerCount=14,
+    testedBeatblockVersion='1.7.1a',
+    testedBeatblockBuildId='d40b7083',
+    detectedBeatblockVersion='1.7.1a (Early Access)[d40b7083]',
+    detectedBeatblockBuildId='d40b7083',
+    detectedBeatblockBuildSource='displayed_build_hash',
+  },
   runtimeSnapshot={joinAddress='203.0.113.24:32145',connection='hosting',chartCacheSizeLabel='384.5 MB / 2 GB'},
 }
 function BBT.currentPlayer()
@@ -272,13 +280,16 @@ function love.load()
 
   reset(); BBT.lastLobby=nil; online:openForm('host')
   assert(online.modal.values.hostParticipating==true,'Host room creation must default to playing for compatibility')
+  assert(online.modal.values.requireSameGameBuild==true,'Host room creation must require the exact Beatblock build by default')
   activate('form_host_direct')
   activate('form_checks_off')
+  activate('form_build_any')
   online.modal.values.password='secret'
   activate('form_submit')
   assert(BBT.commandLog[1].kind=='room.host_request','Host form must submit a room creation request')
   assert(BBT.commandLog[1].payload.hostParticipating==false,'Director choice must cross the game/runtime bridge')
   assert(BBT.commandLog[1].payload.validityChecksEnabled==false,'Run-check choice must cross the game/runtime bridge')
+  assert(BBT.commandLog[1].payload.requireSameGameBuild==false,'Same-build choice must cross the game/runtime bridge')
 
   reset(); BBT.lastLobby=nil; online:openForm('host'); online.modal.values.password='secret'
   local commandBeforeFailure=BBT.command
@@ -289,11 +300,26 @@ function love.load()
   BBT.command=commandBeforeFailure
 
   reset(); online.workspace='settings'
+  online:drawState()
+  local settingsText={}
+  for _,entry in ipairs(BBT.layoutAudit.text or {}) do settingsText[entry.value]=true end
+  assert(settingsText['BBT v0.4.0-alpha.1  /  ONLINE'],'Header must show the Beatblock Online product version')
+  assert(settingsText['v0.4.0-alpha.1'],'Compatibility must show the installed Online version')
+  assert(settingsText['V3 / MATCH'],'Compatibility must document the matching protocol')
+  assert(settingsText['1.7.1a+'],'Compatibility must identify the tested Beatblock baseline')
+  assert(settingsText['BUILD [d40b7083]'],'Compatibility must show the running game build token')
   activate('settings_validity')
   assert(online.modal and online.modal.kind=='confirm','Disabling run checks must explain the competitive tradeoff')
   activate('modal_confirm')
   assert(BBT.commandLog[1].kind=='room.validity_checks_set','Settings must use the dedicated run-check command')
   assert(BBT.commandLog[1].payload.enabled==false,'Settings must disable checks explicitly')
+
+  reset(); online.workspace='settings'
+  activate('settings_build_policy')
+  assert(online.modal and online.modal.kind=='confirm','Allowing mixed Beatblock builds must explain the integrity tradeoff')
+  activate('modal_confirm')
+  assert(BBT.commandLog[1].kind=='room.game_build_policy_set','Settings must use the dedicated build-policy command')
+  assert(BBT.commandLog[1].payload.required==false,'Settings must relax build matching explicitly')
 
   reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false
   activate('settings_validity')
@@ -315,6 +341,12 @@ function love.load()
   assert(online.modal and online.modal.message:find('did not provide',1,true),'Invalid results without a legacy reason must still expose details')
 
   reset(); online.workspace='setlist'; online.setlistSelection=2
+  local setlistUp=findControl('setlist_up')
+  local setlistRemove=findControl('setlist_remove')
+  local setlistDown=findControl('setlist_down')
+  assert(setlistUp.x+setlistUp.w<=setlistRemove.x
+    and setlistRemove.x+setlistRemove.w<=setlistDown.x,
+    'Setlist reorder/remove controls must remain in UP, REMOVE, DOWN visual order')
   activate('setlist_up')
   assert(BBT.commandLog[1].kind=='setlist.move','Setlist Up must emit a move command')
   assert(BBT.commandLog[1].payload.from==1 and BBT.commandLog[1].payload.to==0,'Setlist ordering must use zero-based runtime indexes')

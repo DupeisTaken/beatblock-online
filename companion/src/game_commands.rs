@@ -1,5 +1,5 @@
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, HostRoomOptions},
     chart_hash::canonical_chart_hash_cached,
     model::{ChartLock, ChartTransferMode, Envelope, ParticipantRole, RendererRequest},
 };
@@ -73,6 +73,24 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .get("validityChecksEnabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            let allow_chart_transfers = message
+                .payload
+                .get("allowChartTransfers")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let auto_request_chart_transfers = message
+                .payload
+                .get("autoRequestChartTransfers")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let require_same_game_build = message
+                .payload
+                .get("requireSameGameBuild")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            if auto_request_chart_transfers && !allow_chart_transfers {
+                anyhow::bail!("automatic chart requests require chart transfers to be enabled");
+            }
             if let Some(display_name) = message.payload.get("displayName").and_then(Value::as_str) {
                 state
                     .save_host_profile(display_name.to_owned(), port)
@@ -87,28 +105,28 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             .await;
             let hosted = tokio::time::timeout(
                 Duration::from_secs(12),
-                state.host_room(
-                    name,
+                state.host_room(HostRoomOptions {
+                    room_name: name,
                     password,
                     port,
-                    if admission {
+                    admission_mode: if admission {
                         crate::model::AdmissionMode::HostApproval
                     } else {
                         crate::model::AdmissionMode::PasswordOnly
                     },
                     host_participating,
                     validity_checks_enabled,
-                ),
+                    require_same_game_build,
+                }),
             )
             .await
             .context("room setup timed out while binding or mapping the host port")?
             .map(|_| ());
             if hosted.is_ok() {
-                state.room.write().await.snapshot.allow_chart_transfers = message
-                    .payload
-                    .get("allowChartTransfers")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
+                let mut room = state.room.write().await;
+                room.snapshot.allow_chart_transfers = allow_chart_transfers;
+                room.set_auto_request_chart_transfers(auto_request_chart_transfers)?;
+                drop(room);
                 state.publish_room().await?;
             }
             hosted
@@ -210,6 +228,22 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .context("room.validity_checks_set requires a boolean enabled field")?;
             state.set_validity_checks(enabled).await
         }
+        "room.game_build_policy_set" => {
+            let required = message
+                .payload
+                .get("required")
+                .and_then(Value::as_bool)
+                .context("room.game_build_policy_set requires a boolean required field")?;
+            state.set_same_game_build_required(required).await
+        }
+        "room.chart_transfer_policy_set" => {
+            let enabled = message
+                .payload
+                .get("autoRequest")
+                .and_then(Value::as_bool)
+                .context("room.chart_transfer_policy_set requires a boolean autoRequest field")?;
+            state.set_auto_request_chart_transfers(enabled).await
+        }
         "room.commentator_set" => {
             let id = required(&message.payload, "sessionId")?;
             let enabled = message
@@ -293,23 +327,9 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             publish_snapshots(state).await
         }
         "chart.transfer_request" => {
-            if state.is_host.load(std::sync::atomic::Ordering::Relaxed) {
-                anyhow::bail!("the host already owns the locked chart package");
-            }
-            let room = state.room.read().await.snapshot.clone();
-            let chart = room.chart.context("the host has not locked a chart")?;
-            if chart.official || chart.transfer_mode != ChartTransferMode::HostTransfer {
-                anyhow::bail!("this chart is local-only or the host disabled transfers");
-            }
             state
-                .network
-                .broadcast(Envelope::new(
-                    "chart.transfer_request",
-                    0,
-                    json!({"chartHash":chart.hash}),
-                ))
-                .await;
-            Ok(())
+                .request_chart_transfer(required(&message.payload, "chartHash")?)
+                .await
         }
         "chart.transfer_decision" => {
             state
@@ -391,6 +411,8 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "room.role_set"
             | "room.host_play_set"
             | "room.validity_checks_set"
+            | "room.game_build_policy_set"
+            | "room.chart_transfer_policy_set"
             | "room.commentator_set"
             | "room.kick"
             | "setlist.remove"
@@ -498,7 +520,7 @@ async fn official_chart(state: &AppState, message: &Envelope) -> Result<()> {
         .unwrap_or("Default");
     let client = state.client.read().await;
     let game_build = client
-        .get("gameBuildHash")
+        .get("gameBuildId")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let hash = hex::encode(Sha256::digest(format!(

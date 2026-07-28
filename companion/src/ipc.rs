@@ -431,7 +431,11 @@ mod tests {
             Envelope::new(
                 "client.hello",
                 1,
-                serde_json::json!({"instanceId":id,"clientVersion":"test"}),
+                serde_json::json!({
+                    "instanceId":id,
+                    "clientVersion":"test",
+                    "gameVersion":"1.7.1a (Early Access)[d40b7083]"
+                }),
             )
         };
         let mut first = false;
@@ -463,7 +467,10 @@ mod tests {
             Envelope::new(
                 "client.hello",
                 0,
-                serde_json::json!({"instanceId":"game-a"}),
+                serde_json::json!({
+                    "instanceId":"game-a",
+                    "gameVersion":"1.7.1a (Early Access)[d40b7083]"
+                }),
             ),
             &mut claimed,
         )

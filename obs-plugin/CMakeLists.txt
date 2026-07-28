@@ -15,3 +15,8 @@ install(TARGETS beatblock-online-obs
 )
 install(FILES data/locale/en-US.ini DESTINATION "data/obs-plugins/beatblock-online-obs/locale")
 
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(beatblock-online-audio-target-test tests/audio-target.c)
+  add_test(NAME beatblock-online-audio-target COMMAND beatblock-online-audio-target-test)
+endif()

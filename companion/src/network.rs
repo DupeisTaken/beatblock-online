@@ -1,4 +1,7 @@
-use crate::model::{Envelope, ParticipantRole, RenderSample, PROTOCOL_VERSION};
+use crate::{
+    compatibility::GameBuildIdentity,
+    model::{Envelope, ParticipantRole, RenderSample, PROTOCOL_VERSION},
+};
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hmac::{Hmac, Mac};
@@ -37,6 +40,12 @@ const TARGETED_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 const TRANSFER_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TRANSFER_REQUEST_ID_CHARS: usize = 80;
 const MAX_TRANSFER_NAME_CHARS: usize = 256;
+
+#[derive(Debug, Clone, Default)]
+struct HostGameBuildPolicy {
+    required: bool,
+    identity: Option<GameBuildIdentity>,
+}
 
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -114,6 +123,8 @@ struct AuthHello {
     spake_message: String,
     #[serde(default)]
     resume_token: Option<String>,
+    #[serde(default)]
+    game_build: Option<GameBuildIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +189,7 @@ pub struct NetworkHub {
     client_resume_token: Arc<RwLock<Option<String>>>,
     incoming_transfer_authorizations:
         Arc<RwLock<HashMap<(String, String), IncomingTransferAuthorization>>>,
+    host_game_build_policy: Arc<RwLock<HostGameBuildPolicy>>,
 }
 
 impl NetworkHub {
@@ -193,13 +205,37 @@ impl NetworkHub {
             resume_sessions: Arc::new(RwLock::new(HashMap::new())),
             client_resume_token: Arc::new(RwLock::new(None)),
             incoming_transfer_authorizations: Arc::new(RwLock::new(HashMap::new())),
+            host_game_build_policy: Arc::new(RwLock::new(HostGameBuildPolicy::default())),
         }
     }
 
     pub async fn start_host(&self, port: u16, password: String) -> Result<SocketAddr> {
+        self.start_host_with_game_build(port, password, None, false)
+            .await
+    }
+
+    pub async fn start_host_with_game_build(
+        &self,
+        port: u16,
+        password: String,
+        identity: Option<GameBuildIdentity>,
+        require_same_game_build: bool,
+    ) -> Result<SocketAddr> {
         self.shutdown().await;
         self.resume_sessions.write().await.clear();
         *self.client_resume_token.write().await = None;
+        if require_same_game_build && identity.is_none() {
+            bail!(
+                "Beatblock build matching requires a running game build identity; disable Same Build only for casual compatibility testing"
+            );
+        }
+        if let Some(identity) = identity.as_ref() {
+            identity.validate()?;
+        }
+        *self.host_game_build_policy.write().await = HostGameBuildPolicy {
+            required: require_same_game_build,
+            identity,
+        };
         if password.chars().count() < 4 || password.chars().count() > 128 {
             bail!("room password must contain 4-128 characters");
         }
@@ -274,6 +310,18 @@ impl NetworkHub {
         display_name: &str,
         role: ParticipantRole,
     ) -> Result<String> {
+        self.join_with_game_build(address, password, display_name, role, None)
+            .await
+    }
+
+    pub async fn join_with_game_build(
+        &self,
+        address: SocketAddr,
+        password: &str,
+        display_name: &str,
+        role: ParticipantRole,
+        game_build: Option<GameBuildIdentity>,
+    ) -> Result<String> {
         if password.chars().count() < 4 || password.chars().count() > 128 {
             bail!("room password must contain 4-128 characters");
         }
@@ -286,7 +334,7 @@ impl NetworkHub {
         }
         tokio::time::timeout(
             JOIN_TIMEOUT,
-            self.join_inner(address, password, display_name, role),
+            self.join_inner(address, password, display_name, role, game_build),
         )
         .await
         .context("timed out while connecting to the room")?
@@ -298,6 +346,7 @@ impl NetworkHub {
         password: &str,
         display_name: &str,
         role: ParticipantRole,
+        game_build: Option<GameBuildIdentity>,
     ) -> Result<String> {
         self.shutdown().await;
         let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
@@ -320,6 +369,7 @@ impl NetworkHub {
                 role,
                 spake_message: BASE64.encode(&client_message),
                 resume_token: self.client_resume_token.read().await.clone(),
+                game_build,
             },
         )
         .await?;
@@ -585,6 +635,7 @@ impl NetworkHub {
         *self.server_writer.write().await = None;
         *self.server_connection.write().await = None;
         self.incoming_transfer_authorizations.write().await.clear();
+        *self.host_game_build_policy.write().await = HostGameBuildPolicy::default();
     }
 
     pub async fn peer_count(&self) -> usize {
@@ -610,6 +661,13 @@ impl NetworkHub {
 
     pub async fn clear_client_resume(&self) {
         *self.client_resume_token.write().await = None;
+    }
+
+    /// A host may relax exact-build matching for the lifetime of the current
+    /// room. Re-enabling requires creating a new room so an in-flight relaxed
+    /// authentication can never slip into a newly strict roster.
+    pub async fn relax_host_game_build_policy(&self) {
+        self.host_game_build_policy.write().await.required = false;
     }
 
     async fn accept_peer(
@@ -688,6 +746,34 @@ impl NetworkHub {
             )
             .await?;
             bail!("room password authentication failed for {remote_address}");
+        }
+        let build_check = {
+            let policy = self.host_game_build_policy.read().await;
+            game_build_allowed(&policy, hello.game_build.as_ref())
+        };
+        if let Err(reason) = build_check {
+            write_frame(
+                &mut send,
+                &AuthWelcome {
+                    accepted: false,
+                    session_id: String::new(),
+                    message: reason.clone(),
+                    resume_token: None,
+                    server_proof: None,
+                },
+            )
+            .await?;
+            send.finish()?;
+            // Keep one connection handle alive long enough for the peer to
+            // receive the structured AuthWelcome. Dropping the last handle
+            // immediately can collapse a useful mismatch into "connection
+            // lost" on fast local links.
+            let rejected_connection = connection.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                rejected_connection.close(1u32.into(), reason.as_bytes());
+            });
+            return Ok(());
         }
         self.password_failures
             .write()
@@ -934,6 +1020,38 @@ impl NetworkHub {
     }
 }
 
+fn game_build_allowed(
+    policy: &HostGameBuildPolicy,
+    participant: Option<&GameBuildIdentity>,
+) -> std::result::Result<(), String> {
+    if !policy.required {
+        return Ok(());
+    }
+    let host = policy.identity.as_ref().ok_or_else(|| {
+        "The host could not identify its Beatblock build. Ask the host to recreate the room with Same Build disabled.".to_owned()
+    })?;
+    let participant = participant.ok_or_else(|| {
+        format!(
+            "This room requires Beatblock {} [{}]. Your game build could not be identified.",
+            host.displayed_version,
+            host.short_build_id()
+        )
+    })?;
+    participant
+        .validate()
+        .map_err(|_| "Your Beatblock build identity is invalid.".to_owned())?;
+    if host.build_id != participant.build_id {
+        return Err(format!(
+            "Beatblock build mismatch: this room requires {} [{}], but you use {} [{}]. The host can disable Same Build for a casual room.",
+            host.displayed_version,
+            host.short_build_id(),
+            participant.displayed_version,
+            participant.short_build_id()
+        ));
+    }
+    Ok(())
+}
+
 async fn write_frame<T: Serialize>(send: &mut SendStream, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_CONTROL_FRAME {
@@ -1155,6 +1273,10 @@ pub fn certificate_fingerprint(certificate: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn game_build(version: &str) -> GameBuildIdentity {
+        GameBuildIdentity::from_displayed_version(version).unwrap()
+    }
+
     #[tokio::test]
     async fn join_rejects_invalid_credentials_before_network_allocation() {
         let (events, _receiver) = mpsc::channel(1);
@@ -1173,6 +1295,69 @@ mod tests {
             .join(address, "password", "Player", ParticipantRole::Host)
             .await
             .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn strict_room_rejects_a_different_beatblock_build_before_roster_authentication() {
+        let host_build = game_build("1.7.1a (Early Access)[d40b7083]");
+        let other_build = game_build("1.7.2 (Early Access)[abc12345]");
+        let (host_events, _receiver) = mpsc::channel(16);
+        let host = NetworkHub::new(host_events);
+        let address = host
+            .start_host_with_game_build(0, "correct horse".into(), Some(host_build.clone()), true)
+            .await
+            .unwrap();
+
+        let (mismatch_events, _receiver) = mpsc::channel(8);
+        let mismatch = NetworkHub::new(mismatch_events);
+        let error = mismatch
+            .join_with_game_build(
+                address,
+                "correct horse",
+                "Different Build",
+                ParticipantRole::Player,
+                Some(other_build.clone()),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Beatblock build mismatch"), "{error}");
+        assert!(error.contains("d40b7083"));
+        assert!(error.contains("abc12345"));
+        assert_eq!(host.peer_count().await, 0);
+
+        let (matching_events, _receiver) = mpsc::channel(8);
+        let matching = NetworkHub::new(matching_events);
+        matching
+            .join_with_game_build(
+                address,
+                "correct horse",
+                "Matching Build",
+                ParticipantRole::Player,
+                Some(host_build),
+            )
+            .await
+            .unwrap();
+        assert_eq!(host.peer_count().await, 1);
+
+        host.relax_host_game_build_policy().await;
+        let (casual_events, _receiver) = mpsc::channel(8);
+        let casual = NetworkHub::new(casual_events);
+        casual
+            .join_with_game_build(
+                address,
+                "correct horse",
+                "Casual Build",
+                ParticipantRole::Player,
+                Some(other_build),
+            )
+            .await
+            .unwrap();
+        assert_eq!(host.peer_count().await, 2);
+
+        casual.shutdown().await;
+        matching.shutdown().await;
+        host.shutdown().await;
     }
 
     #[test]

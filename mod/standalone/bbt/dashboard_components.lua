@@ -90,6 +90,9 @@ function Components.new(palette)
     end
     local font = love.graphics.getFont()
     local textY = y + math.floor((height-font:getHeight())/2)
+    if font:getWidth(tostring(label or '')) > width-10 then
+      self.audit.issues[#self.audit.issues+1] = 'button_label_overflow:'..tostring(id)
+    end
     self:text(label,x+5,textY,width-10,'center',enabled and 'black' or 'muted',font)
     self.audit.controls[#self.audit.controls+1] = {id=id,x=x,y=y,w=width,h=height,focused=focused}
     if height < 22 then self.audit.issues[#self.audit.issues+1] = 'undersized_control:'..tostring(id) end

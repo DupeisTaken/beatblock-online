@@ -5,6 +5,7 @@ use crate::installer::{
     distribution_label, ComponentState, Distribution, Installer, OperationKind, OperationProgress,
     TargetInspection,
 };
+use crate::{compatibility::tested_beatblock_label, model::PROTOCOL_VERSION};
 use anyhow::Result;
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
@@ -66,7 +67,6 @@ slint::slint! {
         in-out property<string> obs-detail: "Choose the OBS folder containing bin\\64bit\\obs64.exe.";
         in-out property<bool> firewall-public: false;
         in-out property<bool> remove-user-data: false;
-        in-out property<bool> allow-unknown-build: false;
         in-out property<int> install-method: 0;
         in-out property<bool> busy: false;
         in-out property<bool> scanning: false;
@@ -85,6 +85,8 @@ slint::slint! {
         in-out property<string> confirmation-kind: "";
         in-out property<string> current-version: "Unknown";
         in-out property<string> version-channel: "Stable";
+        in-out property<string> protocol-label: "Unknown";
+        in-out property<string> tested-beatblock-version: "Unknown";
         in-out property<string> update-status: "Updates have not been checked.";
         in-out property<string> update-url: "";
         in-out property<bool> update-available: false;
@@ -193,10 +195,9 @@ slint::slint! {
                             }
                         }
                         Rectangle {
-                            height: 62px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
+                            height: 42px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
                             VerticalLayout { padding-left: 10px; padding-right: 10px; spacing: 2px;
                                 CheckBox { enabled: !root.busy; text: "Allow hosting on Public Windows Firewall profiles"; checked <=> root.firewall-public; }
-                                CheckBox { enabled: !root.busy; text: "Allow an uncertified Beatblock build (disables competition trust)"; checked <=> root.allow-unknown-build; }
                             }
                         }
                         Rectangle {
@@ -246,12 +247,14 @@ slint::slint! {
                 }
                 if root.page == 3: ScrollView { VerticalLayout { padding: 20px; spacing: 14px;
                     Text { text: "Installer settings"; color: #18222c; font-size: 18px; font-weight: 700; }
-                    Text { text: "Installation choices are shown on the Install page so the exact firewall, build-trust, and OBS scope is visible before files are changed."; color: #596570; font-size: 11px; wrap: word-wrap; }
-                    Rectangle { height: 162px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
+                    Text { text: "Installation choices are shown on the Install page so the exact firewall and OBS scope is visible before files are changed. New Beatblock builds are accepted by default."; color: #596570; font-size: 11px; wrap: word-wrap; }
+                    Rectangle { height: 196px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
                         VerticalLayout {
                             padding: 13px; spacing: 6px;
                             Text { text: "Beatblock Online " + root.current-version; color: #35414c; font-size: 13px; font-weight: 700; }
                             Text { text: "Release channel: " + root.version-channel; color: #596570; font-size: 11px; }
+                            Text { text: "Online protocol: " + root.protocol-label; color: #596570; font-size: 11px; }
+                            Text { text: "Tested Beatblock baseline: " + root.tested-beatblock-version; color: #596570; font-size: 11px; }
                             Text { text: root.update-status; color: root.update-available ? #1d6337 : #596570; font-size: 11px; wrap: word-wrap; }
                             HorizontalLayout { spacing: 8px;
                                 Button { text: root.update-checking ? "Checking…" : "Check for updates"; enabled: !root.busy && !root.update-checking; clicked => { root.check-update(); } }
@@ -335,21 +338,17 @@ fn set_badge(window: &InstallerWindow, inspection: &TargetInspection) {
     window.set_selected_path_caption(inspection.game_directory.display().to_string().into());
     let (build_bg, build_fg) = colors(if !inspection.valid {
         ComponentState::Broken
-    } else if inspection.supported_build {
+    } else if inspection.compatible_layout {
         ComponentState::Ready
     } else {
         ComponentState::Attention
     });
-    window.set_build_label(
-        if !inspection.valid {
-            "INVALID"
-        } else if inspection.supported_build {
-            "SUPPORTED"
-        } else {
-            "UNCERTIFIED"
-        }
-        .into(),
-    );
+    let build_label = if !inspection.valid {
+        "INVALID".to_owned()
+    } else {
+        "COMPATIBLE".to_owned()
+    };
+    window.set_build_label(build_label.into());
     window.set_build_color(build_bg);
     window.set_build_text(build_fg);
     let (method_bg, method_fg) = colors(ComponentState::Ready);
@@ -501,14 +500,7 @@ fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
 
 fn selected_options(
     window: &InstallerWindow,
-) -> (
-    PathBuf,
-    bool,
-    Option<Distribution>,
-    bool,
-    bool,
-    Option<PathBuf>,
-) {
+) -> (PathBuf, Option<Distribution>, bool, bool, Option<PathBuf>) {
     let distribution = match window.get_install_method() {
         1 => Some(Distribution::Standalone),
         2 => Some(Distribution::BeatblockPlus),
@@ -516,7 +508,6 @@ fn selected_options(
     };
     (
         PathBuf::from(window.get_game_path().as_str()),
-        window.get_allow_unknown_build(),
         distribution,
         window.get_install_obs(),
         window.get_firewall_public(),
@@ -530,7 +521,7 @@ fn begin_install(
     installer: Arc<Installer>,
     data_dir: PathBuf,
 ) {
-    let (path, allow_unknown, distribution, install_obs, firewall_public, obs_directory) =
+    let (path, distribution, install_obs, firewall_public, obs_directory) =
         selected_options(window);
     if let Err(error) = installer.set_obs_directory(obs_directory.clone()) {
         window.set_result_visible(true);
@@ -553,7 +544,7 @@ fn begin_install(
             };
             match installer.install_with_optional_obs(
                 Some(path.clone()),
-                allow_unknown,
+                false,
                 distribution,
                 firewall_public,
                 install_obs,
@@ -569,7 +560,6 @@ fn begin_install(
                     let arguments = elevated_install_arguments(
                         &data_dir,
                         Some(&path),
-                        allow_unknown,
                         distribution,
                         install_obs,
                         firewall_public,
@@ -610,6 +600,8 @@ fn begin_install(
 pub fn run(data_dir: PathBuf) -> Result<()> {
     let window = InstallerWindow::new()?;
     window.set_current_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
+    window.set_protocol_label(format!("v{PROTOCOL_VERSION}").into());
+    window.set_tested_beatblock_version(tested_beatblock_label().into());
     window.set_version_channel(
         if env!("CARGO_PKG_VERSION").contains('-') {
             "Preview"
@@ -936,7 +928,6 @@ fn quote_cli_value(value: &Path) -> String {
 fn elevated_install_arguments(
     data_dir: &Path,
     game_dir: Option<&Path>,
-    allow_unknown: bool,
     distribution: Option<Distribution>,
     install_obs: bool,
     firewall_public: bool,
@@ -956,9 +947,6 @@ fn elevated_install_arguments(
     ];
     if let Some(path) = game_dir {
         args.extend(["--game-dir".into(), quote_cli_value(path)]);
-    }
-    if allow_unknown {
-        args.push("--allow-unknown-build".into());
     }
     if install_obs {
         args.push("--install-obs".into());
@@ -1070,7 +1058,7 @@ mod tests {
             "The requested operation requires elevation (Run as administrator)."
         )));
         assert!(!needs_elevation(&anyhow::anyhow!(
-            "unsupported fingerprint"
+            "selected folder is missing required Beatblock files"
         )));
     }
     #[test]
@@ -1078,7 +1066,6 @@ mod tests {
         let args = elevated_install_arguments(
             Path::new(r"C:\Users\Player\App Data\BBT"),
             Some(Path::new(r"C:\Program Files\Beatblock")),
-            true,
             Some(Distribution::BeatblockPlus),
             true,
             true,

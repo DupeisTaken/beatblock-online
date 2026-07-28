@@ -187,7 +187,9 @@
           ]
         },
         "allowChartTransfers": { "default": true, "type": "boolean" },
+        "autoRequestChartTransfers": { "default": false, "type": "boolean" },
         "validityChecksEnabled": { "default": true, "type": "boolean" },
+        "requireSameGameBuild": { "default": true, "type": "boolean" },
         "chart": {
           "type": "object",
           "required": [
@@ -371,11 +373,27 @@
     },
     "ClientHello": {
       "type": "object",
-      "required": ["instanceId", "clientVersion", "gameBuildHash", "distribution", "mods"],
+      "required": [
+        "instanceId",
+        "clientVersion",
+        "gameVersion",
+        "gameBuildId",
+        "gameBuildSource",
+        "distribution",
+        "mods"
+      ],
       "properties": {
         "instanceId": { "minLength": 1, "maxLength": 96, "type": "string" },
         "clientVersion": { "minLength": 1, "type": "string" },
-        "gameBuildHash": { "minLength": 1, "type": "string" },
+        "gameVersion": { "minLength": 1, "maxLength": 160, "type": "string" },
+        "gameBuildId": { "minLength": 7, "maxLength": 80, "type": "string" },
+        "gameBuildSource": {
+          "anyOf": [
+            { "const": "displayed_build_hash", "type": "string" },
+            { "const": "displayed_version_digest", "type": "string" },
+            { "const": "game_content_digest", "type": "string" }
+          ]
+        },
         "distribution": {
           "anyOf": [
             { "const": "standalone", "type": "string" },

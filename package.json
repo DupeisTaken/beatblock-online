@@ -1,7 +1,12 @@
 {
   "name": "beatblock-online",
   "private": true,
-  "version": "0.3.0-beta.3",
+  "version": "0.4.0-alpha.1",
+  "beatblockCompatibility": {
+    "testedVersion": "1.7.1a",
+    "testedBuildId": "d40b7083",
+    "newerBuilds": "assumed-compatible"
+  },
   "packageManager": "pnpm@10.12.1",
   "scripts": {
     "build": "powershell -NoProfile -File scripts/build-release.ps1",

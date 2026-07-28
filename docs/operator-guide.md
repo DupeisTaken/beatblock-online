@@ -17,7 +17,7 @@ address of the proxy server and **UDP Port** is the proxy's public
 public and local ports identical.
 
 1. Install the same Beatblock Online release as the host, then launch Beatblock.
-2. Open **Online** and wait for the header to show **ONLINE / PROTOCOL V3** and the session panel to show **READY TO CONNECT**.
+2. Open **Online** and confirm the header shows your Beatblock Online version followed by **ONLINE**, then wait for the session panel to show **READY TO CONNECT**. Open **Settings** to compare the adapter, runtime, protocol, tested Beatblock baseline, and the exact build token read from Beatblock's top-right version label.
 3. Choose **Join as Player**.
 4. Enter a display name that is not already in use in the room. Names are compared without ASCII letter casing; a conflict is rejected with **username taken** rather than adding a numbered suffix. In **Host Address**, enter only the public IPv4 address or DNS name, such as `203.0.113.10` or `play.example.net`; do not include `http://`, `https://`, or a port.
 5. Enter the public **UDP Port** and room **Password**, then choose **Join**.
@@ -137,7 +137,7 @@ runtime still relies on the router's finite two-hour lease.
 
 For a normal player or spectator, budget 5 Mbps download and 1 Mbps upload. A full 16-player/32-spectator host should have at least 250 Mbps stable upload, low packet loss, and preferably wired Ethernet. The large host figure comes from sending each peer a complete room snapshot at up to 20 Hz: the current maximum-room schema models at about 160.6 Mbps of payload before transport overhead. An eight-participant room models near 5.8 Mbps of host payload, so 10 Mbps upload is a minimum for that size and 20 Mbps or more provides safer headroom. Streaming to Twitch, YouTube, or another service is additional.
 
-Use **Settings** for link, peer, renderer-budget, and local API diagnostics. **Restart Runtime** is a one-retry recovery action and invalidates an active competitive run. **Help** provides state-specific guidance plus log/installer shortcuts.
+Use **Settings** for the Beatblock Online adapter/runtime versions, protocol match, tested Beatblock baseline, detected game build, Same Build room policy, link state, transfer cache, and diagnostic shortcuts. The complete policy is in [Beatblock compatibility](compatibility.md). **Restart Runtime** is a one-retry recovery action and invalidates an active competitive run. **Help** provides state-specific guidance plus log/installer shortcuts.
 
 ## End the event
 
