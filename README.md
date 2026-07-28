@@ -2,7 +2,7 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The current prerelease candidate is [`v0.4.0-alpha.1`](docs/releases/v0.4.0-alpha.1.md).
+The current prerelease candidate is [`v0.3.0-beta.4`](docs/releases/v0.3.0-beta.4.md).
 It makes the installer forward-compatible with new Beatblock builds while
 keeping exact same-build rooms, improves consent-aware chart transfers and
 setlist readability, exposes release compatibility in-product, and captures
@@ -94,7 +94,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 ## Detailed documentation
 
 - [Ship-readiness security, correctness, resource, and UX audit](reports/ship-readiness-audit-2026-07-20.md)
-- [v0.4.0-alpha.1 ship-readiness review](reports/ship-readiness-review-v0.4.0-alpha.1.md)
+- [v0.3.0-beta.4 ship-readiness review](reports/ship-readiness-review-v0.3.0-beta.4.md)
 - [Installation, repair, adapters, and injection](docs/injection.md)
 - [Adaptive Online dashboard and controls](docs/mod-guide.md)
 - [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
@@ -105,7 +105,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
-- [v0.4.0-alpha.1 release notes](docs/releases/v0.4.0-alpha.1.md)
+- [v0.3.0-beta.4 release notes and issue changelog](docs/releases/v0.3.0-beta.4.md)
 - [v0.3.0-beta.3 release notes](docs/releases/v0.3.0-beta.3.md)
 - [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 

@@ -68,35 +68,35 @@ test('release version metadata and generated asset names stay aligned', async ()
 
 test('tagged releases must exactly match the package version', () => {
   assert.deepEqual(
-    validateReleaseTag({ refType: 'tag', refName: 'v0.4.0-alpha.1', version: '0.4.0-alpha.1' }),
-    { tagged: true, expected: 'v0.4.0-alpha.1' },
+    validateReleaseTag({ refType: 'tag', refName: 'v0.3.0-beta.4', version: '0.3.0-beta.4' }),
+    { tagged: true, expected: 'v0.3.0-beta.4' },
   );
   assert.throws(
     () =>
       validateReleaseTag({
         refType: 'tag',
         refName: 'v0.4.0-alpha.2',
-        version: '0.4.0-alpha.1',
+        version: '0.3.0-beta.4',
       }),
     /does not match package version/,
   );
   assert.deepEqual(
-    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.4.0-alpha.1' }),
-    { tagged: false, expected: 'v0.4.0-alpha.1' },
+    validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0-beta.4' }),
+    { tagged: false, expected: 'v0.3.0-beta.4' },
   );
 });
 
 test('release display titles advertise the tested Beatblock baseline without changing tags', () => {
   assert.equal(
-    releaseDisplayTitle('v0.4.0-alpha.1', {
+    releaseDisplayTitle('v0.3.0-beta.4', {
       testedVersion: '1.7.1a',
       newerBuilds: 'assumed-compatible',
     }),
-    'v0.4.0-alpha.1 for Beatblock 1.7.1a+',
+    'v0.3.0-beta.4 for Beatblock 1.7.1a+',
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.4.0-alpha.1 for Beatblock 1.7.1a', {
+      releaseDisplayTitle('v0.3.0-beta.4 for Beatblock 1.7.1a', {
         testedVersion: '1.7.1a',
         newerBuilds: 'assumed-compatible',
       }),
@@ -104,7 +104,7 @@ test('release display titles advertise the tested Beatblock baseline without cha
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.4.0-alpha.1', {
+      releaseDisplayTitle('v0.3.0-beta.4', {
         testedVersion: '1.7.1a',
         newerBuilds: 'blocked',
       }),
@@ -274,6 +274,17 @@ test('hosted workflows pin third-party actions and isolate release publication',
   assert.match(publishJob, /needs:\s*build/);
   assert.match(publishJob, /contents:\s*write/);
   assert.match(release, /actions\/attest-build-provenance@[0-9a-f]{40}/);
+  assert.match(
+    publishJob,
+    /release_notes="\$GITHUB_WORKSPACE\/docs\/releases\/\$\{GITHUB_REF_NAME\}\.md"/,
+    'tagged releases must use the matching checked-in issue changelog',
+  );
+  assert.match(publishJob, /--notes-file "\$release_notes"/);
+  assert.doesNotMatch(
+    publishJob,
+    /--generate-notes/,
+    'generated summaries must not replace the reviewed issue changelog',
+  );
 });
 
 test('checksumLine is stable and uses only the asset filename', () => {

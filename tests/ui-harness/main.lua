@@ -85,7 +85,7 @@ for index,id in ipairs({'A','B','C','D'}) do
 end
 
 BBT={
-  version='0.4.0-alpha.1',protocolVersion=3,
+  version='0.3.0-beta.4',protocolVersion=3,
   testedBeatblockVersion='1.7.1a',
   context={sessionId='host-1',playerName='Host',lobbyId='visual-room'},
   lastLobby=roomFixture,companionConnected=true,runtimeStarting=false,connected=true,
@@ -94,7 +94,7 @@ BBT={
     {name='Friday Finals',status='CLOSED'},{name='Practice Room',status='SET COMPLETE'},
   },
   diagnostics={
-    protocolVersion=3,runtimeVersion='0.4.0-alpha.1',peerCount=14,
+    protocolVersion=3,runtimeVersion='0.3.0-beta.4',peerCount=14,
     testedBeatblockVersion='1.7.1a',
     testedBeatblockBuildId='d40b7083',
     detectedBeatblockVersion='1.7.1a (Early Access)[d40b7083]',
@@ -303,8 +303,8 @@ function love.load()
   online:drawState()
   local settingsText={}
   for _,entry in ipairs(BBT.layoutAudit.text or {}) do settingsText[entry.value]=true end
-  assert(settingsText['BBT v0.4.0-alpha.1  /  ONLINE'],'Header must show the Beatblock Online product version')
-  assert(settingsText['v0.4.0-alpha.1'],'Compatibility must show the installed Online version')
+  assert(settingsText['BBT v0.3.0-beta.4  /  ONLINE'],'Header must show the Beatblock Online product version')
+  assert(settingsText['v0.3.0-beta.4'],'Compatibility must show the installed Online version')
   assert(settingsText['V3 / MATCH'],'Compatibility must document the matching protocol')
   assert(settingsText['1.7.1a+'],'Compatibility must identify the tested Beatblock baseline')
   assert(settingsText['BUILD [d40b7083]'],'Compatibility must show the running game build token')

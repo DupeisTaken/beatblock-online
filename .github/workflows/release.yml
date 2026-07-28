@@ -102,6 +102,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_title="$(node scripts/release-title.mjs "$GITHUB_REF_NAME")"
+          release_notes="$GITHUB_WORKSPACE/docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$release_notes" ]]; then
+            echo "::error::Missing checked-in release notes: $release_notes"
+            exit 1
+          fi
           cd release-assets
           mapfile -t zip_assets < <(find mod/releases -maxdepth 1 -type f -name '*.zip' -print)
           arguments=(
@@ -109,7 +114,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
             --verify-tag
             --title "$release_title"
-            --generate-notes
+            --notes-file "$release_notes"
             release/BeatblockOnlineInstaller.exe
             release/SHA256SUMS.txt
             artifacts/obs/beatblock-online-obs.dll
