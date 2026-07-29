@@ -47,6 +47,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm --filter @bbt/protocol test
+      - run: pnpm validate:release-docs
       - run: pnpm test:release-workflow
       - run: pnpm generate:protocol
       - run: git diff --exit-code -- protocol/schemas/v3/protocol.json

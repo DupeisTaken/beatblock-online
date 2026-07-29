@@ -63,6 +63,8 @@ slint::slint! {
         in-out property<bool> install-obs: false;
         in-out property<bool> obs-available: false;
         in-out property<bool> obs-running: false;
+        in-out property<bool> obs-managed: false;
+        in-out property<bool> game-running: false;
         in-out property<string> obs-path: "";
         in-out property<string> obs-detail: "Choose the OBS folder containing bin\\64bit\\obs64.exe.";
         in-out property<bool> firewall-public: false;
@@ -108,6 +110,8 @@ slint::slint! {
         callback open-backup();
         callback check-update();
         callback open-update();
+        callback open-all-releases();
+        callback install-update();
 
         VerticalLayout {
             spacing: 0px;
@@ -167,6 +171,26 @@ slint::slint! {
                             }
                         }
                         HorizontalLayout { spacing: 10px;
+                            Text {
+                                text: root.game-running
+                                    ? "Beatblock: RUNNING — close it before changing game files"
+                                    : "Beatblock: CLOSED";
+                                color: root.game-running ? #8b2525 : #1d6337;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Text {
+                                text: root.obs-running ? "OBS: RUNNING" : "OBS: CLOSED";
+                                color: root.obs-running ? #8b2525 : #1d6337;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Button { text: "Refresh game & OBS status"; enabled: !root.busy; clicked => { root.refresh(); } }
+                        }
+                        HorizontalLayout { spacing: 10px;
                             VerticalLayout { spacing: 5px;
                                 Text { text: "Installation method"; color: #46515b; font-size: 12px; }
                                 ComboBox { enabled: !root.busy; model: ["Automatic (recommended)", "Standalone Lovely", "BeatblockPlus 2.x"]; current-index <=> root.install-method; }
@@ -207,11 +231,11 @@ slint::slint! {
                                 ProgressIndicator { progress: root.operation-progress; indeterminate: root.scanning; }
                             }
                         }
-                        Button { text: root.primary-label; height: 46px; enabled: !root.busy && root.install-state != "INVALID TARGET"; clicked => { root.install(); } }
+                        Button { text: root.primary-label; height: 46px; enabled: !root.busy && !root.game-running && root.install-state != "INVALID TARGET"; clicked => { root.install(); } }
                         HorizontalLayout { spacing: 8px;
-                            Button { text: root.install-state == "READY" ? "Launch Beatblock" : "Repair"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { if root.install-state == "READY" { root.launch(); } else { root.repair(); } } }
-                            Button { text: "Uninstall"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "uninstall"; root.dialog-confirmation = true; root.dialog-title = "Uninstall Beatblock Online?"; root.dialog-body = "The managed mod, runtime, firewall rule, and optional OBS source will be removed. Settings and history follow your Settings choice."; root.dialog-visible = true; } }
-                            Button { text: "Restore game files"; enabled: !root.busy && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "restore"; root.dialog-confirmation = true; root.dialog-title = "Restore game files?"; root.dialog-body = "The BBT mod is removed and the preserved injector state is restored. You can reinstall later."; root.dialog-visible = true; } }
+                            Button { text: root.install-state == "READY" ? (root.game-running ? "Beatblock is running" : "Launch Beatblock") : "Repair"; enabled: !root.busy && !root.game-running && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { if root.install-state == "READY" { root.launch(); } else { root.repair(); } } }
+                            Button { text: "Uninstall"; enabled: !root.busy && !root.game-running && !(root.obs-running && root.obs-managed) && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "uninstall"; root.dialog-confirmation = true; root.dialog-title = "Uninstall Beatblock Online?"; root.dialog-body = "The managed mod, runtime, firewall rule, and optional OBS source will be removed. Settings and history follow your Settings choice."; root.dialog-visible = true; } }
+                            Button { text: "Restore game files"; enabled: !root.busy && !root.game-running && (root.install-state == "READY" || root.install-state == "REPAIR REQUIRED"); clicked => { root.confirmation-kind = "restore"; root.dialog-confirmation = true; root.dialog-title = "Restore game files?"; root.dialog-body = "The BBT mod is removed and the preserved injector state is restored. You can reinstall later."; root.dialog-visible = true; } }
                         }
                     }
                 }
@@ -235,7 +259,7 @@ slint::slint! {
                                 Text { text: row.details; color: #596570; font-size: 11px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                             }
                         }
-                        Button { text: "Repair Required Components"; height: 42px; enabled: !root.busy && root.repairable-components; clicked => { root.repair(); } }
+                        Button { text: root.game-running ? "Close Beatblock to repair components" : "Repair Required Components"; height: 42px; enabled: !root.busy && !root.game-running && root.repairable-components; clicked => { root.repair(); } }
                     }
                 }
                 if root.page == 2: VerticalLayout { padding: 20px; spacing: 10px;
@@ -247,8 +271,8 @@ slint::slint! {
                 }
                 if root.page == 3: ScrollView { VerticalLayout { padding: 20px; spacing: 14px;
                     Text { text: "Installer settings"; color: #18222c; font-size: 18px; font-weight: 700; }
-                    Text { text: "Installation choices are shown on the Install page so the exact firewall and OBS scope is visible before files are changed. New Beatblock builds are accepted by default."; color: #596570; font-size: 11px; wrap: word-wrap; }
-                    Rectangle { height: 196px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
+                    Text { text: "Installation choices are shown on the Install page so the exact firewall and OBS scope is visible before files are changed. Newer Beatblock builds are accepted but unverified."; color: #596570; font-size: 11px; wrap: word-wrap; }
+                    Rectangle { height: 226px; background: #ffffff; border-width: 1px; border-color: #cbd2d9; border-radius: 4px;
                         VerticalLayout {
                             padding: 13px; spacing: 6px;
                             Text { text: "Beatblock Online " + root.current-version; color: #35414c; font-size: 13px; font-weight: 700; }
@@ -258,7 +282,11 @@ slint::slint! {
                             Text { text: root.update-status; color: root.update-available ? #1d6337 : #596570; font-size: 11px; wrap: word-wrap; }
                             HorizontalLayout { spacing: 8px;
                                 Button { text: root.update-checking ? "Checking…" : "Check for updates"; enabled: !root.busy && !root.update-checking; clicked => { root.check-update(); } }
-                                if root.update-available: Button { text: "Open release page"; enabled: !root.busy; clicked => { root.open-update(); } }
+                                if root.update-available: Button { text: "Update Installer"; enabled: !root.busy && !root.update-checking; clicked => { root.install-update(); } }
+                            }
+                            HorizontalLayout { spacing: 8px;
+                                if root.update-url != "": Button { text: "View release notes"; enabled: !root.busy; clicked => { root.open-update(); } }
+                                Button { text: "All releases"; enabled: !root.busy; clicked => { root.open-all-releases(); } }
                             }
                         }
                     }
@@ -284,7 +312,7 @@ slint::slint! {
                     HorizontalLayout { spacing: 8px;
                         if root.dialog-can-launch && !root.dialog-confirmation: Button { text: "Launch Beatblock"; clicked => { root.dialog-visible = false; root.launch(); } }
                         if !root.dialog-confirmation: Button { text: "View Components"; clicked => { root.page = 1; root.dialog-visible = false; root.refresh(); } }
-                        if root.dialog-confirmation: Button { text: "Confirm"; clicked => { root.dialog-visible = false; root.confirm-action(root.confirmation-kind); } }
+                        if root.dialog-confirmation: Button { text: root.confirmation-kind == "update" ? "Verify, update & restart" : "Confirm"; clicked => { root.dialog-visible = false; root.confirm-action(root.confirmation-kind); } }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
                         Button { text: root.dialog-confirmation ? "Cancel" : "Close"; clicked => { root.dialog-visible = false; root.dialog-confirmation = false; } }
                     }
@@ -454,6 +482,7 @@ fn terminal(
 }
 
 fn refresh_selected(window: &InstallerWindow, installer: &Installer) {
+    window.set_game_running(installer.beatblock_running().unwrap_or(true));
     let path = PathBuf::from(window.get_game_path().as_str());
     if path.as_os_str().is_empty() {
         return;
@@ -479,9 +508,10 @@ fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
     let resolved = installer.obs_directory();
     let payload_available = installer.obs_plugin_payload_available();
     let available = payload_available && resolved.is_some();
-    let running = installer.obs_running();
+    let running = installer.obs_running().unwrap_or(true);
     window.set_obs_available(available);
     window.set_obs_running(running);
+    window.set_obs_managed(installer.obs_plugin_managed());
     if !available || running {
         window.set_install_obs(false);
     }
@@ -501,6 +531,14 @@ fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
         }
         .into(),
     );
+}
+
+fn refresh_all_status(window: &InstallerWindow, installer: &Installer) {
+    refresh_obs_selection(window, installer);
+    refresh_selected(window, installer);
+    // refresh_selected returns early when no game directory is selected, but
+    // the process interlock must still reflect a separately launched copy.
+    window.set_game_running(installer.beatblock_running().unwrap_or(true));
 }
 
 fn selected_options(
@@ -602,7 +640,69 @@ fn begin_install(
     });
 }
 
+fn begin_installer_update(
+    window: &InstallerWindow,
+    weak: slint::Weak<InstallerWindow>,
+    data_dir: PathBuf,
+) {
+    window.set_busy(true);
+    window.set_update_checking(true);
+    window.set_result_visible(false);
+    window.set_update_status("Downloading and verifying the installer update…".into());
+    append_log(
+        window,
+        "Downloading the selected release installer and release checksum list.",
+    );
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String> {
+            let prepared = crate::update::prepare_update(&data_dir)?;
+            crate::update::launch_finalizer(&prepared, &data_dir)?;
+            Ok(format!(
+                "Installer v{} verified. Restarting from the app-managed maintenance copy…",
+                prepared.version
+            ))
+        })();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            window.set_update_checking(false);
+            match result {
+                Ok(message) => {
+                    append_log(&window, &message);
+                    window.set_update_status(message.into());
+                    // The staged finalizer is already waiting on this PID.
+                    // Leaving the event loop allows it to promote and relaunch
+                    // the managed copy without ever overwriting this launcher.
+                    let _ = slint::quit_event_loop();
+                }
+                Err(error) => {
+                    let message = format!("Installer update failed: {error:#}");
+                    window.set_busy(false);
+                    window.set_update_status(message.clone().into());
+                    window.set_result_background(slint::Color::from_rgb_u8(250, 220, 220));
+                    window.set_result_foreground(slint::Color::from_rgb_u8(139, 37, 37));
+                    window.set_result_text(message.clone().into());
+                    window.set_result_visible(true);
+                    window.set_dialog_confirmation(false);
+                    window.set_dialog_title("Installer update failed".into());
+                    window.set_dialog_body(message.clone().into());
+                    window.set_dialog_visible(true);
+                    append_log(&window, &message);
+                }
+            }
+        });
+    });
+}
+
 pub fn run(data_dir: PathBuf) -> Result<()> {
+    run_with_ready(data_dir, || Ok(()))
+}
+
+pub fn run_with_ready<F>(data_dir: PathBuf, ready: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     let window = InstallerWindow::new()?;
     window.set_current_version(format!("v{}", env!("CARGO_PKG_VERSION")).into());
     window.set_protocol_label(format!("v{PROTOCOL_VERSION}").into());
@@ -620,7 +720,7 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
     if let Some(obs_directory) = installer.obs_directory() {
         window.set_obs_path(obs_directory.display().to_string().into());
     }
-    refresh_obs_selection(&window, &installer);
+    refresh_all_status(&window, &installer);
     window.set_install_obs(
         status.obs_plugin_present && window.get_obs_available() && !window.get_obs_running(),
     );
@@ -753,6 +853,7 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
             };
             match kind.as_str() {
                 "move" => begin_install(&window, weak.clone(), installer.clone(), data.clone()),
+                "update" => begin_installer_update(&window, weak.clone(), data.clone()),
                 "uninstall" => {
                     let remove = window.get_remove_user_data();
                     window.set_busy(true);
@@ -810,8 +911,7 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
             if let Some(window) = weak.upgrade() {
                 // Revalidate the selected portable/custom path as well as the
                 // running-process lock before enabling the optional component.
-                refresh_obs_selection(&window, &installer);
-                refresh_selected(&window, &installer);
+                refresh_all_status(&window, &installer);
             }
         });
     }
@@ -894,7 +994,7 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
                     match result {
                         Ok(check) => {
                             window.set_update_status(check.status().into());
-                            window.set_update_available(check.update_available());
+                            window.set_update_available(check.installable_update().is_some());
                             window.set_update_url(check.release_url.unwrap_or_default().into());
                         }
                         Err(error) => {
@@ -918,11 +1018,35 @@ pub fn run(data_dir: PathBuf) -> Result<()> {
             }
         });
     }
+    window.on_open_all_releases(move || {
+        let _ = open::that(crate::update::RELEASES_PAGE);
+    });
+    {
+        let weak = window.as_weak();
+        window.on_install_update(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_confirmation_kind("update".into());
+                window.set_dialog_confirmation(true);
+                window.set_dialog_can_launch(false);
+                window.set_dialog_title("Update and restart the installer?".into());
+                window.set_dialog_body(
+                    "The installer will download the exact release executable and checksum list, require both GitHub's SHA-256 digest and SHA256SUMS.txt to match, then replace only its app-managed maintenance copy and restart. Game files are not changed. Windows may still show Unknown publisher because checksums verify integrity, not publisher identity.".into(),
+                );
+                window.set_dialog_visible(true);
+            }
+        });
+    }
     {
         let weak = window.as_weak();
         window.window().on_close_requested(move || { if let Some(window)=weak.upgrade() { if window.get_busy() { window.set_dialog_confirmation(false); window.set_dialog_can_launch(false); window.set_dialog_title("Operation in progress".into()); window.set_dialog_body("The active transaction has started replacing managed files. Keep this window open until the verified result appears.".into()); window.set_dialog_visible(true); return slint::CloseRequestResponse::KeepWindowShown; } } slint::CloseRequestResponse::HideWindow });
     }
-    window.run()?;
+    // Show the native window before acknowledging a self-update. The waiting
+    // finalizer retains the previous managed executable until this point, so a
+    // constructor/backend failure can still restore it.
+    window.show()?;
+    ready()?;
+    slint::run_event_loop()?;
+    window.hide()?;
     Ok(())
 }
 

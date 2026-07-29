@@ -575,7 +575,7 @@ impl Installer {
             repair_required,
             components,
             message: if valid {
-                "Compatible Beatblock layout detected. Newer game builds are accepted by default; exact room matching happens after Beatblock starts.".into()
+                "Compatible Beatblock layout detected. Newer game builds are accepted but unverified; exact room matching happens after Beatblock starts.".into()
             } else {
                 validation_message
             },
@@ -715,6 +715,13 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running()
+            .context("could not inspect running Beatblock processes before installation")?
+        {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before changing game files"
+            );
+        }
         let obs_transaction = if install_obs {
             progress(OperationProgress::step(
                 OperationKind::Install,
@@ -755,6 +762,13 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running()
+            .context("could not inspect running Beatblock processes before installation")?
+        {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before changing game files"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Install,
             "validation",
@@ -1219,6 +1233,13 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running()
+            .context("could not inspect running Beatblock processes before restoring game files")?
+        {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before restoring game files"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Restore,
             "validation",
@@ -1311,7 +1332,9 @@ impl Installer {
             bail!("this installer build does not contain the OBS plugin payload");
         }
         validate_obs_payload(OBS_PLUGIN_PAYLOAD)?;
-        if obs_is_running() {
+        if obs_is_running().context(
+            "could not inspect running OBS Studio processes before installing its source",
+        )? {
             bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
         }
         let obs = self
@@ -1388,8 +1411,20 @@ impl Installer {
 
     /// Reports whether OBS currently owns its plugin DLLs so the installer UI
     /// can defer only that optional component instead of blocking core setup.
-    pub fn obs_running(&self) -> bool {
+    pub fn obs_running(&self) -> Result<bool> {
         obs_is_running()
+    }
+
+    /// Reports whether any Beatblock process can still own the managed game
+    /// files. The GUI and command-line maintenance paths both enforce this.
+    pub fn beatblock_running(&self) -> Result<bool> {
+        beatblock_is_running()
+    }
+
+    /// A recorded OBS installation means uninstall may need to remove a loaded
+    /// plugin DLL and therefore must respect the OBS process lock.
+    pub fn obs_plugin_managed(&self) -> bool {
+        self.data_dir.join("obs-install.json").is_file()
     }
 
     fn obs_plugin_ready(&self) -> bool {
@@ -1522,6 +1557,21 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running()
+            .context("could not inspect running Beatblock processes before uninstalling")?
+        {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before uninstalling"
+            );
+        }
+        if self.obs_plugin_managed()
+            && obs_is_running()
+                .context("could not inspect running OBS Studio processes before uninstalling")?
+        {
+            bail!(
+                "OBS Studio is running. Close OBS and refresh the installer before removing its managed plugin"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Uninstall,
             "validation",
@@ -2332,14 +2382,19 @@ fn quote_windows(path: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn obs_is_running() -> bool {
+fn obs_is_running() -> Result<bool> {
     process_is_running("obs64.exe")
 }
 
 #[cfg(windows)]
-fn process_is_running(executable_name: &str) -> bool {
+fn beatblock_is_running() -> Result<bool> {
+    process_is_running("Beatblock.exe")
+}
+
+#[cfg(windows)]
+fn process_is_running(executable_name: &str) -> Result<bool> {
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        Foundation::{CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE},
         System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
@@ -2348,33 +2403,47 @@ fn process_is_running(executable_name: &str) -> bool {
 
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return false;
+        let error = unsafe { GetLastError() };
+        bail!("could not create a process snapshot (Windows error {error})");
     }
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut found = false;
-    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-    while has_entry {
+    if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+        let error = unsafe { GetLastError() };
+        unsafe { CloseHandle(snapshot) };
+        bail!("could not start process enumeration (Windows error {error})");
+    }
+    loop {
         let end = entry
             .szExeFile
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
         if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case(executable_name) {
-            found = true;
-            break;
+            unsafe { CloseHandle(snapshot) };
+            return Ok(true);
         }
-        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+            let error = unsafe { GetLastError() };
+            unsafe { CloseHandle(snapshot) };
+            if error == ERROR_NO_MORE_FILES {
+                return Ok(false);
+            }
+            bail!("process enumeration failed (Windows error {error})");
+        }
     }
-    unsafe { CloseHandle(snapshot) };
-    found
 }
 
 #[cfg(not(windows))]
-fn obs_is_running() -> bool {
-    false
+fn obs_is_running() -> Result<bool> {
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+fn beatblock_is_running() -> Result<bool> {
+    Ok(false)
 }
 
 fn detect_obs_directory() -> Option<PathBuf> {
@@ -3362,7 +3431,7 @@ mod tests {
     fn running_process_detection_finds_the_current_test_executable() {
         let executable = std::env::current_exe().unwrap();
         let name = executable.file_name().unwrap().to_string_lossy();
-        assert!(process_is_running(&name));
+        assert!(process_is_running(&name).unwrap());
     }
 
     #[cfg(windows)]
