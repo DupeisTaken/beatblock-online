@@ -456,6 +456,15 @@
               "active": { "type": "boolean" }
             }
           }
+        },
+        "autoplayAudioEnabled": { "type": "boolean" },
+        "autoplayClockSlot": {
+          "anyOf": [
+            { "const": "A", "type": "string" },
+            { "const": "B", "type": "string" },
+            { "const": "C", "type": "string" },
+            { "const": "D", "type": "string" }
+          ]
         }
       }
     },

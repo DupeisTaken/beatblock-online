@@ -670,6 +670,10 @@ local function drawBroadcast(self)
       end,'green',rendererEditable and slot.active and not slot.featured)
     end
   end
+  local featuredActive=false
+  for _,slot in ipairs(BBT.renderers or {}) do
+    if slot.active and slot.featured then featuredActive=true; break end
+  end
   if authority=='commentator' then
     local enabled=BBT.mirrorEnabled or (BBT.runtimeSnapshot and BBT.runtimeSnapshot.mirrorEnabled)
     ui:text('THIS PC',24,244,100,'left','white')
@@ -677,12 +681,26 @@ local function drawBroadcast(self)
     button(self,'broadcast_mirror',398,238,178,27,enabled and 'DISABLE MIRROR' or 'ENABLE MIRROR',function()
       if enabled then BBT.command('broadcast.mirror_set',{enabled=false})
       else
-        openConfirm(self,'ENABLE LOCAL MIRROR','This may start up to four hidden renderer processes and increase CPU/GPU use. Continue?','ENABLE',function()
+        openConfirm(self,'ENABLE LOCAL MIRROR','This may start four video renderers plus the host plan autoplay audio renderer and increase CPU/GPU use. Continue?','ENABLE',function()
           BBT.command('broadcast.mirror_set',{enabled=true})
         end)
       end
     end,enabled and 'yellow' or 'cyan')
   else
+    local autoplay=(BBT.runtimeSnapshot and BBT.runtimeSnapshot.autoplayAudio) or {}
+    button(self,'broadcast_autoplay',24,238,178,27,
+      autoplay.enabled and 'DISABLE AUTOPLAY MIX' or 'ENABLE AUTOPLAY MIX',function()
+      if autoplay.enabled then
+        BBT.command('broadcast.autoplay_audio_set',{enabled=false})
+      else
+        openConfirm(self,'ENABLE AUTOPLAY MIX',
+          'Launch one extra audio-only Beatblock renderer with song audio and one perfect native hitsound per positive scoring opportunity?',
+          'ENABLE',function()
+            BBT.command('broadcast.autoplay_audio_set',{enabled=true})
+          end)
+      end
+    end,autoplay.enabled and 'yellow' or 'cyan',
+      rendererEditable and (autoplay.enabled or featuredActive))
     button(self,'broadcast_advanced',398,238,178,27,'ADVANCED EXPORT',function()
       self.broadcastAdvanced=true
       loadBroadcastDraft(self,self.broadcastSlot or 'A')
@@ -690,13 +708,18 @@ local function drawBroadcast(self)
   end
   local detail
   for _,slot in ipairs(BBT.renderers or {}) do if slot.lastError then detail=slot.lastError break end end
+  local autoplay=(BBT.runtimeSnapshot and BBT.runtimeSnapshot.autoplayAudio) or {}
+  detail=detail or autoplay.error
   if detail then
     ui:text('RENDERER: '..bounded(detail,48),24,274,465,'left','red')
     button(self,'broadcast_details',496,270,80,24,'DETAILS',function()
       self.modal={kind='details',title='RENDERER DETAILS',message=detail,returnFocus=self.focusId}
     end,'white')
   else
-    ui:text('Featured video, text exports, and audio follow the same delayed clock.',24,276,552,'left','muted')
+    local autoplayLabel=autoplay.enabled and (autoplay.healthy and 'AUTOPLAY MIX HEALTHY' or 'AUTOPLAY MIX STARTING')
+      or (authority=='host' and not rendererEditable and 'AUTOPLAY MIX LOCKED DURING RACE'
+      or (not featuredActive and 'FEATURE A STREAM TO ENABLE AUTOPLAY MIX' or 'AUTOPLAY MIX OFF'))
+    ui:text(autoplayLabel,24,276,552,'left',autoplay.enabled and 'green' or 'muted')
   end
 end
 
@@ -736,6 +759,7 @@ local function drawSettings(self)
     or (checksEnabled and 'ON / COMPETITIVE' or 'OFF / CASUAL')
   local rows={
     {'GAMEPLAY HUD',settings.hudEnabled==false and 'OFF' or 'ON'},
+    {'RENDERER DESKTOP MUTE',settings.rendererDesktopMute==false and 'OFF / DRIVER FALLBACK' or 'ON / EXACT PID'},
     {'CHART TRANSFERS',not room and 'HOST DEFAULT: MANUAL'
       or (room.allowChartTransfers==false and 'OFF'
       or (autoRequests and 'ON / AUTO REQUEST' or 'ON / MANUAL REQUEST'))},
@@ -751,6 +775,10 @@ local function drawSettings(self)
   button(self,'settings_hud',24,239,54,25,'HUD',function()
     BBT.command('settings.update',{hudEnabled=not (settings.hudEnabled~=false)})
   end,'cyan')
+  button(self,'settings_renderer_mute',24,270,124,25,
+    settings.rendererDesktopMute==false and 'ENABLE AUTO MUTE' or 'DISABLE AUTO MUTE',function()
+    BBT.command('settings.update',{rendererDesktopMute=settings.rendererDesktopMute==false})
+  end,settings.rendererDesktopMute==false and 'green' or 'yellow')
   button(self,'settings_validity',82,239,66,25,checksEnabled and 'CHECKS' or 'NO CHECK',function()
     local run=function() BBT.command('room.validity_checks_set',{enabled=not checksEnabled}) end
     if checksEnabled then

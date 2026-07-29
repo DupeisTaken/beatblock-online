@@ -49,7 +49,7 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     }
     let mut header = [0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
-    if &header[..8] != b"BBTFRAME" || read_u32(&header, 8)? != 2 {
+    if &header[..8] != b"BBTFRAME" || read_u32(&header, 8)? != 3 || read_u32(&header, 28)? != 1 {
         bail!("renderer frame has an unsupported header");
     }
     let width = read_u32(&header, 12)?;

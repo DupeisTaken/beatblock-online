@@ -1,8 +1,11 @@
+local autoplay = os.getenv('BBT_RENDERER_AUTOPLAY') == '1'
 local rendererSlot = tostring(os.getenv('BBT_RENDERER_STREAM') or 'A'):upper()
-if not rendererSlot:match('^[A-D]$') then rendererSlot = 'A' end
+if not autoplay and not rendererSlot:match('^[A-D]$') then rendererSlot = 'A' end
 
 local Renderer = {
-  active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil,
+  active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil or autoplay,
+  autoplay = autoplay,
+  audioOnly = autoplay,
   -- Full is the fidelity-first default: it retains the native backdrop, HUD,
   -- palette/accessibility pass, and chart-authored screen effects.
   mode = os.getenv('BBT_RENDERER_MODE') or 'full',
@@ -12,7 +15,8 @@ local Renderer = {
   fps = tonumber(os.getenv('BBT_RENDERER_FPS')) or 60,
   audioEnabled = os.getenv('BBT_RENDERER_AUDIO') == '1',
   streamSlot = rendererSlot,
-  windowTitle = 'Beatblock Online Renderer ' .. rendererSlot,
+  windowTitle = autoplay and 'Beatblock Online Autoplay'
+    or ('Beatblock Online Renderer ' .. rendererSlot),
   sequence = 0, captureSequence = 0, lastInputSequence = 0, tapMask = 0,
   lastScoreSequence = 0, sourceAccuracy = nil, sourceOffset = 0,
   sourceScore = nil, resultsReady = false,
@@ -24,8 +28,10 @@ local Renderer = {
   pendingAudioSync = false, lastAudioCorrectionAt = -math.huge,
   lastAppliedPaddleSequence = nil, paddleCumulativeAngle = nil,
 }
-Renderer.statePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
-Renderer.scorePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtscore')
+Renderer.statePath = os.getenv('BBT_RENDERER_STATE_PATH')
+  or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
+Renderer.scorePath = os.getenv('BBT_RENDERER_SCORE_PATH')
+  or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtscore')
 Renderer.errorPath = os.getenv('BBT_RENDERER_ERROR_PATH')
   or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbterror')
 
@@ -147,11 +153,17 @@ function Renderer.init()
     end
   end
   if not ok then return failInitialization('LuaJIT FFI is unavailable') end
-  if Renderer.width ~= math.floor(Renderer.width) or Renderer.height ~= math.floor(Renderer.height)
-    or Renderer.width < 320 or Renderer.width > 1920 or Renderer.height < 180 or Renderer.height > 1080 then
+  if not Renderer.audioOnly and (
+    Renderer.width ~= math.floor(Renderer.width)
+    or Renderer.height ~= math.floor(Renderer.height)
+    or Renderer.width < 320
+    or Renderer.width > 1920
+    or Renderer.height < 180
+    or Renderer.height > 1080
+  ) then
     return failInitialization('renderer dimensions are outside the supported range')
   end
-  if Renderer.fps ~= 30 and Renderer.fps ~= 60 then
+  if not Renderer.audioOnly and Renderer.fps ~= 30 and Renderer.fps ~= 60 then
     return failInitialization('renderer FPS must be 30 or 60')
   end
   if Renderer.mode ~= 'clean' and Renderer.mode ~= 'full' then
@@ -161,13 +173,21 @@ function Renderer.init()
     or not pcall(love.window.setTitle, Renderer.windowTitle) then
     return failInitialization('renderer window title could not be assigned')
   end
+  Renderer.inputs = mapFile(Renderer.statePath, 32)
+  if not Renderer.inputs then
+    return failInitialization('renderer shared-memory files could not be mapped')
+  end
+  if Renderer.audioOnly then
+    minimizeRendererWindow()
+    _G.BBTRenderer = Renderer
+    return Renderer
+  end
   Renderer.frameSize = Renderer.width * Renderer.height * 4
   Renderer.frameInterval = 1 / math.max(1, Renderer.fps)
   Renderer.frames = mapFile(Renderer.framePath, 64 + 1920 * 1080 * 4 * 3)
-  Renderer.inputs = mapFile(Renderer.statePath, 32)
   Renderer.scores = mapFile(Renderer.scorePath, 48)
-  if not Renderer.frames or not Renderer.inputs or not Renderer.scores then
-    return failInitialization('renderer shared-memory files could not be mapped')
+  if not Renderer.frames or not Renderer.scores then
+    return failInitialization('renderer video shared-memory files could not be mapped')
   end
   -- Two canvases keep one GPU readback from forcing an avoidable 60 Hz drop.
   -- Shared-memory dimensions are physical pixels, so never inherit Windows'
@@ -206,6 +226,23 @@ function Renderer.useDefaultCostume()
   savedata.costumes.currentCostume='none'
 end
 
+function Renderer.disableProfilePersistence()
+  -- LÖVE's Windows save directory ignores the child APPDATA override. Disable
+  -- every known Beatblock save path before renderer-only options are changed,
+  -- so even a platform-specific save-directory fallback cannot persist them.
+  if sdfunc and sdfunc.save then
+    Renderer.originalSave = Renderer.originalSave or sdfunc.save
+    sdfunc.save = function() end
+  end
+  -- Results writes played-level data directly instead of going through
+  -- sdfunc.save. A renderer is a disposable replay process and must never
+  -- mutate the player's progress or unlock files.
+  if dpf and dpf.saveJson then
+    Renderer.originalDpfSaveJson = Renderer.originalDpfSaveJson or dpf.saveJson
+    dpf.saveJson = function() end
+  end
+end
+
 function Renderer.start()
   if not Renderer.active then return end
   local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
@@ -224,20 +261,7 @@ function Renderer.start()
     end
   end
   local previous = cs
-  -- LÖVE's Windows save directory ignores the child APPDATA override. The
-  -- renderer is disposable, so prevent it from writing the player's save when
-  -- leaving menu/game states.
-  if sdfunc and sdfunc.save then
-    Renderer.originalSave = Renderer.originalSave or sdfunc.save
-    sdfunc.save = function() end
-  end
-  -- Results writes played-level data directly instead of going through
-  -- sdfunc.save. A renderer is a disposable replay process and must never
-  -- mutate the player's progress or unlock files.
-  if dpf and dpf.saveJson then
-    Renderer.originalDpfSaveJson = Renderer.originalDpfSaveJson or dpf.saveJson
-    dpf.saveJson = function() end
-  end
+  Renderer.disableProfilePersistence()
   if savedata and savedata.options and savedata.options.game then
     -- The remote angle already contains circle-snap and April Fools offsets.
     -- Reapplying either in the hidden child produces a second, false motion.
@@ -247,6 +271,7 @@ function Renderer.start()
   if savedata and savedata.options and savedata.options.aprilFools then
     savedata.options.aprilFools.randomPaddleOffset = false
   end
+  Renderer.installAutoplayHooks()
   Renderer.useDefaultCostume()
   -- Beatblock's love.focus handler may already have globally muted this
   -- background process. Disable future focus-loss muting and restore the
@@ -275,6 +300,42 @@ function Renderer.start()
   if cs.source and cs.source.setVolume then
     cs.source:setVolume(Renderer.audioEnabled and 1 or 0)
   end
+end
+
+function Renderer.canonicalAutoplayCollision(note)
+  local name = note and note.name
+  return name ~= 'mine' and name ~= 'mineHold'
+end
+
+function Renderer.installAutoplayHooks()
+  if not Renderer.autoplay or Renderer.autoplayHooksInstalled then return end
+  local accessibility = savedata and savedata.options and savedata.options.accessibility
+  if accessibility then
+    -- Beatblock's native Tap and Side behaviors already implement a zero-offset
+    -- automatic judgement path. Reusing them preserves tap/hold completion and
+    -- guarantees exactly one normal positive hitsound per scoring opportunity.
+    accessibility.taps = 'auto'
+    accessibility.sides = 'auto'
+  end
+  local audio = savedata and savedata.options and savedata.options.audio
+  if audio then
+    -- Autoplay is a disposable, separately rooted process. Override a muted
+    -- player save only in this process so the canonical song-plus-hits mix
+    -- cannot silently omit native hitsounds.
+    audio.hitsounds = true
+    audio.sfxvolume = math.max(tonumber(audio.sfxvolume) or 7, 1)
+    audio.musicvolume = math.max(tonumber(audio.musicvolume) or 7, 1)
+  end
+  if Block and Block.checkTouchingPaddle then
+    Block.checkTouchingPaddle = function(note)
+      if Renderer.canonicalAutoplayCollision(note) then return true, false end
+      return false, false
+    end
+  end
+  if MineHold and MineHold.checkTouchingPaddle then
+    MineHold.checkTouchingPaddle = function() return false end
+  end
+  Renderer.autoplayHooksInstalled = true
 end
 
 function Renderer.applySourceScore(target)
@@ -648,7 +709,7 @@ local function finishReadbacks()
 end
 
 function Renderer.capture(cleanSource, shadedSource, finalShader)
-  if not Renderer.active or not Renderer.frames or not Renderer.captureEnabled then return end
+  if Renderer.audioOnly or not Renderer.active or not Renderer.frames or not Renderer.captureEnabled then return end
   local now = love.timer.getTime()
   -- LÖVE 12 returns a GraphicsReadback object; it does not accept a callback.
   -- Poll completed requests before reserving an output canvas for this frame.

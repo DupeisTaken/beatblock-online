@@ -290,6 +290,14 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
             state.set_local_broadcast_mirror(enabled).await?;
             publish_snapshots(state).await
         }
+        "broadcast.autoplay_audio_set" => {
+            let enabled = message
+                .payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .context("broadcast.autoplay_audio_set requires a boolean enabled field")?;
+            state.set_autoplay_audio(enabled).await
+        }
         "history.list" => publish_snapshots(state).await,
         "history.delete" => {
             state
@@ -421,6 +429,7 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "renderer.configure"
             | "renderer.stop"
             | "broadcast.mirror_set"
+            | "broadcast.autoplay_audio_set"
             | "history.list"
             | "history.delete"
             | "history.prune"
@@ -501,7 +510,15 @@ async fn update_settings(state: &AppState, payload: &Value) -> Result<()> {
     if let Some(enabled) = payload.get("hudEnabled").and_then(Value::as_bool) {
         next.hud_enabled = enabled;
     }
+    if let Some(enabled) = payload.get("rendererDesktopMute").and_then(Value::as_bool) {
+        next.renderer_desktop_mute = enabled;
+    }
     crate::app_state::write_config_atomically(&state.data_dir, &next)?;
+    if next.renderer_desktop_mute != config.renderer_desktop_mute {
+        state
+            .renderer
+            .set_desktop_mute_enabled(next.renderer_desktop_mute);
+    }
     *config = next;
     drop(config);
     publish_snapshots(state).await

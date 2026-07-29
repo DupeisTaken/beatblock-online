@@ -1,6 +1,8 @@
+use crate::audio_sessions::AudioIsolationWorker;
 use crate::mod_payload::SHARED_MOD_PAYLOAD;
 use crate::model::{
-    GameplayState, RenderSample, RendererRequest, RendererSlot, ScoreTotals, MAX_RENDER_STREAMS,
+    AutoplayAudioState, GameplayState, RenderSample, RendererRequest, RendererSlot, ScoreTotals,
+    MAX_RENDER_STREAMS,
 };
 use anyhow::{bail, Context, Result};
 use memmap2::MmapMut;
@@ -22,6 +24,9 @@ const MAX_RENDER_SAMPLES: usize = 60 * 60 * 10;
 const MAX_RENDER_TAPS: usize = 4_096;
 const MAX_RENDER_SCORES: usize = 4_096;
 const SCORE_STATE_SIZE: usize = 48;
+const FRAME_VERSION: u32 = 3;
+const FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB: u32 = 1;
+const AUTOPLAY_SLOT: &str = "AUTOPLAY";
 
 const FLAG_PLAYING: u16 = 1;
 const FLAG_RAW_TAP_PRESSED: u16 = 1 << 2;
@@ -71,11 +76,8 @@ struct SyncEpoch {
     released: bool,
 }
 
-/// Creates an isolated APPDATA tree for spectator Beatblock processes. Keeping
-/// this outside the installer avoids pulling installer UI/payload code into the
-/// lightweight runtime binary.
-pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
-    let profile = data_dir.join("renderer-profile");
+fn prepare_profile(data_dir: &Path, directory_name: &str) -> Result<PathBuf> {
+    let profile = data_dir.join(directory_name);
     let directory = profile.join("Beatblock/Mods/BeatblockOnlineRenderer");
     std::fs::create_dir_all(directory.join("bbt"))?;
     std::fs::create_dir_all(directory.join("lovely"))?;
@@ -92,6 +94,20 @@ pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
         std::fs::write(target, bytes)?;
     }
     Ok(profile)
+}
+
+/// Creates an isolated APPDATA tree for spectator Beatblock processes. Keeping
+/// this outside the installer avoids pulling installer UI/payload code into the
+/// lightweight runtime binary.
+pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
+    prepare_profile(data_dir, "renderer-profile")
+}
+
+/// Autoplay changes accessibility and audio options in memory to drive native
+/// hits. Give it a separate filesystem root as well as the Lua no-save guard so
+/// no APPDATA-respecting Beatblock path can contaminate ordinary renderers.
+pub fn prepare_autoplay_profile(data_dir: &Path) -> Result<PathBuf> {
+    prepare_profile(data_dir, "autoplay-profile")
 }
 
 pub struct RendererManager {
@@ -117,6 +133,8 @@ pub struct RendererManager {
     awaiting_run_start: Mutex<HashSet<String>>,
     sync_epoch: Mutex<Option<SyncEpoch>>,
     frame_observations: Mutex<HashMap<String, (u64, u64, u64)>>,
+    autoplay: Mutex<AutoplayAudioState>,
+    audio_isolation: AudioIsolationWorker,
 }
 
 /// Publishes one complete renderer input record with the sequence as its final
@@ -205,11 +223,54 @@ impl RendererManager {
             awaiting_run_start: Mutex::new(HashSet::new()),
             sync_epoch: Mutex::new(None),
             frame_observations: Mutex::new(HashMap::new()),
+            autoplay: Mutex::new(AutoplayAudioState {
+                enabled: false,
+                healthy: false,
+                featured_slot: None,
+                error: None,
+                audio_isolation: None,
+            }),
+            audio_isolation: AudioIsolationWorker::new(true),
         })
     }
 
     pub fn slots(&self) -> Vec<RendererSlot> {
-        self.slots.lock().expect("renderer slots poisoned").clone()
+        let mut slots = self.slots.lock().expect("renderer slots poisoned").clone();
+        for slot in &mut slots {
+            slot.audio_isolation = self.audio_isolation.state(&slot.id);
+        }
+        slots
+    }
+
+    pub fn autoplay_state(&self) -> AutoplayAudioState {
+        let mut state = self
+            .autoplay
+            .lock()
+            .expect("autoplay state poisoned")
+            .clone();
+        state.audio_isolation = self.audio_isolation.state(AUTOPLAY_SLOT);
+        state
+    }
+
+    pub fn autoplay_enabled(&self) -> bool {
+        self.autoplay
+            .lock()
+            .expect("autoplay state poisoned")
+            .enabled
+    }
+
+    pub fn set_desktop_mute_enabled(&self, enabled: bool) {
+        self.audio_isolation.set_enabled(enabled);
+        if enabled {
+            let processes = self.processes.lock().expect("renderer processes poisoned");
+            for (id, child) in processes.iter() {
+                self.audio_isolation.isolate(id, child.id());
+            }
+        }
+    }
+
+    pub fn desktop_mute_enabled(&self) -> bool {
+        self.audio_isolation.enabled()
     }
 
     pub fn slot(&self, slot_id: &str) -> Option<RendererSlot> {
@@ -678,11 +739,22 @@ impl RendererManager {
             .lock()
             .expect("renderer launch barrier poisoned")
             .clone();
-        let slots = self
+        let mut slots = self
             .slots()
             .into_iter()
             .filter(|slot| slot.active && !awaiting_run_start.contains(&slot.id))
             .collect::<Vec<_>>();
+        if self.autoplay_enabled() {
+            if let Some(mut featured) = slots.iter().find(|slot| slot.featured).cloned() {
+                featured.id = AUTOPLAY_SLOT.into();
+                featured.participant_name = Some("Autoplay Mix".into());
+                featured.featured = false;
+                featured.audio_isolation = None;
+                if !awaiting_run_start.contains(AUTOPLAY_SLOT) {
+                    slots.push(featured);
+                }
+            }
+        }
         if slots.is_empty() {
             return;
         }
@@ -948,10 +1020,12 @@ impl RendererManager {
         let child = command
             .spawn()
             .context("launch isolated Beatblock renderer")?;
+        let process_id = child.id();
         self.processes
             .lock()
             .expect("renderer processes poisoned")
-            .insert(slot.id, child);
+            .insert(slot.id.clone(), child);
+        self.audio_isolation.isolate(&slot.id, process_id);
         if let Some(current) = self
             .slots
             .lock()
@@ -962,6 +1036,46 @@ impl RendererManager {
             current.healthy = false;
             current.last_error = None;
         }
+        Ok(())
+    }
+
+    pub fn launch_autoplay(
+        &self,
+        game_executable: &Path,
+        renderer_profile: &Path,
+        chart_path: &str,
+        variant: &str,
+    ) -> Result<()> {
+        let featured = self
+            .slots()
+            .into_iter()
+            .find(|slot| slot.active && slot.featured)
+            .context("Autoplay Mix requires an active featured renderer")?;
+        self.kill_process(AUTOPLAY_SLOT);
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .insert(AUTOPLAY_SLOT.into());
+        self.reset_input_map(AUTOPLAY_SLOT)?;
+        let _ = std::fs::remove_file(self.error_path(AUTOPLAY_SLOT));
+        let mut command =
+            self.autoplay_command(game_executable, renderer_profile, chart_path, variant);
+        let child = command
+            .spawn()
+            .context("launch isolated Beatblock autoplay renderer")?;
+        let process_id = child.id();
+        self.processes
+            .lock()
+            .expect("renderer processes poisoned")
+            .insert(AUTOPLAY_SLOT.into(), child);
+        self.audio_isolation.isolate(AUTOPLAY_SLOT, process_id);
+        *self.autoplay.lock().expect("autoplay state poisoned") = AutoplayAudioState {
+            enabled: true,
+            healthy: false,
+            featured_slot: Some(featured.id),
+            error: None,
+            audio_isolation: None,
+        };
         Ok(())
     }
 
@@ -1011,6 +1125,8 @@ impl RendererManager {
                 slot.participant_id.as_deref().unwrap_or_default(),
             )
             .env("BBT_RENDERER_FRAME_PATH", self.frame_path(&slot.id))
+            .env("BBT_RENDERER_STATE_PATH", self.state_path(&slot.id))
+            .env("BBT_RENDERER_SCORE_PATH", self.score_path(&slot.id))
             .env("BBT_RENDERER_ERROR_PATH", self.error_path(&slot.id))
             .env("BBT_RENDERER_WIDTH", slot.width.to_string())
             .env("BBT_RENDERER_HEIGHT", slot.height.to_string())
@@ -1033,6 +1149,78 @@ impl RendererManager {
             command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         }
         command
+    }
+
+    fn autoplay_command(
+        &self,
+        game_executable: &Path,
+        renderer_profile: &Path,
+        chart_path: &str,
+        variant: &str,
+    ) -> Command {
+        let mut command = Command::new(game_executable);
+        command
+            .env("BBT_RENDERER_STREAM", AUTOPLAY_SLOT)
+            .env("BBT_RENDERER_AUTOPLAY", "1")
+            .env("BBT_RENDERER_STATE_PATH", self.state_path(AUTOPLAY_SLOT))
+            .env("BBT_RENDERER_ERROR_PATH", self.error_path(AUTOPLAY_SLOT))
+            .env("BBT_RENDERER_AUDIO", "1")
+            .env("BBT_RENDERER_CHART", chart_path)
+            .env("BBT_RENDERER_VARIANT", variant)
+            .env("APPDATA", renderer_profile)
+            .env("LOVELY_MOD_DIR", renderer_profile.join("Beatblock/Mods"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
+        command
+    }
+
+    fn stop_autoplay(&self, error: Option<String>) {
+        self.kill_process(AUTOPLAY_SLOT);
+        self.input_maps
+            .lock()
+            .expect("input maps poisoned")
+            .remove(AUTOPLAY_SLOT);
+        self.awaiting_run_start
+            .lock()
+            .expect("renderer launch barrier poisoned")
+            .remove(AUTOPLAY_SLOT);
+        self.input_sources
+            .lock()
+            .expect("renderer input sources poisoned")
+            .remove(AUTOPLAY_SLOT);
+        self.tap_cursors
+            .lock()
+            .expect("renderer tap cursors poisoned")
+            .remove(AUTOPLAY_SLOT);
+        self.sample_cursors
+            .lock()
+            .expect("renderer sample cursors poisoned")
+            .remove(AUTOPLAY_SLOT);
+        *self.autoplay.lock().expect("autoplay state poisoned") = AutoplayAudioState {
+            enabled: false,
+            healthy: false,
+            featured_slot: None,
+            error,
+            audio_isolation: None,
+        };
+        *self
+            .sync_epoch
+            .lock()
+            .expect("renderer sync epoch poisoned") = None;
+    }
+
+    pub fn disable_autoplay(&self) {
+        self.stop_autoplay(None);
+    }
+
+    pub fn disable_autoplay_with_error(&self, error: impl Into<String>) {
+        self.stop_autoplay(Some(error.into()));
     }
 
     pub fn stop_slot(&self, slot_id: &str) {
@@ -1133,11 +1321,13 @@ impl RendererManager {
     }
 
     fn kill_process(&self, slot_id: &str) {
+        let key = slot_id.to_ascii_uppercase();
+        self.audio_isolation.restore(&key);
         if let Some(mut child) = self
             .processes
             .lock()
             .expect("renderer processes poisoned")
-            .remove(&slot_id.to_ascii_uppercase())
+            .remove(&key)
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -1168,6 +1358,9 @@ impl RendererManager {
                 processes.remove(id);
             }
         }
+        for (id, _) in &exited {
+            self.audio_isolation.restore(id);
+        }
 
         let mut observations = self
             .frame_observations
@@ -1189,7 +1382,11 @@ impl RendererManager {
             let header_ok = File::open(self.frame_path(&slot.id))
                 .and_then(|mut file| file.read_exact(&mut header))
                 .is_ok()
-                && &header[..8] == b"BBTFRAME";
+                && &header[..8] == b"BBTFRAME"
+                && u32::from_le_bytes(header[8..12].try_into().unwrap_or_default())
+                    == FRAME_VERSION
+                && u32::from_le_bytes(header[28..32].try_into().unwrap_or_default())
+                    == FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB;
             if !header_ok {
                 slot.healthy = false;
                 continue;
@@ -1222,9 +1419,29 @@ impl RendererManager {
                 slot.actual_fps = 0.0;
             }
         }
+        drop(slots);
+        drop(observations);
+
+        let mut autoplay = self.autoplay.lock().expect("autoplay state poisoned");
+        if autoplay.enabled {
+            if let Ok(error) = std::fs::read_to_string(self.error_path(AUTOPLAY_SLOT)) {
+                autoplay.healthy = false;
+                autoplay.error = Some(format!("autoplay renderer failed: {error}"));
+            } else if let Some((_, error)) = exited.iter().find(|(id, _)| id == AUTOPLAY_SLOT) {
+                autoplay.healthy = false;
+                autoplay.error = Some(error.clone());
+            } else {
+                autoplay.healthy = running.get(AUTOPLAY_SLOT).copied().unwrap_or(false);
+                autoplay.error = self
+                    .audio_isolation
+                    .state(AUTOPLAY_SLOT)
+                    .and_then(|state| state.error);
+            }
+        }
     }
 
     pub fn stop_all(&self) {
+        self.disable_autoplay();
         let ids = self
             .slots()
             .into_iter()
@@ -1317,12 +1534,12 @@ impl RendererManager {
         file.set_len(total_size as u64)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
         map[..8].copy_from_slice(b"BBTFRAME");
-        map[8..12].copy_from_slice(&2u32.to_le_bytes());
+        map[8..12].copy_from_slice(&FRAME_VERSION.to_le_bytes());
         map[12..16].copy_from_slice(&slot.width.to_le_bytes());
         map[16..20].copy_from_slice(&slot.height.to_le_bytes());
         map[20..24].copy_from_slice(&(stride as u32).to_le_bytes());
         map[24..28].copy_from_slice(&(FRAME_COUNT as u32).to_le_bytes());
-        map[28..32].fill(0);
+        map[28..32].copy_from_slice(&FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB.to_le_bytes());
         map[32..40].copy_from_slice(&0u64.to_le_bytes());
         map[40..48].copy_from_slice(&(frame_size as u64).to_le_bytes());
         map[48..56].copy_from_slice(&0u64.to_le_bytes());
@@ -1433,7 +1650,14 @@ mod tests {
             b"BBTFRAME"
         );
         let bytes = std::fs::read(manager.frame_path("A")).unwrap();
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 2);
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            FRAME_VERSION
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+            FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB
+        );
         assert_eq!(bytes.len(), FRAME_HEADER + MAX_FRAME_SIZE * FRAME_COUNT);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1630,6 +1854,112 @@ mod tests {
         assert!(profile
             .join("Beatblock/Mods/BeatblockOnlineRenderer/lovely/bootstrap.toml")
             .is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autoplay_launch_is_audio_only_and_uses_a_stable_obs_title_contract() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-autoplay-command-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        let renderer_profile = prepare_renderer_profile(&root).unwrap();
+        let renderer_state = renderer_profile.join("Beatblock/renderer-state.json");
+        std::fs::write(&renderer_state, b"ordinary-renderer-settings").unwrap();
+        let profile = prepare_autoplay_profile(&root).unwrap();
+        let command = manager.autoplay_command(
+            Path::new("Beatblock.exe"),
+            &profile,
+            "Custom Levels/Test/",
+            "Default",
+        );
+        let env = |name: &str| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new(name))
+                .and_then(|(_, value)| value)
+                .map(PathBuf::from)
+        };
+        assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("AUTOPLAY")));
+        assert_eq!(env("BBT_RENDERER_AUTOPLAY"), Some(PathBuf::from("1")));
+        assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
+        assert_eq!(env("APPDATA"), Some(profile.clone()));
+        assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
+        assert_ne!(env("APPDATA"), Some(renderer_profile));
+        assert_eq!(
+            std::fs::read(&renderer_state).unwrap(),
+            b"ordinary-renderer-settings",
+            "preparing Autoplay must not alter ordinary renderer profile state"
+        );
+        assert_eq!(
+            env("BBT_RENDERER_STATE_PATH"),
+            Some(manager.state_path(AUTOPLAY_SLOT))
+        );
+        assert!(
+            env("BBT_RENDERER_FRAME_PATH").is_none(),
+            "autoplay must not allocate or publish video frames"
+        );
+        assert!(env("BBT_RENDERER_SCORE_PATH").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn autoplay_state_requires_and_records_the_featured_clock_source() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-autoplay-state-{}", rand::random::<u64>()));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        assert!(!manager.has_active_featured_slot());
+        manager
+            .configure(
+                "B",
+                RendererRequest {
+                    participant_id: Some("featured-player".into()),
+                    participant_name: Some("Featured".into()),
+                    mode: None,
+                    width: None,
+                    height: None,
+                    fps: None,
+                    delay_ms: Some(1_500),
+                    featured: Some(true),
+                },
+            )
+            .unwrap();
+        assert!(manager.has_active_featured_slot());
+        let featured = manager
+            .slots()
+            .into_iter()
+            .find(|slot| slot.featured && slot.active)
+            .unwrap();
+        assert_eq!(featured.id, "B");
+        assert_eq!(featured.delay_ms, 1_500);
+        manager.reset_input_map(AUTOPLAY_SLOT).unwrap();
+        *manager.autoplay.lock().unwrap() = AutoplayAudioState {
+            enabled: true,
+            healthy: false,
+            featured_slot: Some("B".into()),
+            error: None,
+            audio_isolation: None,
+        };
+        manager.begin_run();
+        manager.push_render_anchor("featured-player", 4.0, 0.0);
+        manager.push_sample_at(
+            "featured-player",
+            RenderSample {
+                session_id: 7,
+                sequence: 1,
+                run_time_us: 1_000_000,
+                beat: 4.0,
+                paddle_angle: 90.0,
+                tap_mask: 0,
+                flags: FLAG_PLAYING,
+            },
+            1_000_000,
+        );
+        manager.write_aligned_inputs(2_500_000);
+        let maps = manager.input_maps.lock().unwrap();
+        let video_beat = f32::from_le_bytes(maps["B"][20..24].try_into().unwrap());
+        let autoplay_beat = f32::from_le_bytes(maps[AUTOPLAY_SLOT][20..24].try_into().unwrap());
+        assert_eq!(autoplay_beat, video_beat);
+        assert_eq!(autoplay_beat, 4.0);
         let _ = std::fs::remove_dir_all(root);
     }
 

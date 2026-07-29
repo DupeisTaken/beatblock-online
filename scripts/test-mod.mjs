@@ -209,7 +209,7 @@ for (const contract of [
   [renderer, 'function Renderer.reclaimStalledReadbacks(now)'],
   [renderer, 'dpiscale=1'],
   [renderer, 'function Renderer.shutdown()'],
-  [renderer, "Renderer.scorePath = (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtscore')"],
+  [renderer, "Renderer.scorePath = os.getenv('BBT_RENDERER_SCORE_PATH')"],
   [renderer, 'Renderer.scores = mapFile(Renderer.scorePath, 48)'],
   [renderer, 'function Renderer.useDefaultCostume()'],
   [renderer, "savedata.costumes.currentCostume='none'"],
@@ -321,7 +321,8 @@ if (
 if (renderer.includes('int SDL_MinimizeWindow(void*)'))
   throw new Error('Renderer uses the wrong ABI width for SDL_MinimizeWindow boolean results');
 for (const rendererAudioContract of [
-  "windowTitle = 'Beatblock Online Renderer ' .. rendererSlot",
+  "'Beatblock Online Renderer ' .. rendererSlot",
+  "'Beatblock Online Autoplay'",
   'pcall(love.window.setTitle, Renderer.windowTitle)',
   'audioOptions.muteOnFocusLoss = false',
   'love.audio.setVolume(1)',
@@ -345,36 +346,47 @@ if (!obsPlugin.includes('read_committed_sequence(header)'))
   throw new Error('OBS source does not confirm read-only sequence snapshots around its frame copy');
 if (obsPlugin.includes('InterlockedCompareExchange64'))
   throw new Error('OBS source performs a write primitive against its FILE_MAP_READ frame view');
-if (
-  !obsPlugin.includes('gs_effect_get_param_by_name(draw, "image")') ||
-  !obsPlugin.includes('gs_effect_set_texture_srgb(image, ctx->texture)')
-)
-  throw new Error('OBS custom-draw source does not bind its frame texture to the base effect');
+for (const videoContract of [
+  'obs_source_draw(ctx->texture, 0, 0, ctx->width, ctx->height, false)',
+  'OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB',
+  '.video_get_color_space = video_color_space',
+  '#define FRAME_VERSION 3',
+  '#define FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB 1',
+]) {
+  if (!obsPlugin.includes(videoContract))
+    throw new Error(`OBS display-RGBA video contract is missing ${videoContract}`);
+}
+if (obsPlugin.includes('OBS_SOURCE_CUSTOM_DRAW'))
+  throw new Error('OBS Player Stream still bypasses the supported single-texture draw path');
 for (const audioContract of [
   '#define PROCESS_AUDIO_SOURCE_ID "wasapi_process_output_capture"',
+  '.id = "beatblock_online_audio"',
   'obs_source_create_private(PROCESS_AUDIO_SOURCE_ID',
-  'obs_source_add_active_child(ctx->source, ctx->audio_source)',
+  'obs_source_add_active_child(ctx->source, ctx->capture)',
   '"reroute_audio"',
   'obs_source_set_audio_active(ctx->source, true)',
-  'obs_source_remove_active_child(ctx->source, ctx->audio_source)',
-  'OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_CUSTOM_DRAW',
-  'obs_data_set_default_bool(settings, "capture_audio", true)',
-  'build_audio_window(ctx->slot, window, sizeof(window))',
+  '"get_hooked"',
+  'calldata_bool(&status, "hooked")',
+  'obs_source_remove_active_child(ctx->source, ctx->capture)',
+  'OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE',
+  'build_audio_window(ctx->target, window, sizeof(window))',
   'obs_data_set_int(audio_settings, "priority", OBS_WINDOW_PRIORITY_TITLE)',
   'obs_source_set_sync_offset(ctx->source, 0)',
-  'obs_source_set_sync_offset(ctx->audio_source, sync_ms * 1000000LL)',
+  'obs_source_set_sync_offset(ctx->capture, sync_ms * 1000000LL)',
   'obs_data_set_default_int(settings, "audio_sync_ms", DEFAULT_AUDIO_SYNC_MS)',
 ]) {
   if (!obsPlugin.includes(audioContract))
-    throw new Error(`OBS integrated application-audio contract is missing ${audioContract}`);
+    throw new Error(`OBS independent application-audio contract is missing ${audioContract}`);
 }
+if (obsPlugin.includes('obs_data_set_default_bool(settings, "capture_audio", true)'))
+  throw new Error('OBS Player Stream still owns the legacy integrated-audio setting');
 if (obsPlugin.includes('DEFAULT_AUDIO_WINDOW') || obsPlugin.includes('"audio_window"'))
   throw new Error('OBS audio routing still permits a host/global window target');
 if (obsPlugin.includes('obs_data_get_int(settings, "audio_delay_ms")'))
   throw new Error('OBS audio routing still reads the obsolete host-audio delay setting');
 if (obsPlugin.includes('obs_source_set_sync_offset(ctx->source, sync_ms * 1000000LL)'))
   throw new Error('OBS fine sync incorrectly shifts combined Player Stream video and audio');
-for (const localeContract of ['CaptureAudio=', 'AudioSync=', 'AudioHint=']) {
+for (const localeContract of ['AudioMigration=', 'AudioSource=', 'AudioSync=', 'AudioHint=']) {
   if (!obsLocale.includes(localeContract))
     throw new Error(`OBS audio settings locale is missing ${localeContract}`);
 }
@@ -382,9 +394,21 @@ for (const nativeAudioContract of [
   '#define BBT_AUDIO_TARGET_TEST',
   'Beatblock Online Renderer A:SDL_app:Beatblock.exe',
   'Beatblock Online Renderer D:SDL_app:Beatblock.exe',
+  'Beatblock Online Autoplay:SDL_app:Beatblock.exe',
 ]) {
   if (!obsAudioTest.includes(nativeAudioContract))
     throw new Error(`OBS native audio-target test is missing ${nativeAudioContract}`);
+}
+for (const autoplayContract of [
+  "accessibility.taps = 'auto'",
+  "accessibility.sides = 'auto'",
+  'function Renderer.canonicalAutoplayCollision(note)',
+  "name ~= 'mine' and name ~= 'mineHold'",
+  'MineHold.checkTouchingPaddle = function() return false end',
+  'if Renderer.audioOnly then',
+]) {
+  if (!renderer.includes(autoplayContract))
+    throw new Error(`Autoplay native-hit contract is missing ${autoplayContract}`);
 }
 const playerViewCapture = 'BBTRenderer.capturePlayerView(cs.canv, shuv and shuv.canvasShaded)';
 if (!hooks.includes(playerViewCapture))

@@ -39,11 +39,12 @@ try {
   await writeFile(scorePath, score);
   const header = Buffer.alloc(64);
   header.write('BBTFRAME', 0, 'ascii');
-  header.writeUInt32LE(2, 8);
+  header.writeUInt32LE(3, 8);
   header.writeUInt32LE(320, 12);
   header.writeUInt32LE(180, 16);
   header.writeUInt32LE(320 * 4, 20);
   header.writeUInt32LE(3, 24);
+  header.writeUInt32LE(1, 28);
   header.writeBigUInt64LE(BigInt(320 * 180 * 4), 40);
   await writeFile(framePath, header);
   const frameFile = await open(framePath, 'r+');
@@ -100,7 +101,12 @@ try {
 
   const frame = await readFile(framePath);
   assert.equal(frame.subarray(0, 8).toString('ascii'), 'BBTFRAME');
-  assert.equal(frame.readUInt32LE(8), 2);
+  assert.equal(frame.readUInt32LE(8), 3);
+  assert.equal(
+    frame.readUInt32LE(28),
+    1,
+    'renderer frame ring must publish RGBA8 display/sRGB bytes',
+  );
   const width = frame.readUInt32LE(12);
   const height = frame.readUInt32LE(16);
   const stride = frame.readUInt32LE(20);
