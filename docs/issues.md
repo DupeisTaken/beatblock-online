@@ -80,7 +80,8 @@ an entire log when a short excerpt around the failure is enough.
 Use the dedicated compatibility form when a newer Beatblock build is accepted
 but unverified, or when an update breaks installation or runtime behavior.
 Include the complete displayed Beatblock version and bracketed build token.
-Newer builds remain unverified until they have been explicitly validated.
+Newer builds remain unverified until that exact version and build token pass
+the compatibility suite.
 
 ## Request a feature or enhancement
 

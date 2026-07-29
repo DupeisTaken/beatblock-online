@@ -23,7 +23,8 @@ The installer validates the Beatblock folder structure, the injection method,
 and Beatblock Online's own payloads. It does not reject a new upstream release
 because `Beatblock.exe` changed. This means an already downloaded installer may
 install after a Beatblock update, but that newer build remains unverified until
-explicitly validated.
+the exact displayed version and bracketed build token pass the compatibility
+suite.
 
 Exact Beatblock identity becomes available after the game starts. Beatblock
 draws a version such as `1.7.1a (Early Access)[d40b7083]` in the top-right
