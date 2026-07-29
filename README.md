@@ -3,12 +3,14 @@
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
 The current prerelease candidate is [`v0.3.0-beta.4`](docs/releases/v0.3.0-beta.4.md).
-It accepts newer structurally valid Beatblock builds while labeling them
-unverified until tested, keeps exact same-build rooms, improves consent-aware
-chart transfers and setlist readability, and exposes release compatibility
-in-product. The unreleased broadcast update separates OBS video from
-per-renderer audio, automatically silences renderer desktop sessions by exact
-PID, and adds an optional native song-plus-perfect-hits autoplay mix.
+It allows the installer to accept newer structurally valid Beatblock builds
+while keeping them unverified until the exact displayed version and bracketed
+build token pass the compatibility suite, keeps exact same-build rooms,
+improves consent-aware chart transfers and setlist readability, and exposes
+release compatibility in-product. The
+unreleased broadcast update separates OBS video from per-renderer audio,
+automatically silences renderer desktop sessions by exact PID, and adds an
+optional native song-plus-perfect-hits autoplay mix.
 
 ## Player quick start
 
@@ -48,6 +50,7 @@ Before submitting, complete these checks:
 Choose the guided template that matches the issue:
 
 - [Report a bug](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.yml)
+- [Report a Beatblock compatibility problem](https://github.com/DupeisTaken/beatblock-online/issues/new?template=beatblock_compatibility.yml)
 - [Request a new feature](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.yml)
 - [Improve existing behavior](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.yml)
 - [Request a documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.yml)

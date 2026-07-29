@@ -14,6 +14,20 @@ body:
           required: true
         - label: I removed private information from the report and attachments.
           required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installer or self-update
+        - Online runtime
+        - Room connection or protocol
+        - Charts, setlists, or results
+        - Dashboard or controls
+        - Broadcast, OBS, or audio
+        - Other
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
@@ -47,6 +61,8 @@ body:
         Beatblock Online:
         Beatblock:
         Windows:
+        Role (if relevant):
+        OBS (if relevant):
     validations:
       required: true
   - type: textarea
