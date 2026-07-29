@@ -5,13 +5,14 @@
 GitHub Release titles include the Beatblock version exercised by that Online
 release:
 
-| Beatblock Online | Online protocol | Tested Beatblock build            | Newer Beatblock builds |
-| ---------------- | --------------: | --------------------------------- | ---------------------- |
-| `0.3.0-beta.4`   |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted by default    |
+| Beatblock Online | Online protocol | Tested Beatblock build            | Newer Beatblock builds   |
+| ---------------- | --------------: | --------------------------------- | ------------------------ |
+| `0.3.0-beta.4`   |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted, but unverified |
 
-The release title is **v0.3.0-beta.4 for Beatblock 1.7.1a+**. The `+` means
-“tested on 1.7.1a, with newer Beatblock releases assumed compatible.” It is not
-an upper bound or an executable allowlist.
+The release title is **v0.3.0-beta.4 for Beatblock 1.7.1a+**. The `+` means the
+installer accepts later structurally valid Beatblock releases; it does not mean
+those releases were tested. `1.7.1a (Early Access)[d40b7083]` is the only
+verified baseline for this Online release.
 
 The Git tag remains the machine-readable semver tag `v0.3.0-beta.4`. Keeping
 human compatibility text in the GitHub Release title preserves update checks,
@@ -57,8 +58,8 @@ avoids an in-flight relaxed connection crossing into a newly strict roster.
 
 ## When a new Beatblock release breaks Online
 
-Newer releases are assumed compatible, but upstream changes can still move an
-injection point, rename a required file, or change gameplay behavior.
+Newer releases are accepted but unverified. An upstream change can still move
+an injection point, rename a required file, or change gameplay behavior.
 
 1. Confirm the complete version and bracketed build token in Beatblock's
    top-right corner.
@@ -69,7 +70,8 @@ injection point, rename a required file, or change gameplay behavior.
    [Installer incompatible with latest Beatblock release](https://github.com/DupeisTaken/beatblock-online/issues/new?template=beatblock_compatibility.yml)
    report.
 
-That issue category records the failure stage and exact upstream build so
-maintainers can schedule an adapter update. The tested baseline can advance in
-the next Online release, but existing installers remain forward-compatible
+That issue category records the failure stage, complete displayed version, and
+exact bracketed upstream build token so maintainers can schedule and reproduce
+an adapter update. The tested baseline can advance in the next Online release,
+but existing installers continue accepting structurally valid later builds
 unless an actual upstream break requires new code.

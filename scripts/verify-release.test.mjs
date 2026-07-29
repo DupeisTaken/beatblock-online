@@ -277,13 +277,13 @@ test('hosted workflows pin third-party actions and isolate release publication',
   assert.match(
     publishJob,
     /release_notes="\$GITHUB_WORKSPACE\/docs\/releases\/\$\{GITHUB_REF_NAME\}\.md"/,
-    'tagged releases must use the matching checked-in issue changelog',
+    'tagged releases must use the matching checked-in public release note',
   );
   assert.match(publishJob, /--notes-file "\$release_notes"/);
   assert.doesNotMatch(
     publishJob,
     /--generate-notes/,
-    'generated summaries must not replace the reviewed issue changelog',
+    'generated summaries must not replace the reviewed public release note',
   );
 });
 
@@ -359,6 +359,12 @@ test('installer builds keep one canonical release directory', async () => {
   assert.match(
     buildWindows,
     /copyFile\(installer, resolve\(release, 'BeatblockOnlineInstaller\.exe'\)\)/,
+  );
+  assert.match(buildWindows, /spawnSync\(installer, \['--version'\]/);
+  assert.match(buildWindows, /timeout: 7000/);
+  assert.match(
+    buildWindows,
+    /versionProbe\.stdout\.split\(\/\\s\+\/\)\.includes\(expectedVersion\)/,
   );
   assert.doesNotMatch(buildWindows, /BeatblockOnlineInstaller-[^']+\.exe/);
   for (const ignoreFile of [gitignore, prettierignore]) {

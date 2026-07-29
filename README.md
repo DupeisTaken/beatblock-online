@@ -3,12 +3,12 @@
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
 The current prerelease candidate is [`v0.3.0-beta.4`](docs/releases/v0.3.0-beta.4.md).
-It makes the installer forward-compatible with new Beatblock builds while
-keeping exact same-build rooms, improves consent-aware chart transfers and
-setlist readability, and exposes release compatibility in-product. The
-unreleased broadcast update separates OBS video from per-renderer audio,
-automatically silences renderer desktop sessions by exact PID, and adds an
-optional native song-plus-perfect-hits autoplay mix.
+It accepts newer structurally valid Beatblock builds while labeling them
+unverified until tested, keeps exact same-build rooms, improves consent-aware
+chart transfers and setlist readability, and exposes release compatibility
+in-product. The unreleased broadcast update separates OBS video from
+per-renderer audio, automatically silences renderer desktop sessions by exact
+PID, and adds an optional native song-plus-perfect-hits autoplay mix.
 
 ## Player quick start
 
@@ -107,10 +107,8 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 - [Tests, benchmarks, and trial reports](docs/benchmarking.md)
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
-- [v0.3.0-beta.4 release notes and issue changelog](docs/releases/v0.3.0-beta.4.md)
+- [Release history, public notes, and technical changelogs](docs/releases/index.md)
 - [Unreleased OBS/audio issue #20 and #21 changelog](docs/releases/unreleased-issues-20-21.md)
-- [v0.3.0-beta.3 release notes](docs/releases/v0.3.0-beta.3.md)
-- [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
 

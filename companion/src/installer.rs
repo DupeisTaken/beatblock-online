@@ -575,7 +575,7 @@ impl Installer {
             repair_required,
             components,
             message: if valid {
-                "Compatible Beatblock layout detected. Newer game builds are accepted by default; exact room matching happens after Beatblock starts.".into()
+                "Compatible Beatblock layout detected. Newer game builds are accepted but unverified; exact room matching happens after Beatblock starts.".into()
             } else {
                 validation_message
             },
@@ -715,6 +715,11 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running() {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before changing game files"
+            );
+        }
         let obs_transaction = if install_obs {
             progress(OperationProgress::step(
                 OperationKind::Install,
@@ -755,6 +760,11 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running() {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before changing game files"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Install,
             "validation",
@@ -1219,6 +1229,11 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running() {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before restoring game files"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Restore,
             "validation",
@@ -1392,6 +1407,18 @@ impl Installer {
         obs_is_running()
     }
 
+    /// Reports whether any Beatblock process can still own the managed game
+    /// files. The GUI and command-line maintenance paths both enforce this.
+    pub fn beatblock_running(&self) -> bool {
+        beatblock_is_running()
+    }
+
+    /// A recorded OBS installation means uninstall may need to remove a loaded
+    /// plugin DLL and therefore must respect the OBS process lock.
+    pub fn obs_plugin_managed(&self) -> bool {
+        self.data_dir.join("obs-install.json").is_file()
+    }
+
     fn obs_plugin_ready(&self) -> bool {
         let marker = self.data_dir.join("obs-install.json");
         let Ok(bytes) = read_bounded_file(&marker, MAX_OBS_MARKER_BYTES) else {
@@ -1522,6 +1549,16 @@ impl Installer {
     where
         F: FnMut(OperationProgress),
     {
+        if beatblock_is_running() {
+            bail!(
+                "Beatblock is running. Close Beatblock and refresh the installer before uninstalling"
+            );
+        }
+        if self.obs_plugin_managed() && obs_is_running() {
+            bail!(
+                "OBS Studio is running. Close OBS and refresh the installer before removing its managed plugin"
+            );
+        }
         progress(OperationProgress::step(
             OperationKind::Uninstall,
             "validation",
@@ -2337,6 +2374,11 @@ fn obs_is_running() -> bool {
 }
 
 #[cfg(windows)]
+fn beatblock_is_running() -> bool {
+    process_is_running("Beatblock.exe")
+}
+
+#[cfg(windows)]
 fn process_is_running(executable_name: &str) -> bool {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
@@ -2374,6 +2416,11 @@ fn process_is_running(executable_name: &str) -> bool {
 
 #[cfg(not(windows))]
 fn obs_is_running() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn beatblock_is_running() -> bool {
     false
 }
 

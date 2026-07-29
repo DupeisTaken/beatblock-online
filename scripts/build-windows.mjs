@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { cargoCommand } from './run-cargo.mjs';
@@ -68,6 +68,25 @@ cargo(
     BBT_OBS_PLUGIN_DLL: obsPlugin,
   },
 );
+
+// Self-update relies on this exact bounded probe before a downloaded binary is
+// allowed to replace the managed installer. Exercise the release artifact now
+// so a tagged build cannot publish an executable that breaks that contract.
+const cargoManifest = await readFile(manifest, 'utf8');
+const expectedVersion = cargoManifest.match(/^\s*version\s*=\s*"([^"]+)"\s*$/m)?.[1];
+if (!expectedVersion) throw new Error('Could not read the installer version from Cargo.toml');
+const versionProbe = spawnSync(installer, ['--version'], {
+  cwd: root,
+  encoding: 'utf8',
+  timeout: 7000,
+  windowsHide: true,
+});
+if (versionProbe.error) throw versionProbe.error;
+if (versionProbe.status !== 0 || !versionProbe.stdout.split(/\s+/).includes(expectedVersion)) {
+  throw new Error(
+    `Installer --version probe did not report ${expectedVersion}: ${versionProbe.stdout || versionProbe.stderr}`,
+  );
+}
 
 // Keep the staging directory itself stable: Explorer, antivirus scanners, and
 // terminals can hold a Windows directory handle even when the output file is

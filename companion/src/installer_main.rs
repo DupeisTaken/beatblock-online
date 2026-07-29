@@ -6,6 +6,7 @@ use beatblock_online_companion::{
     installer::{
         write_operation_status, Distribution, Installer, OperationKind, OperationProgress, Severity,
     },
+    update,
 };
 use clap::Parser;
 use directories::ProjectDirs;
@@ -42,11 +43,27 @@ struct Args {
     /// Atomic progress handoff used by the visible unelevated installer.
     #[arg(long)]
     operation_file: Option<PathBuf>,
+    /// Internal, verified handoff used by a staged installer to replace only
+    /// the app-managed maintenance copy after the visible parent exits.
+    #[arg(long, hide = true)]
+    finalize_update: Option<PathBuf>,
+    /// Internal cleanup handoff used only by the newly promoted managed copy.
+    #[arg(
+        long,
+        hide = true,
+        requires_all = ["cleanup_parent", "update_ready_token"]
+    )]
+    cleanup_update: Option<uuid::Uuid>,
+    #[arg(long, hide = true, requires = "cleanup_update")]
+    cleanup_parent: Option<u32>,
+    #[arg(long, hide = true, requires = "cleanup_update")]
+    update_ready_token: Option<String>,
 }
 
 fn main() {
     let mut args = Args::parse();
     let data_dir = resolved_data_dir(args.data_dir.as_ref());
+    let finalize_receipt = args.finalize_update.clone();
     let operation_file = match validate_operation_file(&data_dir, args.operation_file.as_deref()) {
         Ok(path) => path,
         Err(_) => std::process::exit(1),
@@ -70,6 +87,16 @@ fn main() {
                     terminal: true,
                 },
             );
+        }
+        if finalize_receipt.is_some() {
+            let message = format!(
+                "The verified installer update could not be completed.\n\n{error:#}\n\nAny previous managed installer was restored when possible. Reopen your original installer manually if needed."
+            );
+            let _ = rfd::MessageDialog::new()
+                .set_title("Beatblock Online installer update failed")
+                .set_description(&message)
+                .set_level(rfd::MessageLevel::Error)
+                .show();
         }
         std::process::exit(1);
     }
@@ -102,6 +129,14 @@ fn run(args: Args) -> Result<()> {
     }
     let data_dir = resolved_data_dir(args.data_dir.as_ref());
     std::fs::create_dir_all(&data_dir)?;
+    if let Some(receipt) = args.finalize_update.as_deref() {
+        update::finalize_update(&data_dir, receipt)?;
+        return Ok(());
+    }
+    let cleanup = args
+        .cleanup_update
+        .zip(args.cleanup_parent)
+        .zip(args.update_ready_token);
     let installer = Installer::new(data_dir.clone());
     installer.set_obs_directory(args.obs_dir.clone())?;
     if args.install_now {
@@ -167,6 +202,18 @@ fn run(args: Args) -> Result<()> {
             }
         })?;
         return Ok(());
+    }
+    if let Some(((update_id, parent_pid), ready_token)) = cleanup {
+        let cleanup_data = data_dir.clone();
+        return gui::run_with_ready(data_dir.clone(), move || {
+            update::acknowledge_update_ready(&data_dir, update_id, &ready_token)?;
+            std::thread::spawn(move || {
+                // Antivirus/manual cleanup cannot brick the already-visible
+                // managed installer; cleanup remains best effort and confined.
+                let _ = update::cleanup_completed_update(&cleanup_data, update_id, parent_pid);
+            });
+            Ok(())
+        });
     }
     gui::run(data_dir)
 }
@@ -251,5 +298,26 @@ mod tests {
             args.obs_dir,
             Some(PathBuf::from(r"D:\Portable Apps\obs-studio"))
         );
+    }
+
+    #[test]
+    fn internal_update_handoffs_require_their_bound_arguments() {
+        let update_id = uuid::Uuid::new_v4();
+        assert!(
+            Args::try_parse_from(["installer", "--cleanup-update", &update_id.to_string(),])
+                .is_err()
+        );
+        let args = Args::try_parse_from([
+            "installer",
+            "--cleanup-update",
+            &update_id.to_string(),
+            "--cleanup-parent",
+            "42",
+            "--update-ready-token",
+            &"a".repeat(64),
+        ])
+        .unwrap();
+        assert_eq!(args.cleanup_update, Some(update_id));
+        assert_eq!(args.cleanup_parent, Some(42));
     }
 }

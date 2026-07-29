@@ -42,7 +42,7 @@ executable for Explorer and taskbar rendering.
 `.github/workflows/release.yml` runs on the pinned `windows-2022` hosted image:
 
 - A manual **Run workflow** build validates and uploads a 14-day workflow artifact without publishing a release.
-- Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and the matching reviewed `docs/releases/v<tag>.md` changelog. A missing changelog or mismatched tag fails before publication. The display title is generated as `v<Online version> for Beatblock <tested version>+` from `package.json`; the Git tag itself stays semver-only for update tooling.
+- Pushing the exact `v<package.json version>` tag runs the same tests and build, uploads the workflow artifact, and creates a GitHub Release with the installer, OBS plugin, mod ZIPs, checksums, and the matching reviewed `docs/releases/v<tag>.md` public note. Every public note must have a matching `docs/changelogs/v<tag>.md` technical changelog and an entry in `docs/releases/index.md`; the release-documentation validator checks the pairing, required sections, concise-note size, and GitHub Release-safe links before publication. The display title is generated as `v<Online version> for Beatblock <tested version>+` from `package.json`; the Git tag itself stays semver-only for update tooling.
 - Tags containing `-` (for example, `v0.3.0-beta.4`) publish as prereleases.
 
 Third-party actions are pinned to full commit SHAs. The build job has read-only repository access plus the OIDC permissions needed to produce GitHub artifact attestations. A separate environment-gated publication job is the only job with `contents: write`; it downloads the reviewed workflow artifact and publishes those exact files. CI and release generation also regenerate the protocol schema and fail if the checked-in schema drifts from the TypeScript source.
@@ -56,6 +56,15 @@ soon as upstream `wayland-scanner` accepts `quick-xml` 0.41 or later.
 
 The workflow produces GitHub artifact attestations for the installer, OBS plugin, checksums, and mod bundle. Those attestations establish repository/workflow provenance but do not replace Windows Authenticode signing. Until a protected code-signing identity is configured, Windows may still show an unknown-publisher warning; verify the release checksum and GitHub attestation before running the installer.
 
+Before tagging, add the concise public note, matching technical changelog, and
+both links in the release-history index. Public notes are used verbatim outside
+the repository, so their Markdown links must be absolute HTTPS URLs or
+same-document anchors. Run the documentation contract locally:
+
+```powershell
+pnpm validate:release-docs
+```
+
 Create and push a release tag only after the normal CI checks pass:
 
 ```powershell
@@ -67,8 +76,10 @@ The GitHub Actions run is the source of published binaries. Do not commit genera
 
 ## Extending the tested Beatblock baseline
 
-The installer is forward-compatible by default; do not add executable hashes or
-publish an installer only to allow a routine Beatblock update.
+The installer accepts newer structurally valid builds by default, but those
+builds remain unverified until the compatibility suite passes. Do not add
+executable hashes or publish an installer only to allow a routine Beatblock
+update.
 
 1. Preserve `.reference` and place the new upstream build in separate tested and
    untouched folders. Record the complete displayed version and bracketed build
