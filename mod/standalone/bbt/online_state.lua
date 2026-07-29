@@ -157,6 +157,37 @@ local function closeModal(self)
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
 end
 
+local function launchSingleChartSelector(official)
+  if official then BBT.openOfficialSelect('single')
+  else BBT.openChartSelect('single') end
+end
+
+local function chooseSingleChartSource(self,official)
+  local room=currentRoom()
+  local entries=room and room.setlist or {}
+  if #entries>0 then
+    openConfirm(
+      self,
+      'REPLACE ORDERED SET',
+      'Selecting one chart removes the current ordered set. Continue to Beatblock chart selection?',
+      'REPLACE SET',
+      function() launchSingleChartSelector(official) end
+    )
+    return
+  end
+  closeModal(self)
+  launchSingleChartSelector(official)
+end
+
+local function openSingleChartSource(self)
+  self.modal={
+    kind='chart_source',
+    title='SELECT SINGLE CHART',
+    returnFocus=self.focusId,
+  }
+  self.focusId='single_chart_official'
+end
+
 local function submitForm(self)
   local modal=self.modal
   if not modal or modal.kind~='form' then return end
@@ -190,10 +221,11 @@ local function submitForm(self)
 end
 
 local function header(self)
-  ui:text('BBT  /  ONLINE',12,7,170,'left','white')
-  local runtimeStatus=BBT.companionConnected and 'ONLINE' or (BBT.runtimeStarting and 'STARTING' or 'RUNTIME OFFLINE')
-  local status='BBT v'..tostring(BBT.version or 'UNKNOWN')..'  /  '..runtimeStatus
-  ui:text(status,300,7,288,'right',BBT.companionConnected and 'green' or 'yellow')
+  ui:text('BEATBLOCK ONLINE',12,7,220,'left','white')
+  local runtimeStatus=BBT.companionConnected and 'READY' or (BBT.runtimeStarting and 'STARTING' or 'OFFLINE')
+  local status='v'..tostring(BBT.version or 'UNKNOWN')..'  /  '..runtimeStatus
+  local statusTone=BBT.companionConnected and 'green' or (BBT.runtimeStarting and 'yellow' or 'red')
+  ui:text(status,280,7,308,'right',statusTone)
   local room=currentRoom()
   local primary=Dashboard.primary(context())
   ui:panel(12,27,576,44)
@@ -222,7 +254,7 @@ end
 function runPrimary(self,item)
   if item.id=='host_room' then openForm(self,'host')
   elseif item.id=='open_installer' then BBT.openInstaller()
-  elseif item.id=='select_chart' or item.id=='select_next_chart' then setWorkspace(self,'setlist')
+  elseif item.id=='select_chart' or item.id=='select_next_chart' then openSingleChartSource(self)
   elseif item.id=='locate_chart' then
     local room=currentRoom()
     if room and room.chart then
@@ -484,67 +516,83 @@ end
 
 local function drawSetlist(self)
   local room=currentRoom()
-  ui:panel(12,78,364,225,'SETLIST')
-  ui:panel(383,78,205,225,'ACTIONS')
-  if not room then ui:wrapped('Join or host a room before building a setlist.',24,111,340,3,'muted'); return end
+  local title='ORDERED SET'
+  if room and not isHost() then title='ORDERED SET  /  HOST CONTROLLED'
+  elseif room and (room.lifecycle=='playing' or room.lifecycle=='countdown') then
+    title='ORDERED SET  /  LOCKED DURING RACE'
+  end
+  ui:panel(12,78,576,225,title)
+  if not room then
+    ui:wrapped('Join or host a room before building an ordered set.',24,111,552,3,'muted')
+    return
+  end
   local entries=room.setlist or {}
-  self.setlistSelection,self.setlistOffset=Dashboard.scroll(
-    self.setlistSelection,self.setlistOffset,#entries,0,8
+  local selectedEntry,selection=Dashboard.selectedSetlistEntry(
+    entries,self.selectedSetlistEntryId,self.setlistSelection
   )
-  for visibleIndex=1,8 do
+  self.setlistSelection=selection or 1
+  self.selectedSetlistEntryId=selectedEntry and selectedEntry.id or nil
+  self.setlistSelection,self.setlistOffset=Dashboard.scroll(
+    self.setlistSelection,self.setlistOffset,#entries,0,6
+  )
+  ui:text('ORDER',22,103,42,'center','muted')
+  ui:text('CHART',68,103,284,'left','muted')
+  ui:text('VARIANT',360,103,102,'right','muted')
+  ui:text('STATE',470,103,100,'right','muted')
+  for visibleIndex=1,6 do
     local index=self.setlistOffset+visibleIndex
     local entry=entries[index]
     if not entry then break end
-    local y=105+(visibleIndex-1)*22
+    local y=117+(visibleIndex-1)*22
     local active=room.currentSetlistIndex==index-1
     local selected=self.setlistSelection==index
-    register(self,'setlist_entry_'..tostring(index),20,y,348,20,function()
+    local state,stateTone=Dashboard.setlistEntryState(entries,index,room.currentSetlistIndex,room.lifecycle)
+    register(self,'setlist_entry_'..tostring(entry.id),20,y,560,22,function()
       self.setlistSelection=index
+      self.selectedSetlistEntryId=entry.id
     end)
-    if active then ui:color('raised'); love.graphics.rectangle('fill',20,y,348,20,2,2) end
-    if selected then ui:color('cyan'); love.graphics.rectangle('line',20.5,y+.5,347,19,2,2) end
-    ui:text(tostring(index)..'.  '..(entry.chart.songName or entry.chart.packageName or 'Chart'),25,y+4,249,'left',active and 'black' or 'white')
-    ui:text(entry.chart.variant or '',281,y+4,78,'right',active and 'black' or 'muted')
+    if active then ui:color('raised'); love.graphics.rectangle('fill',20,y,560,22,2,2) end
+    if selected then ui:color('cyan'); love.graphics.rectangle('line',20.5,y+.5,559,21,2,2) end
+    local rowTone=active and 'black' or 'white'
+    ui:text(tostring(index),22,y+5,42,'center',rowTone)
+    ui:text(entry.chart.songName or entry.chart.packageName or 'Chart',68,y+5,284,'left',rowTone)
+    ui:text(entry.chart.variant or '',360,y+5,102,'right',active and 'black' or 'muted')
+    ui:text(state,470,y+5,100,'right',active and 'black' or stateTone)
   end
-  if #entries==0 then ui:text('NO CHARTS IN THE SET',28,130,332,'center','muted') end
+  if #entries==0 then ui:text('NO CHARTS IN THE ORDERED SET',28,160,544,'center','muted') end
   local canEdit=isHost() and room.lifecycle~='playing' and room.lifecycle~='countdown'
-  button(self,'setlist_official',395,105,181,25,'SELECT OFFICIAL',function() BBT.openOfficialSelect('host') end,'cyan',canEdit)
-  button(self,'setlist_custom',395,136,181,25,'SELECT CUSTOM',function() BBT.openChartSelect('host') end,'cyan',canEdit)
-  button(self,'setlist_add_official',395,167,86,25,'ADD OFF.',function() BBT.openOfficialSelect('setlist') end,'green',canEdit)
-  button(self,'setlist_add_custom',490,167,86,25,'ADD CUST.',function() BBT.openChartSelect('setlist') end,'green',canEdit)
+  button(self,'setlist_add_official',20,252,276,22,'ADD OFFICIAL',function()
+    BBT.openOfficialSelect('setlist')
+  end,'green',canEdit)
+  button(self,'setlist_add_custom',304,252,276,22,'ADD CUSTOM',function()
+    BBT.openChartSelect('setlist')
+  end,'green',canEdit)
 
-  local selection=self.setlistSelection or 1
-  local resultsLocked=room.lifecycle=='results' or room.lifecycle=='set_complete'
-  local activeSelection=(room.currentSetlistIndex or -1)+1
-  local canMoveSelection=not resultsLocked or selection>activeSelection
-  button(self,'setlist_up',395,198,47,25,'UP',function()
+  selection=self.setlistSelection or 1
+  selectedEntry=entries[selection]
+  local activeSelection=room.currentSetlistIndex and room.currentSetlistIndex+1 or nil
+  local function canMoveTo(target)
+    local targetEntry=entries[target]
+    if not selectedEntry or not targetEntry or selectedEntry.completed or targetEntry.completed then return false end
+    return not activeSelection or (selection>activeSelection and target>activeSelection)
+  end
+  button(self,'setlist_up',20,277,181,22,'MOVE UP',function()
     local target=selection-1
     BBT.command('setlist.move',{from=selection-1,to=target-1})
-    self.setlistSelection=target
-  end,'white',canEdit and #entries>1 and selection>1 and canMoveSelection
-    and (not resultsLocked or selection-1>activeSelection))
-  button(self,'setlist_remove',448,198,75,25,'REMOVE',function()
+  end,'white',canEdit and canMoveTo(selection-1))
+  button(self,'setlist_down',209,277,181,22,'MOVE DOWN',function()
+    local target=selection+1
+    BBT.command('setlist.move',{from=selection-1,to=target-1})
+  end,'white',canEdit and canMoveTo(selection+1))
+  button(self,'setlist_remove',398,277,182,22,'REMOVE',function()
     local entry=entries[selection]
     openConfirm(self,'REMOVE CHART','Remove '..bounded(entry and (entry.chart.songName or entry.chart.packageName) or 'this chart',28)..' from the setlist?','REMOVE',function()
       BBT.command('setlist.remove',{index=selection-1})
-      self.setlistSelection=math.max(1,math.min(selection,#entries-1))
     end)
   end,'red',canEdit and #entries>0 and not (
     room.currentSetlistIndex==selection-1
     and (room.lifecycle=='results' or room.lifecycle=='set_complete')
   ))
-  button(self,'setlist_down',529,198,47,25,'DOWN',function()
-    local target=selection+1
-    BBT.command('setlist.move',{from=selection-1,to=target-1})
-    self.setlistSelection=target
-  end,'white',canEdit and #entries>1 and selection<#entries and canMoveSelection)
-
-  local index=room.currentSetlistIndex
-  local canAdvance=(room.lifecycle=='results') and index~=nil and index+1<#entries
-  button(self,'setlist_next',395,229,181,25,'NEXT CHART',function()
-    runPrimary(self,{id='advance_set'})
-  end,'green',isHost() and canAdvance)
-  ui:wrapped(isHost() and 'Select a row, then reorder or remove it.' or 'The host controls this ordered set.',395,265,181,2,'muted')
 end
 
 local function rendererSlot(id)
@@ -753,47 +801,45 @@ local function drawSettings(self)
   local autoRequests=room and room.autoRequestChartTransfers==true
   local checksEditable=isHost() and room and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready')
   local transferEditable=checksEditable and room.allowChartTransfers~=false
-  local checksStatus=not room and 'NO ACTIVE ROOM'
-    or (not isHost() and ((checksEnabled and 'ON' or 'OFF')..' / HOST CONTROLLED'))
-    or (not checksEditable and ((checksEnabled and 'ON' or 'OFF')..' / LOCKED'))
-    or (checksEnabled and 'ON / COMPETITIVE' or 'OFF / CASUAL')
-  local rows={
-    {'GAMEPLAY HUD',settings.hudEnabled==false and 'OFF' or 'ON'},
-    {'RENDERER DESKTOP MUTE',settings.rendererDesktopMute==false and 'OFF / DRIVER FALLBACK' or 'ON / EXACT PID'},
-    {'CHART TRANSFERS',not room and 'HOST DEFAULT: MANUAL'
-      or (room.allowChartTransfers==false and 'OFF'
-      or (autoRequests and 'ON / AUTO REQUEST' or 'ON / MANUAL REQUEST'))},
-    {'RUN CHECKS',checksStatus},
-    {'GAME BUILD',not room and 'HOST DEFAULT: SAME'
-      or (sameBuildRequired and 'EXACT MATCH' or 'ANY / HOST OVERRIDE')},
-    {'TRANSFER CACHE',tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB')},
-  }
-  for index,row in ipairs(rows) do
-    local y=102+(index-1)*19
-    ui:text(row[1],24,y,145,'left','muted'); ui:text(row[2],169,y,189,'right','white')
-  end
-  button(self,'settings_hud',24,239,54,25,'HUD',function()
+  ui:text('DESKTOP AUDIO',24,104,145,'left','muted')
+  ui:text(
+    settings.rendererDesktopMute==false and 'DRIVER FALLBACK' or 'EXACT-PID MUTE',
+    169,104,189,'right',settings.rendererDesktopMute==false and 'yellow' or 'green'
+  )
+  ui:text('TRANSFER CACHE',24,123,145,'left','muted')
+  ui:text(
+    tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB'),
+    169,123,189,'right','white'
+  )
+  button(self,'settings_hud',24,146,164,25,
+    settings.hudEnabled==false and 'HUD: OFF' or 'HUD: ON',function()
     BBT.command('settings.update',{hudEnabled=not (settings.hudEnabled~=false)})
   end,'cyan')
-  button(self,'settings_renderer_mute',24,270,124,25,
-    settings.rendererDesktopMute==false and 'ENABLE AUTO MUTE' or 'DISABLE AUTO MUTE',function()
-    BBT.command('settings.update',{rendererDesktopMute=settings.rendererDesktopMute==false})
-  end,settings.rendererDesktopMute==false and 'green' or 'yellow')
-  button(self,'settings_validity',82,239,66,25,checksEnabled and 'CHECKS' or 'NO CHECK',function()
+  button(self,'settings_validity',196,146,164,25,
+    checksEnabled and 'RUN CHECKS: ON' or 'RUN CHECKS: OFF',function()
     local run=function() BBT.command('room.validity_checks_set',{enabled=not checksEnabled}) end
     if checksEnabled then
       openConfirm(self,'DISABLE RUN CHECKS','Retries and missing score events will not invalidate plays. Counter bounds and DNF completion rules remain active.','DISABLE',run)
     else run() end
   end,checksEnabled and 'yellow' or 'green',checksEditable)
-  button(self,'settings_build_policy',152,239,66,25,sameBuildRequired and 'SAME' or 'ANY',function()
-    openConfirm(self,'ALLOW MIXED BUILDS','Players on different Beatblock builds may have different chart data or judgement windows. This cannot be reversed without creating a new room.','ALLOW',function()
-      BBT.command('room.game_build_policy_set',{required=false})
-    end)
-  end,sameBuildRequired and 'yellow' or 'muted',checksEditable and sameBuildRequired)
-  button(self,'settings_transfer_policy',222,239,60,25,autoRequests and 'AUTO' or 'MANUAL',function()
+  button(self,'settings_build_policy',24,177,164,25,
+    sameBuildRequired and 'BUILD: SAME' or 'BUILD: ANY',function()
+    local run=function()
+      BBT.command('room.game_build_policy_set',{required=not sameBuildRequired})
+    end
+    if sameBuildRequired then
+      openConfirm(self,'ALLOW MIXED BUILDS','Players on different Beatblock builds may have different chart data or judgement windows. Continue for this room?','ALLOW',run)
+    else run() end
+  end,sameBuildRequired and 'yellow' or 'green',checksEditable)
+  button(self,'settings_transfer_policy',196,177,164,25,
+    autoRequests and 'REQUESTS: AUTO' or 'REQUESTS: MANUAL',function()
     BBT.command('room.chart_transfer_policy_set',{autoRequest=not autoRequests})
   end,autoRequests and 'green' or 'cyan',transferEditable)
-  button(self,'settings_clear_cache',286,239,72,25,'CACHE',function()
+  button(self,'settings_renderer_mute',24,216,336,25,
+    settings.rendererDesktopMute==false and 'DESKTOP MUTE: OFF' or 'DESKTOP MUTE: ON',function()
+    BBT.command('settings.update',{rendererDesktopMute=settings.rendererDesktopMute==false})
+  end,settings.rendererDesktopMute==false and 'green' or 'yellow')
+  button(self,'settings_clear_cache',24,247,336,25,'CLEAR TRANSFER CACHE',function()
     openConfirm(self,'CLEAR TRANSFER CACHE','Remove inactive BBT-managed chart packages? The active chart is protected.','CLEAR',function()
       BBT.command('chart.cache_clear',{})
     end)
@@ -903,6 +949,23 @@ local function drawModal(self)
     button(self,'form_submit',261,actionY,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
     button(self,'form_cancel',366,actionY,98,27,'CANCEL',function() closeModal(self) end,'white')
     if modal.error then ui:text(modal.error,136,isHostForm and 322 or 282,328,'center','red') end
+  elseif modal.kind=='chart_source' then
+    local room=currentRoom()
+    local hasOrderedSet=room and #(room.setlist or {})>0
+    ui:panel(126,84,348,200,modal.title)
+    ui:wrapped(
+      hasOrderedSet
+        and 'Choose a Beatblock source. You will confirm before this single chart replaces the ordered set.'
+        or 'Choose which Beatblock library supplies this one-off room chart.',
+      146,119,308,3,hasOrderedSet and 'yellow' or 'muted'
+    )
+    button(self,'single_chart_official',146,178,143,27,'OFFICIAL CHART',function()
+      chooseSingleChartSource(self,true)
+    end,hasOrderedSet and 'yellow' or 'cyan')
+    button(self,'single_chart_custom',311,178,143,27,'CUSTOM CHART',function()
+      chooseSingleChartSource(self,false)
+    end,hasOrderedSet and 'yellow' or 'cyan')
+    button(self,'modal_cancel',229,225,142,27,'CANCEL',function() closeModal(self) end,'white')
   elseif modal.kind=='details' then
     ui:panel(94,60,412,240,modal.title)
     ui:wrapped(bounded(modal.message,512),114,95,372,10,'red')
@@ -1040,6 +1103,8 @@ return function()
   local st=Gamestate:new('Online')
   function st:openForm(mode,spectator) openForm(self,mode,spectator) end
   function st:submitForm() submitForm(self) end
+  function st:openSingleChartSource() openSingleChartSource(self) end
+  function st:chooseSingleChartSource(official) chooseSingleChartSource(self,official) end
   st:setInit(function(self,options)
     options=options or {}
     applyBeatblockPalette(false)
@@ -1053,7 +1118,7 @@ return function()
     self.workspace=initialWorkspace or 'room'; self.rosterFilter='all'; self.selectedSessionId=nil
     self.focusId=self.workspace=='room' and 'session_primary' or 'nav_'..self.workspace
     self.controls={}; self.broadcastAdvanced=false; self.broadcastSlot='A'; self.broadcastDraft=nil
-    self.setlistSelection=1; self.setlistOffset=0; self.rosterOffset=0
+    self.setlistSelection=1; self.selectedSetlistEntryId=nil; self.setlistOffset=0; self.rosterOffset=0
     self.advanceRequestId=nil; self.advancePreviousHash=nil; self.modal=nil
     -- Online is a complete state, not a menu modal. Suppress the entity
     -- manager retained from Menu and clear those entities before Song Select

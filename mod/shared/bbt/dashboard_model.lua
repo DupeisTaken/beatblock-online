@@ -84,6 +84,26 @@ function Dashboard.selectedParticipant(context, filter, sessionId)
   return visible[1],visible
 end
 
+function Dashboard.selectedSetlistEntry(entries, entryId, fallbackIndex)
+  entries = entries or {}
+  for index,entry in ipairs(entries) do
+    if entry.id == entryId then return entry,index end
+  end
+  if #entries == 0 then return nil,nil end
+  local index = math.max(1,math.min(#entries,fallbackIndex or 1))
+  return entries[index],index
+end
+
+function Dashboard.setlistEntryState(entries, index, currentIndex, lifecycle)
+  local entry = entries and entries[index]
+  if not entry then return nil,'muted' end
+  local active = currentIndex ~= nil and index == currentIndex + 1
+  if entry.completed then return 'DONE','muted' end
+  if active then return 'NOW','cyan' end
+  if currentIndex == nil or index == currentIndex + 2 then return 'NEXT','green' end
+  return 'QUEUED','white'
+end
+
 function Dashboard.score(participant, lifecycle)
   if not participant or participant.role == 'spectator' then return {rank='—',accuracy='—'} end
   local active = lifecycle == 'playing' or lifecycle == 'results' or lifecycle == 'set_complete'
@@ -162,12 +182,12 @@ function Dashboard.primary(context)
       return action('advance_set','NEXT CHART','Lock the next chart, locate it locally, and return players to verification.','green')
     end
     if isHost then
-      return action('select_next_chart','SELECT NEXT CHART','Add the next chart or reorder the completed set.','cyan')
+      return action('select_next_chart','SELECT CHART','Choose one chart, or open Setlist to extend the completed queue.','cyan')
     end
     return action('view_results','VIEW RESULTS','Review standings, accuracy, and DNF outcomes.','cyan')
   end
   if not current.chart then
-    if isHost then return action('select_chart','SELECT CHART','Choose the room chart or build a setlist.','cyan') end
+    if isHost then return action('select_chart','SELECT CHART','Choose one official or custom room chart.','cyan') end
     return action('wait_chart','WAITING FOR CHART','The host is choosing the next chart.','white',false)
   end
   if me and me.role == 'spectator' then
@@ -202,7 +222,7 @@ function Dashboard.primary(context)
 end
 
 function Dashboard.help(context, overlay)
-  if overlay == 'setlist' then return 'SETLIST','Choose the active chart, arrange an ordered set, and advance after results.' end
+  if overlay == 'setlist' then return 'SETLIST','Build the ordered queue. The pinned room action advances it after results.' end
   if overlay == 'broadcast' then return 'BROADCAST','Assign Players to Stream A-D. The featured stream drives delayed video, audio, and text exports.' end
   if overlay == 'history' then return 'MATCH HISTORY','Review saved room results. Raw event journals can be pruned independently from summaries.' end
   if overlay == 'settings' then return 'SETTINGS','Control the gameplay HUD and inspect runtime, network, renderer, and local API status.' end

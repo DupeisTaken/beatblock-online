@@ -411,15 +411,14 @@ impl RoomEngine {
         if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
         }
-        if matches!(
-            self.snapshot.lifecycle,
-            RoomLifecycle::Results | RoomLifecycle::SetComplete
-        ) && self
+        let crosses_completed_entry =
+            self.snapshot.setlist[from].completed || self.snapshot.setlist[to].completed;
+        let crosses_active_boundary = self
             .snapshot
             .current_setlist_index
-            .is_some_and(|active| from <= active || to <= active)
-        {
-            bail!("completed setlist entries cannot be reordered");
+            .is_some_and(|active| from <= active || to <= active);
+        if crosses_completed_entry || crosses_active_boundary {
+            bail!("active or completed setlist entries cannot be reordered");
         }
         let active_id = self
             .snapshot
@@ -1586,6 +1585,7 @@ mod tests {
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
         assert_eq!(room.snapshot.current_setlist_index, Some(1));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "Second");
+        assert!(room.move_setlist(1, 0).is_err());
         assert!(!room.player(&host).unwrap().ready);
         assert!(!room.player(&host).unwrap().verified);
     }
@@ -1593,16 +1593,47 @@ mod tests {
     #[test]
     fn setlist_reordering_preserves_the_active_entry() {
         let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
         room.lock_chart(named_chart("First", 'a'), true).unwrap();
         room.lock_chart(named_chart("Second", 'b'), true).unwrap();
         room.lock_chart(named_chart("Third", 'c'), true).unwrap();
 
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
+        assert!(room.move_setlist(0, 1).is_err());
+        assert!(room.move_setlist(1, 0).is_err());
         room.move_setlist(2, 1).unwrap();
         assert_eq!(room.snapshot.current_setlist_index, Some(0));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+        room.set_verified(&host, true, None).unwrap();
+        room.set_ready(&host, true).unwrap();
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::Ready);
+        assert!(room.move_setlist(0, 1).is_err());
+        assert!(room.move_setlist(1, 0).is_err());
         room.remove_setlist(1).unwrap();
         assert_eq!(room.snapshot.current_setlist_index, Some(0));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "First");
+    }
+
+    #[test]
+    fn single_chart_selection_replaces_a_nonempty_ordered_set() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        room.lock_chart(named_chart("First", 'a'), true).unwrap();
+        room.lock_chart(named_chart("Second", 'b'), true).unwrap();
+        assert_eq!(room.snapshot.setlist.len(), 2);
+        assert_eq!(room.snapshot.current_setlist_index, Some(0));
+
+        room.lock_chart(named_chart("One Off", 'c'), false).unwrap();
+
+        assert!(room.snapshot.setlist.is_empty());
+        assert_eq!(room.snapshot.current_setlist_index, None);
+        assert_eq!(
+            room.snapshot
+                .chart
+                .as_ref()
+                .map(|chart| chart.song_name.as_str()),
+            Some("One Off")
+        );
+        assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
     }
 
     #[test]

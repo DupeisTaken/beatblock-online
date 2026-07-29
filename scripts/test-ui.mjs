@@ -63,8 +63,12 @@ if (audit.split(/\r?\n/).some((line) => /:\d+$/.test(line) && !line.endsWith(':0
   throw new Error(`Layout audit failed:\n${audit}`);
 }
 const captures = (await readdir(output)).filter((file) => file.endsWith('.png')).sort();
-if (captures.length < 26) throw new Error(`Expected 26 UI scenarios, captured ${captures.length}`);
+if (captures.length !== 44)
+  throw new Error(`Expected 44 UI scenarios, captured ${captures.length}`);
 if (update) await mkdir(baselines, { recursive: true });
+const baselineFiles = (await readdir(baselines)).filter((file) => file.endsWith('.png')).sort();
+if (!update && baselineFiles.join('\n') !== captures.join('\n'))
+  throw new Error('UI baseline names do not exactly match the deterministic scenario set');
 
 for (const file of captures) {
   const actual = resolve(output, file);

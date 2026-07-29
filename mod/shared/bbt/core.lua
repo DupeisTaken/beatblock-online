@@ -462,7 +462,7 @@ function BBT.onChartSelected(selector, levelPath, variantName)
   local selectionError
   local preloadReady = chartPreloadReady(BBT.localChart.levelData, BBT.localChart.soundData)
   if officialSelection and preloadReady and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
-    BBT.command((selectionMode == 'host' or selectionMode == 'setlist') and 'room.official_chart_select' or 'room.official_chart_verify', {
+    BBT.command((selectionMode == 'host' or selectionMode == 'single' or selectionMode == 'setlist') and 'room.official_chart_select' or 'room.official_chart_verify', {
       chartId = levelPath,
       songName = BBT.localChart.songName,
       variant = BBT.localChart.variantName,
@@ -470,7 +470,7 @@ function BBT.onChartSelected(selector, levelPath, variantName)
       appendToSetlist = selectionMode == 'setlist',
     })
   elseif packagePath and preloadReady and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
-    BBT.command((selectionMode == 'host' or selectionMode == 'setlist') and 'room.chart_select_request' or 'room.chart_verify_request', {
+    BBT.command((selectionMode == 'host' or selectionMode == 'single' or selectionMode == 'setlist') and 'room.chart_select_request' or 'room.chart_verify_request', {
       path = packagePath,
       levelPath = levelPath,
       songName = BBT.localChart.songName,
