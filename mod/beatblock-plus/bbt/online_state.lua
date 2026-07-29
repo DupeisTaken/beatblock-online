@@ -570,12 +570,11 @@ local function drawSetlist(self)
 
   selection=self.setlistSelection or 1
   selectedEntry=entries[selection]
-  local resultsLocked=room.lifecycle=='results' or room.lifecycle=='set_complete'
-  local activeSelection=(room.currentSetlistIndex or -1)+1
+  local activeSelection=room.currentSetlistIndex and room.currentSetlistIndex+1 or nil
   local function canMoveTo(target)
     local targetEntry=entries[target]
     if not selectedEntry or not targetEntry or selectedEntry.completed or targetEntry.completed then return false end
-    return not resultsLocked or (selection>activeSelection and target>activeSelection)
+    return not activeSelection or (selection>activeSelection and target>activeSelection)
   end
   button(self,'setlist_up',20,277,181,22,'MOVE UP',function()
     local target=selection-1

@@ -487,7 +487,8 @@ function love.load()
   assert(online.rosterOffset>0,'Selecting an off-page invalid result must reveal its roster page')
   assert(online.modal and online.modal.message:find('did not provide',1,true),'Invalid results without a legacy reason must still expose details')
 
-  reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'; online.setlistSelection=2
+  reset(); roomFixture.setlist=setlistOf(4); online.workspace='setlist'
+  online.selectedSetlistEntryId='set-3'; online.setlistSelection=3
   online:drawState()
   local setlistUp=findControl('setlist_up')
   local setlistDown=findControl('setlist_down')
@@ -495,18 +496,32 @@ function love.load()
   assert(setlistUp.x+setlistUp.w<=setlistDown.x
     and setlistDown.x+setlistDown.w<=setlistRemove.x,
     'Setlist row actions must remain in Move Up, Move Down, Remove visual order')
-  assert(online.selectedSetlistEntryId=='set-2' and online.setlistSelection==2,
+  assert(online.selectedSetlistEntryId=='set-3' and online.setlistSelection==3,
     'Setlist selection must resolve the selected entry id')
-  roomFixture.setlist[2],roomFixture.setlist[3]=roomFixture.setlist[3],roomFixture.setlist[2]
+  roomFixture.setlist[3],roomFixture.setlist[4]=roomFixture.setlist[4],roomFixture.setlist[3]
   online:drawState()
-  assert(online.selectedSetlistEntryId=='set-2' and online.setlistSelection==3,
+  assert(online.selectedSetlistEntryId=='set-3' and online.setlistSelection==4,
     'Setlist selection must follow a stable entry id across async snapshot reorder')
   activate('setlist_up')
   assert(BBT.commandLog[1].kind=='setlist.move','Setlist Up must emit a move command')
-  assert(BBT.commandLog[1].payload.from==2 and BBT.commandLog[1].payload.to==1,
+  assert(BBT.commandLog[1].payload.from==3 and BBT.commandLog[1].payload.to==2,
     'Setlist ordering must resolve the current stable id to zero-based runtime indexes')
-  assert(online.selectedSetlistEntryId=='set-2',
+  assert(online.selectedSetlistEntryId=='set-3',
     'A pending move must retain selected identity until the authoritative snapshot arrives')
+
+  local function assertActiveSetlistBoundary(lifecycle)
+    reset(); roomFixture.lifecycle=lifecycle; online.workspace='setlist'
+    online.selectedSetlistEntryId='set-1'; online.setlistSelection=1; online:drawState()
+    assert(not optionalControl('setlist_down'),
+      lifecycle..' must not move the active chart into the future queue')
+    online.selectedSetlistEntryId='set-2'; online.setlistSelection=2; online:drawState()
+    assert(not optionalControl('setlist_up'),
+      lifecycle..' must not move a future chart across the active boundary')
+    assert(optionalControl('setlist_down'),
+      lifecycle..' must still allow reordering entirely within the future queue')
+  end
+  assertActiveSetlistBoundary('chart_locked')
+  assertActiveSetlistBoundary('ready')
 
   reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'; online.setlistSelection=2
   online:drawState(); table.remove(roomFixture.setlist,2); online:drawState()
@@ -570,8 +585,8 @@ function love.load()
   assert(nextChartLabels==1 and not optionalControl('setlist_next'),
     'Results must expose exactly one global Next Chart action')
 
-  reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'
-  online.setlistSelection=2; online:drawState()
+  reset(); roomFixture.setlist=setlistOf(4); online.workspace='setlist'
+  online.selectedSetlistEntryId='set-3'; online.setlistSelection=3; online:drawState()
   local controlOrder={}
   for index,control in ipairs(online.controls) do controlOrder[control.id]=index end
   assert(controlOrder['setlist_entry_set-1']<controlOrder.setlist_add_official
