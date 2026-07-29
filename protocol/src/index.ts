@@ -158,6 +158,21 @@ export const BroadcastSlotPlanSchema = Type.Object(
 );
 export type BroadcastSlotPlan = Static<typeof BroadcastSlotPlanSchema>;
 
+export const AudioIsolationStateSchema = Type.Object(
+  {
+    status: Type.Union([
+      Type.Literal('pending'),
+      Type.Literal('muted'),
+      Type.Literal('disabled'),
+      Type.Literal('warning'),
+    ]),
+    muted: Type.Boolean(),
+    error: Type.Optional(Type.String({ maxLength: 512 })),
+  },
+  { additionalProperties: false },
+);
+export type AudioIsolationState = Static<typeof AudioIsolationStateSchema>;
+
 export const BroadcastPlanSchema = Type.Object(
   {
     revision: Type.Integer({ minimum: 0 }),
@@ -166,6 +181,11 @@ export const BroadcastPlanSchema = Type.Object(
       minItems: MAX_RENDER_STREAMS,
       maxItems: MAX_RENDER_STREAMS,
     }),
+    // Optional fields preserve protocol-v3 compatibility with beta.4 peers.
+    autoplayAudioEnabled: Type.Optional(Type.Boolean()),
+    autoplayClockSlot: Type.Optional(
+      Type.Union([Type.Literal('A'), Type.Literal('B'), Type.Literal('C'), Type.Literal('D')]),
+    ),
   },
   { additionalProperties: false },
 );

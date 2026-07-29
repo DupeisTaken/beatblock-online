@@ -242,6 +242,15 @@ describe('Beatblock score derivation', () => {
     }));
     expect(Value.Check(BroadcastPlanSchema, { revision: 1, updatedAtMs: 10, slots })).toBe(true);
     expect(
+      Value.Check(BroadcastPlanSchema, {
+        revision: 2,
+        updatedAtMs: 11,
+        slots,
+        autoplayAudioEnabled: true,
+        autoplayClockSlot: 'A',
+      }),
+    ).toBe(true);
+    expect(
       Value.Check(BroadcastPlanSchema, { revision: 1, updatedAtMs: 10, slots: slots.slice(1) }),
     ).toBe(false);
   });

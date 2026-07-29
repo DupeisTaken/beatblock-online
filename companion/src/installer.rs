@@ -523,7 +523,7 @@ impl Installer {
         let obs = self.obs_plugin_ready();
         let obs_recorded = self.data_dir.join("obs-install.json").is_file();
         components.push(component(
-            "OBS plugin",
+            "OBS video/audio plugin",
             if obs {
                 ComponentState::Ready
             } else if obs_recorded {
@@ -548,7 +548,7 @@ impl Installer {
             } else if self.obs_directory().is_none() {
                 "OBS Studio was not detected"
             } else {
-                "OBS 32 source is available to install"
+                "OBS 32 video/audio sources are available to install"
             },
         ));
         let firewall = manifest.as_ref().is_some_and(|m| m.firewall_installed);
@@ -720,7 +720,7 @@ impl Installer {
                 OperationKind::Install,
                 "optional_components",
                 2,
-                "Staging and verifying the OBS 32 source",
+                "Staging and verifying the OBS 32 video/audio sources",
             ));
             Some(self.stage_obs_plugin()?)
         } else {
@@ -3441,12 +3441,15 @@ mod tests {
             .split("static void video_render")
             .nth(1)
             .and_then(|source| source.split("static struct obs_source_info").next())
-            .expect("OBS source contains its custom render callback");
+            .expect("OBS source contains its render callback");
         assert!(
-            video_render.contains(r#"gs_effect_get_param_by_name(draw, "image")"#)
-                && video_render.contains("gs_effect_set_texture_srgb(image, ctx->texture)"),
-            "custom-draw sources must bind their texture to the OBS base effect"
+            video_render
+                .contains("obs_source_draw(ctx->texture, 0, 0, ctx->width, ctx->height, false)"),
+            "single-texture sources must use the supported OBS draw path"
         );
+        assert!(source.contains("beatblock_online_audio"));
+        assert!(source.contains("OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB"));
+        assert!(!source.contains("OBS_SOURCE_CUSTOM_DRAW"));
     }
 
     #[test]
@@ -3594,7 +3597,7 @@ mod tests {
         let obs = inspection
             .components
             .iter()
-            .find(|component| component.name == "OBS plugin")
+            .find(|component| component.name == "OBS video/audio plugin")
             .unwrap();
         assert_eq!(obs.state, ComponentState::Ready);
         assert_eq!(obs.label, "Installed");

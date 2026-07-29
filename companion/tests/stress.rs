@@ -266,7 +266,7 @@ fn four_stream_plan_targets_multiple_commentators_without_processes() {
             slot
         })
         .collect::<Vec<_>>();
-    let plan = BroadcastPlan::from_slots(7, 10, &slots);
+    let plan = BroadcastPlan::from_slots(7, 10, &slots, false);
     assert_eq!(plan.slots.len(), 4);
     assert!(plan
         .slots

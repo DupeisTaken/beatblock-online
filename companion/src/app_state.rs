@@ -1007,6 +1007,7 @@ impl AppState {
         let (network_events_tx, network_events_rx) = mpsc::channel(NETWORK_EVENT_CAPACITY);
         let network = Arc::new(NetworkHub::new(network_events_tx));
         let renderer = Arc::new(RendererManager::new(data_dir.clone())?);
+        renderer.set_desktop_mute_enabled(config.renderer_desktop_mute);
         let exports = ExportPublisher::new(data_dir.join("exports"))?;
         let journals = JournalPublisher::new(data_dir.join("journals"))?;
         Ok((
@@ -2872,6 +2873,17 @@ impl AppState {
                 return Err(error);
             }
         }
+        if self.renderer.autoplay_enabled() {
+            if !self.renderer.has_active_featured_slot() {
+                self.renderer.disable_autoplay_with_error(
+                    "Autoplay Mix was disabled because no featured renderer is active",
+                );
+            } else if let Err(error) = self.launch_autoplay_renderer().await {
+                self.renderer
+                    .disable_autoplay_with_error(format!("Autoplay Mix launch failed: {error}"));
+                return Err(error);
+            }
+        }
         self.exports.publish_room(
             self.room.read().await.snapshot.clone(),
             self.renderer.slots(),
@@ -2886,6 +2898,11 @@ impl AppState {
             anyhow::bail!("unknown renderer slot");
         }
         self.renderer.stop_slot(slot);
+        if self.renderer.autoplay_enabled() && !self.renderer.has_active_featured_slot() {
+            self.renderer.disable_autoplay_with_error(
+                "Autoplay Mix was disabled because the featured renderer stopped",
+            );
+        }
         self.refresh_broadcast_plan().await?;
         self.publish_renderer_snapshot();
         Ok(())
@@ -2893,6 +2910,11 @@ impl AppState {
 
     async fn stop_participant_renderer(&self, participant_id: &str) -> Result<()> {
         self.renderer.stop_participant(participant_id);
+        if self.renderer.autoplay_enabled() && !self.renderer.has_active_featured_slot() {
+            self.renderer.disable_autoplay_with_error(
+                "Autoplay Mix was disabled because the featured player left the renderer plan",
+            );
+        }
         // Renderer slots are also the authoritative commentator plan. Publish
         // the cleared assignment immediately so remote OBS mirrors do not keep
         // rendering a participant who left the racing roster.
@@ -2940,7 +2962,12 @@ impl AppState {
 
     async fn refresh_broadcast_plan(&self) -> Result<()> {
         let revision = self.broadcast_revision.fetch_add(1, Ordering::AcqRel) + 1;
-        let plan = BroadcastPlan::from_slots(revision, unix_ms(), &self.renderer.slots());
+        let plan = BroadcastPlan::from_slots(
+            revision,
+            unix_ms(),
+            &self.renderer.slots(),
+            self.renderer.autoplay_enabled(),
+        );
         *self.broadcast_plan.write().await = plan.clone();
         let recipients = self
             .room
@@ -3112,6 +3139,14 @@ impl AppState {
                 Err(error) => self.renderer.set_error(&slot.id, error.to_string()),
             }
         }
+        if plan.autoplay_audio_enabled == Some(true) {
+            if let Err(error) = self.launch_autoplay_renderer().await {
+                self.renderer.disable_autoplay_with_error(format!(
+                    "Commentator Autoplay Mix could not start: {error}"
+                ));
+                tracing::warn!(%error, "commentator autoplay renderer failed");
+            }
+        }
         self.publish_renderer_snapshot();
         self.publish_mirror_status().await;
     }
@@ -3125,7 +3160,13 @@ impl AppState {
             .iter()
             .filter_map(|slot| slot.last_error.as_deref())
             .next()
-            .map(|value| value.chars().take(160).collect::<String>());
+            .map(|value| value.chars().take(160).collect::<String>())
+            .or_else(|| {
+                self.renderer
+                    .autoplay_state()
+                    .error
+                    .map(|value| value.chars().take(160).collect::<String>())
+            });
         let status = CommentatorMirrorStatus {
             enabled: self.local_mirror_enabled.load(Ordering::Acquire),
             healthy_slots: slots
@@ -3171,10 +3212,69 @@ impl AppState {
             .launch_slot(slot, &game, &profile, &chart_path, &chart.variant)
     }
 
+    async fn launch_autoplay_renderer(&self) -> Result<()> {
+        let config = self.config.read().await.clone();
+        let game_directory = config
+            .game_directory
+            .context("Beatblock installation path is unavailable")?;
+        let game = PathBuf::from(game_directory).join("Beatblock.exe");
+        if !game.is_file() {
+            anyhow::bail!(
+                "Beatblock autoplay renderer executable was not found at {}",
+                game.display()
+            );
+        }
+        let chart = self
+            .room
+            .read()
+            .await
+            .snapshot
+            .chart
+            .clone()
+            .context("Autoplay Mix is waiting for the host to lock a chart")?;
+        let profile = crate::renderer::prepare_renderer_profile(&self.data_dir)?;
+        let chart_path = self
+            .selected_chart_path
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| chart.package_name.clone());
+        self.renderer
+            .launch_autoplay(&game, &profile, &chart_path, &chart.variant)
+    }
+
+    pub async fn set_autoplay_audio(&self, enabled: bool) -> Result<()> {
+        self.require_host()?;
+        if matches!(
+            self.room.read().await.snapshot.lifecycle,
+            crate::model::RoomLifecycle::Countdown | crate::model::RoomLifecycle::Playing
+        ) {
+            anyhow::bail!("configure Autoplay Mix before the synchronized start");
+        }
+        if enabled && !self.renderer.has_active_featured_slot() {
+            anyhow::bail!("Autoplay Mix requires an active featured renderer");
+        }
+        if enabled {
+            self.launch_autoplay_renderer().await?;
+        } else {
+            self.renderer.disable_autoplay();
+        }
+        self.refresh_broadcast_plan().await?;
+        self.publish_renderer_snapshot();
+        self.publish_runtime_snapshot().await
+    }
+
     async fn relaunch_active_renderers(&self) {
         for slot in self.renderer.active_slots() {
             if let Err(error) = self.launch_renderer_slot(&slot.id).await {
                 self.renderer.set_error(&slot.id, error.to_string());
+            }
+        }
+        if self.renderer.autoplay_enabled() {
+            if let Err(error) = self.launch_autoplay_renderer().await {
+                self.renderer
+                    .disable_autoplay_with_error(format!("Autoplay Mix relaunch failed: {error}"));
+                tracing::warn!(%error, "relaunch autoplay renderer failed");
             }
         }
     }
@@ -3456,6 +3556,7 @@ impl AppState {
                 "sessionId":self.local_session_id.read().await.clone(),
                 "room":self.room.read().await.snapshot.clone(),
                 "renderers":self.renderer.slots(),
+                "autoplayAudio":self.renderer.autoplay_state(),
                 "broadcastPlan":self.broadcast_plan.read().await.clone(),
                 "commentatorStatuses":self.commentator_statuses.read().await.clone(),
                 "mirrorEnabled":self.local_mirror_enabled.load(Ordering::Acquire),
@@ -3478,6 +3579,7 @@ impl AppState {
                     "detectedBeatblockBuildSource":client.get("gameBuildSource").cloned().unwrap_or(Value::Null),
                     "peerCount":self.network.peer_count().await,
                     "rendererBudgetWarning":self.renderer.budget_warning(),
+                    "rendererDesktopMute":self.renderer.desktop_mute_enabled(),
                     "firewallInstalled":self.config.read().await.firewall_installed,
                     "firewallPublic":self.config.read().await.firewall_public
                 },
@@ -3492,6 +3594,7 @@ impl AppState {
             0,
             json!({
                 "renderers": self.renderer.slots(),
+                "autoplayAudio": self.renderer.autoplay_state(),
                 "budgetWarning": self.renderer.budget_warning(),
             }),
         ));

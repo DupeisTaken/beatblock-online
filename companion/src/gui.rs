@@ -176,10 +176,10 @@ slint::slint! {
                                 CheckBox {
                                     enabled: !root.busy && root.obs-available && !root.obs-running;
                                     text: !root.obs-available
-                                        ? "OBS source unavailable in this build"
+                                        ? "OBS video/audio sources unavailable in this build"
                                         : root.obs-running
-                                            ? "Close OBS to update its source"
-                                            : "Install/update OBS source";
+                                            ? "Close OBS to update its sources"
+                                            : "Install/update OBS video + audio sources";
                                     checked <=> root.install-obs;
                                 }
                                 HorizontalLayout { spacing: 7px;
@@ -487,8 +487,13 @@ fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
     }
     window.set_obs_detail(
         match (payload_available, resolved, selected) {
-            (false, _, _) => "The OBS source is not included in this installer build.".into(),
-            (true, Some(root), _) => format!("OBS 32 x64 detected at {}", root.display()),
+            (false, _, _) => {
+                "The OBS video/audio sources are not included in this installer build.".into()
+            }
+            (true, Some(root), _) => format!(
+                "OBS 32 x64 detected at {}. Installs separate Player Stream video and Audio mixer sources.",
+                root.display()
+            ),
             (true, None, Some(_)) => {
                 "The selected folder does not contain bin\\64bit\\obs64.exe.".into()
             }
@@ -587,7 +592,7 @@ fn begin_install(
                 "Beatblock Online is ready in {}.{}",
                 path.display(),
                 if install_obs {
-                    " The OBS source was installed and will load after OBS restarts."
+                    " The OBS video and audio sources were installed and will load after OBS restarts."
                 } else {
                     ""
                 }

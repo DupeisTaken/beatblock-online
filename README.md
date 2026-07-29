@@ -5,8 +5,10 @@ Beatblock Online is a Windows direct-IP competition mod. One player hosts a pass
 The current prerelease candidate is [`v0.3.0-beta.4`](docs/releases/v0.3.0-beta.4.md).
 It makes the installer forward-compatible with new Beatblock builds while
 keeping exact same-build rooms, improves consent-aware chart transfers and
-setlist readability, exposes release compatibility in-product, and captures
-audio from each isolated renderer in its matching OBS Player Stream.
+setlist readability, and exposes release compatibility in-product. The
+unreleased broadcast update separates OBS video from per-renderer audio,
+automatically silences renderer desktop sessions by exact PID, and adds an
+optional native song-plus-perfect-hits autoplay mix.
 
 ## Player quick start
 
@@ -106,6 +108,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
 - [v0.3.0-beta.4 release notes and issue changelog](docs/releases/v0.3.0-beta.4.md)
+- [Unreleased OBS/audio issue #20 and #21 changelog](docs/releases/unreleased-issues-20-21.md)
 - [v0.3.0-beta.3 release notes](docs/releases/v0.3.0-beta.3.md)
 - [v0.3.0-beta.2 release notes](docs/releases/v0.3.0-beta.2.md)
 
@@ -115,7 +118,7 @@ The latest automated gate is [full-capability-latest.md](reports/trial-runs/full
 
 - `mod`: shared Lua telemetry/gameplay core and mutually exclusive standalone Lovely and BeatblockPlus adapters.
 - `companion`: feature-gated Rust installer and hidden runtime sharing installer, networking, SQLite, renderer, API, and export libraries.
-- `obs-plugin`: native Stream A-D video source and shared-memory frame integration.
+- `obs-plugin`: native Stream A-D video plus independent A-D/Autoplay audio sources.
 - `protocol`: protocol v3 JSON Schema and TypeScript conformance implementation; archived v2 remains for compatibility diagnostics.
 - `reports/trial-runs`: machine-readable and Markdown acceptance evidence.
 

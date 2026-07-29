@@ -8,37 +8,87 @@ The host's revisioned configuration is labeled **Host Plan**. A host-granted Com
 
 Open the BBT installer, enable **Install OBS 32 source (restart OBS)**, and choose Install/Update. Close OBS before installation, then restart it. The installer discovers the standard `%ProgramFiles%\obs-studio` locations automatically. For a portable or custom installation, type its OBS root or use **Browse...**; the selected folder must contain `bin\64bit\obs64.exe`. Selections of the root, `bin`, `bin\64bit`, or the executable itself are normalized to the OBS root, and the explicit path is preserved when Windows requests administrator access. After a successful installation, that custom location is rediscovered from the verified install record.
 
-In OBS, press **+** in Sources, add **Beatblock Online Player Stream**, and choose Stream A-D. The installed DLL and locale live under `%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records and verifies their hashes. The reviewed alpha artifact has been physically loaded by OBS Studio 32.0.4 x64.
+In OBS, press **+** in Sources and add **Beatblock Online Player Stream** for
+each Stream A-D video feed. Then add **Beatblock Online Audio** for each
+renderer audio feed you want in the mixer and choose Stream A-D or Autoplay.
+Audio fine sync is independently adjustable from 0-2000 ms and defaults to
+0 ms. The installed DLL and locale live under
+`%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records
+and verifies their hashes. The reviewed alpha artifact has been physically
+loaded by OBS Studio 32.0.4 x64.
 
-The player source keeps a read-only mapping of the corresponding triple-buffered RGBA frame ring. A versioned aligned sequence commits each completed frame, and OBS verifies that sequence after copying so a concurrent publish cannot produce a torn frame. The consumer must use aligned read-only snapshots for this check: Windows interlocked compare/exchange operations are writes and will crash against a `FILE_MAP_READ` view. Assigning a participant to that stable slot happens inside Beatblock under **Broadcast**. A source can therefore appear in OBS while showing no frame if Online is closed, the slot is unassigned, the local chart is unavailable, or its renderer has not published a frame. Check **Host Plan** and **This PC** status before repairing the plugin.
+> **One-time upgrade:** existing Player Stream scene items become video-only.
+> Their obsolete `capture_audio` setting is ignored. Add separate Beatblock
+> Online Audio sources to the scene and route those sources in the OBS mixer.
+
+The player source keeps a read-only mapping of the corresponding triple-buffered
+RGBA frame ring. Header version 3 declares the payload as RGBA8 display/sRGB
+bytes; readers reject an unknown encoding instead of displaying incorrect
+colors. OBS uploads that single texture through its supported sRGB source draw
+path, preserving the display-encoded bytes emitted by LÖVE. A versioned aligned
+sequence commits each completed frame, and OBS verifies that sequence after
+copying so a concurrent publish cannot produce a torn frame. The consumer must
+use aligned read-only snapshots for this check: Windows interlocked
+compare/exchange operations are writes and will crash against a `FILE_MAP_READ`
+view. Assigning a participant to that stable slot happens inside Beatblock under
+**Broadcast**. A source can therefore appear in OBS while showing no frame if
+Online is closed, the slot is unassigned, the local chart is unavailable, or
+its renderer has not published a frame. Check **Host Plan** and **This PC**
+status before repairing the plugin.
 
 After 1.5 seconds without a committed frame, the source releases its retained
 CPU buffer and GPU texture. It also closes and retries the file mapping at a
 bounded cadence, allowing a stopped or atomically replaced renderer ring to
 recover without recreating the OBS source.
 
-The source automatically creates a private OBS Application Audio Capture child
-and routes its samples through the Player Stream. Stream A-D resolves only the
-matching `Beatblock Online Renderer A-D` process, so the mixer receives the
-song and hitsounds from the same reconstructed player view instead of the host
-game. Renderer audio already follows the delayed renderer clock, so **Audio
-fine sync** defaults to 0 ms; use it only to compensate for a measured
-capture-device difference.
+Each independent audio source owns a private OBS Application Audio Capture
+child and reroutes that child's samples into its own mixer channel. Stream A-D
+uses the exact stable renderer title, and Autoplay uses
+`Beatblock Online Autoplay`; none can drift to the host game or a sibling.
+Renderer audio already follows the delayed renderer clock, so fine sync should
+normally remain 0 ms. On an OBS build without Application Audio Capture, only
+the affected audio source shows a warning; video continues independently.
 
-Renderer windows remain minimized rather than fully hidden. OBS's Application
+Renderer windows remain minimized rather than fully hidden. OBS Application
 Audio Capture includes minimized windows in process discovery but rejects
-windows whose Windows visibility flag is cleared. The unique title plus title
-priority prevents four identical `Beatblock.exe`/`SDL_app` processes from being
-confused with one another or with the host game, and OBS reconnects to that
-title after the runtime relaunches a slot. On an OBS build without Application
-Audio Capture support, the source logs a warning and continues video-only
-instead of failing to load.
+windows whose Windows visibility flag is cleared. OBS reconnects to the stable
+title after the runtime relaunches a renderer.
 
-Windows process-loopback capture copies a process's output; it does not silence
-that process on the desktop endpoint. OBS uses the default pre-volume loopback,
-so the renderer session can be muted in Windows Volume Mixer without muting the
-capture, or routed to a non-monitored/virtual output. Muting audio inside
-Beatblock gives OBS silence.
+The runtime automatically mutes each hidden renderer's Windows audio sessions
+across active render endpoints after launch while OBS captures its process
+loopback. Matching is by the exact child PID only—never executable name—so the
+host game and unrelated Beatblock processes are not candidates. The worker
+keeps exact-PID discovery active at a bounded rate for the renderer's lifetime,
+including when its audio session appears more than five seconds after launch.
+It retains every session's original mute state and restores it before teardown
+or after process exit. If Core Audio enumeration or muting fails, the runtime
+reports a warning and leaves playback unchanged while discovery continues.
+
+Some audio drivers expose process loopback after session volume instead. If the
+OBS meter becomes silent when automatic isolation is enabled, open Online
+**Settings** and disable **Renderer desktop mute**, then route the renderers to
+a non-monitored or virtual endpoint manually.
+
+## Optional Autoplay mix
+
+The host can enable **Autoplay Mix** in Broadcast before countdown. It launches
+one additional audio-only Beatblock process, follows the currently featured
+renderer's delayed clock, and publishes no video frame ring. Beatblock's native
+note logic is used to produce the chart song plus one normal perfect hitsound
+for each positive scoring opportunity, including taps, holds, bounce, side, and
+extra-tap paths. Mines and mine-holds are deliberately avoided; no miss or
+barely sound is synthesized.
+
+Autoplay requires an active featured renderer. Enablement and its featured clock
+source are locked during countdown/gameplay. Host-granted Commentator mirrors
+receive the optional plan field and may reproduce the source only after enabling
+This PC mirroring.
+
+Autoplay costs one additional full Beatblock audio/simulation process even
+though it allocates no export canvases or video ring. Keep only the channels
+needed by the production mix unmuted in OBS: each A-D source contains that
+renderer's song, and Autoplay also contains the song. Unmuting more than one
+combined channel duplicates the song and can produce comb filtering.
 
 Default renderer settings are Full mode at 1280x720, 60 fps, with a 500 ms buffer. Delay is clamped to 250-1500 ms. Full mode publishes Beatblock's complete native composition: chart backgrounds and video, decorative entities, blocks, hit feedback, chart and Online HUDs, palette/accessibility conversion, and screen-space effects. Optional Clean mode uses the native base gameplay canvas without the final on-top composition, but still applies Beatblock's palette/accessibility shader; it no longer exposes red palette-index artwork or removes chart-authored scenery. Both modes preserve the source aspect ratio, and capture continues through Beatblock's native Results state. Disposable renderer profiles always select Beatblock's built-in default (`none`) Cranky costume instead of inheriting a costume from the host save.
 
@@ -127,7 +177,7 @@ to clear stale video.
 
 ## Broadcast-host performance budget
 
-For four default 1280x720 60 fps renderer slots, use a modern 8-core/16-thread CPU, 32 GiB system memory, a dedicated GPU with 8 GiB VRAM, and an SSD with at least 2 GiB free. This is a recommended host configuration, not a claim that BBT alone consumes all of those resources: every slot is a separate Beatblock process, while OBS, the encoder, the host game, chart assets, other sources, and the OS share the same machine.
+For four default 1280x720 60 fps renderer slots, use a modern 8-core/16-thread CPU, 32 GiB system memory, a dedicated GPU with 8 GiB VRAM, and an SSD with at least 2 GiB free. This is a recommended host configuration, not a claim that BBT alone consumes all of those resources: every slot is a separate Beatblock process, optional Autoplay adds a fifth audio/simulation process, while OBS, the encoder, the host game, chart assets, other sources, and the OS share the same machine.
 
 The code-visible minimums explain the headroom:
 
@@ -146,6 +196,23 @@ Before assigning slots, keep the host game and OBS below 80% CPU and GPU utiliza
 4. If the source is present but remains black while the runtime reports published frames, close OBS and use **Repair Required Components**. This replaces an older plugin DLL before OBS can load it again.
 5. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
 6. For portable/custom OBS, verify the editable OBS field resolves to a folder containing `bin\64bit\obs64.exe`. An invalid explicit choice is reported and never falls back silently to another OBS copy.
+
+## Diagnose missing, duplicated, or audible renderer audio
+
+1. Confirm the scene has a separate **Beatblock Online Audio** source; an
+   upgraded Player Stream is intentionally video-only.
+2. Open the audio source properties and verify the selected A-D/Autoplay target
+   and read-only connection status. Restart the renderer if it has not launched.
+3. If the source warns that Application Audio Capture is unavailable, update to
+   the supported OBS 32.x build. This does not affect Player Stream video.
+4. If the desktop renderer is audible, check Online Settings for
+   **Renderer desktop mute** and inspect the per-renderer isolation status. A
+   warning means BBT left audio unchanged rather than risking the host process.
+5. If the OBS meter is silent only while desktop mute is on, disable the setting
+   and use a non-monitored/virtual endpoint; the audio driver is probably
+   applying session volume before loopback.
+6. If the song sounds doubled or phased, mute every combined A-D/Autoplay
+   channel except the one intended for the program mix.
 
 ## Text capture
 

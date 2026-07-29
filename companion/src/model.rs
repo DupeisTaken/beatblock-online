@@ -123,6 +123,8 @@ pub struct ManagerConfig {
     pub firewall_public: bool,
     #[serde(default = "default_true")]
     pub hud_enabled: bool,
+    #[serde(default = "default_true")]
+    pub renderer_desktop_mute: bool,
 }
 
 impl Default for ManagerConfig {
@@ -141,6 +143,7 @@ impl Default for ManagerConfig {
             firewall_installed: false,
             firewall_public: false,
             hud_enabled: true,
+            renderer_desktop_mute: true,
         }
     }
 }
@@ -357,6 +360,30 @@ pub struct RendererSlot {
     pub last_frame_at_ms: Option<u64>,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_isolation: Option<AudioIsolationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioIsolationState {
+    pub status: String,
+    pub muted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoplayAudioState {
+    pub enabled: bool,
+    pub healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub featured_slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_isolation: Option<AudioIsolationState>,
 }
 
 /// The authoritative, health-free renderer configuration distributed by the
@@ -384,6 +411,10 @@ pub struct BroadcastPlan {
     pub revision: u64,
     pub updated_at_ms: u64,
     pub slots: Vec<BroadcastSlotPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autoplay_audio_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autoplay_clock_slot: Option<String>,
 }
 
 impl BroadcastPlan {
@@ -406,10 +437,21 @@ impl BroadcastPlan {
                     active: false,
                 })
                 .collect(),
+            autoplay_audio_enabled: None,
+            autoplay_clock_slot: None,
         }
     }
 
-    pub fn from_slots(revision: u64, updated_at_ms: u64, slots: &[RendererSlot]) -> Self {
+    pub fn from_slots(
+        revision: u64,
+        updated_at_ms: u64,
+        slots: &[RendererSlot],
+        autoplay_audio_enabled: bool,
+    ) -> Self {
+        let autoplay_clock_slot = autoplay_audio_enabled
+            .then(|| slots.iter().find(|slot| slot.active && slot.featured))
+            .flatten()
+            .map(|slot| slot.id.clone());
         Self {
             revision,
             updated_at_ms,
@@ -429,6 +471,8 @@ impl BroadcastPlan {
                     active: slot.active,
                 })
                 .collect(),
+            autoplay_audio_enabled: autoplay_audio_enabled.then_some(true),
+            autoplay_clock_slot,
         }
     }
 }
@@ -471,6 +515,7 @@ impl RendererSlot {
             healthy: false,
             last_frame_at_ms: None,
             last_error: None,
+            audio_isolation: None,
         }
     }
 }

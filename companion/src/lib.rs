@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod audio_sessions;
 pub mod chart_hash;
 pub mod compatibility;
 pub mod credentials;
