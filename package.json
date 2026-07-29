@@ -1,11 +1,11 @@
 {
   "name": "beatblock-online",
   "private": true,
-  "version": "0.3.0-beta.4",
+  "version": "0.3.0-beta.5",
   "beatblockCompatibility": {
     "testedVersion": "1.7.1a",
     "testedBuildId": "d40b7083",
-    "newerBuilds": "assumed-compatible"
+    "newerBuilds": "accepted-unverified"
   },
   "packageManager": "pnpm@10.12.1",
   "scripts": {

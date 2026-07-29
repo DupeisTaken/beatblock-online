@@ -1,67 +1,67 @@
 {
   "schemaVersion": 3,
-  "generatedAt": "2026-07-17T19:19:34.934Z",
+  "generatedAt": "2026-07-29T12:23:21.277Z",
   "passed": true,
   "environment": {
     "platform": "win32",
     "architecture": "x64",
-    "node": "v24.16.0"
+    "node": "v24.13.0"
   },
   "runs": [
     {
       "name": "Protocol v3 typecheck",
       "passed": true,
-      "durationMs": 503
+      "durationMs": 2976
     },
     {
       "name": "Protocol v3 schema generation",
       "passed": true,
-      "durationMs": 140
+      "durationMs": 1637
     },
     {
       "name": "Protocol v3 tests",
       "passed": true,
-      "durationMs": 825
+      "durationMs": 22342
     },
     {
       "name": "Build lean runtime payload",
       "passed": true,
-      "durationMs": 43183
+      "durationMs": 112479
     },
     {
       "name": "Rust runtime, installer, Lua, and stress tests",
       "passed": true,
-      "durationMs": 73258
+      "durationMs": 715316
     },
     {
       "name": "Package both in-game adapters",
       "passed": true,
-      "durationMs": 1248
+      "durationMs": 16742
     },
     {
       "name": "In-game mod conformance",
       "passed": true,
-      "durationMs": 60
+      "durationMs": 765
     },
     {
       "name": "Deterministic 600x360 screenshot gate",
       "passed": true,
-      "durationMs": 16839
+      "durationMs": 87745
     },
     {
       "name": "Hidden runtime lifecycle and resource gate",
       "passed": true,
-      "durationMs": 7995
+      "durationMs": 11322
     },
     {
       "name": "16-player / 32-spectator direct-host simulation",
       "passed": true,
-      "durationMs": 14346
+      "durationMs": 72480
     },
     {
       "name": "Runtime I/O benchmark report",
       "passed": true,
-      "durationMs": 46
+      "durationMs": 156
     }
   ],
   "hostRoom": {
@@ -79,11 +79,11 @@
       "spectators32": true
     },
     "metrics": {
-      "elapsedMs": 7.1975,
+      "elapsedMs": 29.7413,
       "renderTelemetryKiBPerSecondPerPlayer": 1.875,
-      "scheduledStartUnixMs": 1784315976873,
-      "scoreEventsPerSecond": 539894.5518453427,
-      "scoreIngestMs": 7.1125
+      "scheduledStartUnixMs": 1785327803069,
+      "scoreEventsPerSecond": 130664.68854846503,
+      "scoreIngestMs": 29.3882
     },
     "passed": true,
     "scenario": "direct-host-16-player-32-spectator",
@@ -210,19 +210,19 @@
     }
   },
   "runtime": {
-    "generatedAtMs": 1784315933343,
+    "generatedAtMs": 1785327610947,
     "metrics": {
-      "chartCacheSpeedup": 27.614244636142445,
-      "chartCachedMs": 0.4521,
-      "chartColdMs": 12.484399999999999,
+      "chartCacheSpeedup": 7.06402742061569,
+      "chartCachedMs": 56.541399999999996,
+      "chartColdMs": 399.40999999999997,
       "exportBytesWritten": 8116,
-      "exportEnqueueP95Ms": 0.011,
+      "exportEnqueueP95Ms": 0.0843,
       "exportFilesWritten": 56,
-      "exportMeanMs": 0.7900280000000001,
-      "exportP95Ms": 1.1193,
-      "journalEventsPerSecond": 874110.5924721597,
+      "exportMeanMs": 6.958444000000001,
+      "exportP95Ms": 9.4193,
+      "journalEventsPerSecond": 233912.65701387104,
       "journalRecoveredEvents": 5000,
-      "sqliteJournalEventsPerSecond": 348988.9789280454,
+      "sqliteJournalEventsPerSecond": 111576.01115760113,
       "sqliteJournalRecoveredEvents": 5000
     },
     "passed": true,
@@ -241,17 +241,27 @@
     }
   },
   "lifecycle": {
-    "schemaVersion": 2,
-    "generatedAt": "2026-07-17T19:19:15.596Z",
+    "schemaVersion": 3,
+    "generatedAt": "2026-07-29T12:22:03.974Z",
     "passed": true,
     "readiness": "runtime.ready",
     "protocolVersion": 3,
-    "workingSetBytes": 31727616,
+    "workingSetBytes": 27369472,
     "idleWorkingSetTargetBytes": 31457280,
-    "idleWorkingSetTargetMet": false,
+    "idleWorkingSetTargetMet": true,
     "duplicateMutexRejected": true,
     "explicitSessionShutdown": true,
     "parentExitCleanup": true,
-    "visibleConsoleRequested": false
+    "visibleConsoleRequested": false,
+    "invariants": {
+      "readinessReceived": true,
+      "protocolCompatible": true,
+      "workingSetMeasured": true,
+      "idleWorkingSetTargetMet": true,
+      "duplicateMutexRejected": true,
+      "explicitSessionShutdown": true,
+      "parentExitCleanup": true,
+      "noVisibleConsoleRequested": true
+    }
   }
 }

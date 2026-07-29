@@ -89,6 +89,7 @@ test('checked-in release documentation satisfies the publication contract', asyn
     'v0.3.0-beta.2',
     'v0.3.0-beta.3',
     'v0.3.0-beta.4',
+    'v0.3.0-beta.5',
   ]);
 });
 

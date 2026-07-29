@@ -1,10 +1,10 @@
 {
   "schemaVersion": 3,
-  "generatedAt": "2026-07-28T18:55:51.010Z",
+  "generatedAt": "2026-07-29T12:22:03.974Z",
   "passed": true,
   "readiness": "runtime.ready",
   "protocolVersion": 3,
-  "workingSetBytes": 27873280,
+  "workingSetBytes": 27369472,
   "idleWorkingSetTargetBytes": 31457280,
   "idleWorkingSetTargetMet": true,
   "duplicateMutexRejected": true,
