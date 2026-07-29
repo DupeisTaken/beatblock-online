@@ -162,6 +162,7 @@ pub fn check_for_updates() -> Result<UpdateCheck> {
 }
 
 pub fn prepare_update(data_dir: &Path) -> Result<PreparedUpdate> {
+    ensure_self_update_allowed()?;
     let check = check_for_updates()?;
     let release = check
         .installable_update()
@@ -170,6 +171,7 @@ pub fn prepare_update(data_dir: &Path) -> Result<PreparedUpdate> {
 }
 
 pub fn launch_finalizer(prepared: &PreparedUpdate, data_dir: &Path) -> Result<()> {
+    ensure_self_update_allowed()?;
     let receipt = read_and_validate_receipt(data_dir, &prepared.receipt_path, false)?;
     validate_staged_binary(
         &receipt.staged_path,
@@ -199,6 +201,7 @@ pub fn launch_finalizer(prepared: &PreparedUpdate, data_dir: &Path) -> Result<()
 }
 
 pub fn finalize_update(data_dir: &Path, receipt_path: &Path) -> Result<PathBuf> {
+    ensure_self_update_allowed()?;
     let receipt = read_and_validate_receipt(data_dir, receipt_path, true)?;
     wait_for_process_exit(receipt.parent_pid)?;
     // Revalidate every parent after waiting for the old process. The receipt
@@ -234,6 +237,53 @@ pub fn finalize_update(data_dir: &Path, receipt_path: &Path) -> Result<PathBuf> 
         ready
     })?;
     Ok(receipt.managed_destination)
+}
+
+pub fn ensure_self_update_allowed() -> Result<()> {
+    reject_elevated_self_update(process_is_elevated()?)
+}
+
+fn reject_elevated_self_update(elevated: bool) -> Result<()> {
+    if elevated {
+        bail!(
+            "Installer self-update is disabled while running as administrator. Close this window, reopen BeatblockOnlineInstaller.exe normally, and choose Update Installer again"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn process_is_elevated() -> Result<bool> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        bail!("could not inspect installer elevation state");
+    }
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0u32;
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    if result == 0 || returned != std::mem::size_of::<TOKEN_ELEVATION>() as u32 {
+        bail!("could not read installer elevation state");
+    }
+    Ok(elevation.TokenIsElevated != 0)
+}
+
+#[cfg(not(windows))]
+fn process_is_elevated() -> Result<bool> {
+    Ok(false)
 }
 
 pub fn acknowledge_update_ready(data_dir: &Path, update_id: Uuid, ready_token: &str) -> Result<()> {
@@ -932,6 +982,14 @@ fn wait_for_process_exit(_pid: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevated_self_update_is_rejected_with_recovery_instructions() {
+        assert!(reject_elevated_self_update(false).is_ok());
+        let error = reject_elevated_self_update(true).unwrap_err().to_string();
+        assert!(error.contains("running as administrator"));
+        assert!(error.contains("reopen BeatblockOnlineInstaller.exe normally"));
+    }
 
     fn asset(name: &str, size: u64, digest: Option<&str>) -> String {
         format!(

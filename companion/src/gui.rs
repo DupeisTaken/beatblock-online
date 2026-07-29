@@ -482,7 +482,7 @@ fn terminal(
 }
 
 fn refresh_selected(window: &InstallerWindow, installer: &Installer) {
-    window.set_game_running(installer.beatblock_running());
+    window.set_game_running(installer.beatblock_running().unwrap_or(true));
     let path = PathBuf::from(window.get_game_path().as_str());
     if path.as_os_str().is_empty() {
         return;
@@ -508,7 +508,7 @@ fn refresh_obs_selection(window: &InstallerWindow, installer: &Installer) {
     let resolved = installer.obs_directory();
     let payload_available = installer.obs_plugin_payload_available();
     let available = payload_available && resolved.is_some();
-    let running = installer.obs_running();
+    let running = installer.obs_running().unwrap_or(true);
     window.set_obs_available(available);
     window.set_obs_running(running);
     window.set_obs_managed(installer.obs_plugin_managed());
@@ -538,7 +538,7 @@ fn refresh_all_status(window: &InstallerWindow, installer: &Installer) {
     refresh_selected(window, installer);
     // refresh_selected returns early when no game directory is selected, but
     // the process interlock must still reflect a separately launched copy.
-    window.set_game_running(installer.beatblock_running());
+    window.set_game_running(installer.beatblock_running().unwrap_or(true));
 }
 
 fn selected_options(
