@@ -525,7 +525,7 @@ fn spawn_worker(
                 WorkerCommand::SetEnabled(_) => {}
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
