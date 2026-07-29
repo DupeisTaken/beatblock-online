@@ -2,15 +2,13 @@
 
 Beatblock Online is a Windows direct-IP competition mod. One player hosts a password-protected room for up to 15 other players and 32 spectators. The host manages charts, readiness, starts, rankings, Broadcast plans, OBS exports, and match history from inside Beatblock.
 
-The current prerelease candidate is [`v0.3.0-beta.4`](docs/releases/v0.3.0-beta.4.md).
-It allows the installer to accept newer structurally valid Beatblock builds
-while keeping them unverified until the exact displayed version and bracketed
-build token pass the compatibility suite, keeps exact same-build rooms,
-improves consent-aware chart transfers and setlist readability, and exposes
-release compatibility in-product. The
-unreleased broadcast update separates OBS video from per-renderer audio,
-automatically silences renderer desktop sessions by exact PID, and adds an
-optional native song-plus-perfect-hits autoplay mix.
+The current prerelease is
+[`v0.3.0-beta.5`](docs/releases/v0.3.0-beta.5.md). It adds a verified,
+rollback-capable installer self-update, live Beatblock/OBS status refresh,
+independent OBS renderer audio plus an optional song-and-hits autoplay feed,
+and a clearer single-chart/setlist dashboard. Newer structurally valid
+Beatblock builds may be accepted, but remain unverified until their exact
+displayed version and bracketed build token pass the compatibility suite.
 
 ## Player quick start
 
@@ -99,7 +97,7 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 ## Detailed documentation
 
 - [Ship-readiness security, correctness, resource, and UX audit](reports/ship-readiness-audit-2026-07-20.md)
-- [v0.3.0-beta.4 ship-readiness review](reports/ship-readiness-review-v0.3.0-beta.4.md)
+- [v0.3.0-beta.5 ship-readiness review](reports/ship-readiness-review-v0.3.0-beta.5.md)
 - [Installation, repair, adapters, and injection](docs/injection.md)
 - [Adaptive Online dashboard and controls](docs/mod-guide.md)
 - [Hosting, joining, setlists, and chart verification](docs/operator-guide.md)
@@ -111,7 +109,6 @@ by the test, verify every target is inside `%TEMP%`, and preserve the ignored
 - [Reproducible builds and GitHub releases](docs/releasing.md)
 - [Issue tags and reporting guidelines](docs/issues.md)
 - [Release history, public notes, and technical changelogs](docs/releases/index.md)
-- [Unreleased OBS/audio issue #20 and #21 changelog](docs/releases/unreleased-issues-20-21.md)
 
 The latest automated gate is [full-capability-latest.md](reports/trial-runs/full-capability-latest.md). The latest arbitrary-folder installer and Lovely recovery is [installer-reliability-latest.md](reports/trial-runs/installer-reliability-latest.md). UI captures are generated from the shipped Lua dashboard with Beatblock's reference fonts and 600x360 logical canvas.
 

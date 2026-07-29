@@ -10,7 +10,7 @@ export function releaseDisplayTitle(tagName, compatibility) {
   if (typeof testedVersion !== 'string' || !/^\d+\.\d+\.\d+[A-Za-z]?$/.test(testedVersion)) {
     throw new Error('package.json beatblockCompatibility.testedVersion is invalid');
   }
-  if (compatibility.newerBuilds !== 'assumed-compatible') {
+  if (compatibility.newerBuilds !== 'accepted-unverified') {
     throw new Error('Beatblock compatibility policy must explicitly describe newer builds');
   }
   return `${tagName} for Beatblock ${testedVersion}+`;

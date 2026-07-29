@@ -23,7 +23,7 @@ body:
     id: online_version
     attributes:
       label: Beatblock Online version
-      placeholder: v0.3.0-beta.4
+      placeholder: v0.3.0-beta.5
     validations:
       required: true
   - type: input
