@@ -1,41 +1,141 @@
-# Playing and hosting from Beatblock
+# Advanced hosting and room operations
 
-There is no operator website, account system, cloud deployment, or container. The host controls the room from the adaptive in-game dashboard.
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
 
-## Join a room as a Player
+This guide covers event operation beyond the public walkthrough. The host
+controls the room from Beatblock’s in-game Online dashboard; there is no
+operator website or hosted control plane.
 
-Ask the host for these three connection values:
+## Contents
 
-- **Host Address**: the public IPv4 address or DNS name that receives room traffic.
-- **UDP Port**: the public UDP port that receives room traffic. The default direct-host port is `32145`, but always use the value supplied by the host.
-- **Password**: the room password. Receive it separately from the public address when possible.
+- [Create a room from the in-game dashboard](#create-a-room-from-the-in-game-dashboard)
+- [Admission, roles, and participant control](#admission-roles-and-participant-control)
+- [Charts and setlists](#charts-and-setlists)
+- [Starting, scoring, and results](#starting-scoring-and-results)
+- [Direct UDP networking](#direct-udp-networking)
+- [Host through an frp public endpoint](#host-through-an-frp-public-endpoint)
+- [End the event](#end-the-event)
+- [Runtime and API-only capabilities](#runtime-and-api-only-capabilities)
 
-When the host uses frp or another reverse proxy, **Host Address** is the public
-address of the proxy server and **UDP Port** is the proxy's public
-`remotePort`. Do not use the host PC's private address, the frp control
-`serverPort`, or the proxy's `localPort` unless the host explicitly made the
-public and local ports identical.
+## Create a room from the in-game dashboard
 
-1. Install the same Beatblock Online release as the host, then launch Beatblock.
-2. Open **Online** and confirm the header shows **BEATBLOCK ONLINE** on the left and your Online version followed by **READY** on the right, then wait for the session panel to show **READY TO CONNECT**. Open **Settings** to compare the adapter, runtime, protocol, tested Beatblock baseline, and the exact build token read from Beatblock's top-right version label.
-3. Choose **Join as Player**.
-4. Enter a display name that is not already in use in the room. Names are compared without ASCII letter casing; a conflict is rejected with **username taken** rather than adding a numbered suffix. In **Host Address**, enter only the public IPv4 address or DNS name, such as `203.0.113.10` or `play.example.net`; do not include `http://`, `https://`, or a port.
-5. Enter the public **UDP Port** and room **Password**, then choose **Join**.
-6. In a host-approval room, **Waiting for Approval** is expected until the host accepts the request. In a password-only room, admission is immediate.
-7. Follow the highlighted session action. When a chart is locked, select or accept the exact matching chart, choose **Ready**, and wait for the host to start the race.
-8. Use **Room Options > Exit Online** when finished.
+Open **Online**, wait for `READY TO CONNECT`, and choose **Host a Room**. The
+current form exposes:
 
-Choosing **Join as Spectator** follows the same connection procedure but does
-not put the participant in the racing or readiness roster.
+| Setting                             | Player-facing behavior                                                                                                                                                                   |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Host Role: Play / Direct**        | Play assigns the host as a Player. Direct keeps host authority while excluding the host from readiness and scoring.                                                                      |
+| **Run Checks: On / Off**            | On is competitive. Off is casual: retries are allowed and missing ordered score events may recover at the next cumulative update. Both modes still validate counters and DNF completion. |
+| **Same Build: Require / Allow Any** | Require is the safe default. Allow Any is for casual compatibility testing and cannot be made strict again after the room is active; create a new room to restore strict matching.       |
+| UDP port and password               | One UDP port carries room traffic. The password is required and case-sensitive.                                                                                                          |
 
-### Join through an frp public endpoint
+The in-game form currently creates a host-approval room, enables custom-chart
+transfer, and starts with transfer requests set to manual. After creation,
+**Settings > Requests** switches between manual and automatic requests.
+Automatic requests do not bypass the receiving Player’s consent.
 
-Beatblock Online carries room traffic over QUIC on one UDP port. The frp proxy
-must therefore use `type = "udp"`; a TCP, HTTP, or HTTPS proxy will not work.
-For example, if `frpc` runs on the same PC as the Beatblock host:
+The host’s own roster inspector provides **Direct Next Race** or
+**Play Next Race** before a later race. Changing participation clears stale
+readiness and requires fresh verification where applicable.
+
+## Admission, roles, and participant control
+
+New connections appear under the **Pending** roster filter. Select a stable
+participant row to approve or reject it. After admission, the inspector can:
+
+- switch a Player to Spectator or a Spectator to Player;
+- grant or revoke Commentator on a Spectator; or
+- remove a participant.
+
+Role changes and removal are disabled during countdown and gameplay. Rejection
+remains available for a still-pending request.
+
+The terms are distinct:
+
+- **Host** owns room and Broadcast authority and may Play or Direct.
+- **Player** competes and must verify and ready the locked chart.
+- **Spectator** follows room state and results without competing.
+- **Commentator** is an additional host-granted permission on a Spectator; it
+  does not create a Player or change room capacity.
+
+## Charts and setlists
+
+### One chart
+
+Use the highlighted **Select Chart** action and choose **Official Chart** or
+**Custom Chart**. Official content is never redistributed. A custom chart is
+locked by its package hash, variant, and note count.
+
+If a setlist already exists, one-off selection asks before replacing the
+ordered queue.
+
+### Ordered set
+
+Open **Setlist** and use **Add Official** or **Add Custom**. Six visible rows
+show order, chart, variant, and **Now**, **Next**, **Queued**, or **Done**.
+Select a future entry to move or remove it. The active and completed boundary
+is protected, and all editing locks during countdown/gameplay.
+
+At Results, **Next Chart** is the authoritative continuation control. It
+advances the queue and opens the corresponding Beatblock selector so a playing
+host can verify the newly active chart locally.
+
+### Custom-chart fallback
+
+Players search their own charts first. If the exact custom package is missing,
+they may request the host copy. The offer names its size and whether script or
+executable content exists. Normal packages can be accepted once or trusted for
+that live room; script/executable content always requires separate consent and
+cannot inherit room trust.
+
+Accepted packages are isolated in Beatblock Online’s transfer cache rather
+than added to the Player’s normal Custom Levels library. See
+[chart matching and host fallback](mod-guide.md#chart-matching-and-host-fallback)
+for validation and resource limits.
+
+## Starting, scoring, and results
+
+The in-game **Start Race** action becomes available only when every assigned
+Player is admitted, verified, and ready. A directing host also needs at least
+one assigned ready Player.
+
+The current dashboard does not expose Force Start. It always sends a normal
+start request. Resolve each readiness or chart mismatch before beginning; see
+[player troubleshooting](player-guide.md#chart-readiness-and-result-problems).
+
+Complete valid attempts rank normally. With **Run Checks: On**, retries,
+integrity failures, and unrecoverable ordered-event gaps become **INVALID**.
+Explicit quits, incomplete attempts, launch timeouts, and expired disconnects
+become **DNF** in either mode. INVALID and DNF contribute `0.00` to the set
+total, and the Player remains available for later charts. Select the
+participant at Results and choose **Run Details** for the authoritative reason.
+
+## Direct UDP networking
+
+The installer adds a program-scoped UDP firewall rule for the runtime.
+Private/domain profiles are the default; Public is opt-in. The runtime attempts
+UPnP mapping while a room owns the port. If it fails, forward the configured
+UDP port manually to the host PC.
+
+Beatblock Online does not include a relay. A host behind CGNAT needs a VPN with
+inbound UDP, a UDP proxy such as frp, or a different connection. LAN Players
+can use the host’s private IPv4 address; internet Players use the public
+IPv4/DNS endpoint and public UDP port.
+
+For normal participants, plan for 5 Mbps download and 1 Mbps upload. Host
+requirements scale with participant count; a small eight-participant event
+should treat 10 Mbps upload as a minimum, while the maximum 48-participant room
+has a conservative 250 Mbps recommendation. Streaming upload is additional.
+See [measured and calculated budgets](benchmarking.md#recommended-system-and-network-specifications)
+instead of duplicating the formulas here.
+
+## Host through an frp public endpoint
+
+Beatblock Online room traffic requires a UDP proxy. If `frpc` runs on the
+Beatblock host PC, the relevant portion of `frpc.toml` is:
 
 ```toml
-# Relevant excerpt from frpc.toml. Keep your existing frps connection settings.
+# Keep the existing frps connection settings.
 serverAddr = "203.0.113.10"
 serverPort = 7000
 
@@ -47,8 +147,7 @@ localPort = 32145
 remotePort = 42145
 ```
 
-In this example, the host creates the room on UDP port `32145`, while Players
-join with:
+The host creates the room on UDP `32145`. Participants enter:
 
 ```text
 Host Address: 203.0.113.10
@@ -56,92 +155,51 @@ UDP Port:     42145
 Password:     <the room password>
 ```
 
-`serverPort = 7000` is used by `frpc` to reach `frps`; it is not the port that
-Players enter. If `frpc` runs on a different machine on the host's LAN, set
-`localIP` to the Beatblock host PC's private IPv4 address instead of
-`127.0.0.1`, and allow the configured room UDP port through the host PC's
-private-profile firewall.
+`serverPort = 7000` is the frp control connection and is not entered by
+Players. If `frpc` runs elsewhere on the host LAN, set `localIP` to the
+Beatblock host PC’s private IPv4 address and allow the room UDP port through
+that PC’s Private firewall profile.
 
-Before sharing the endpoint, the host should verify all of the following:
+Before sharing the endpoint, verify:
 
-- The room is active and its configured UDP port equals the frp `localPort`.
-- `frpc` reports that the UDP proxy is online.
-- The `frps` host's operating-system firewall and cloud security group allow inbound UDP on `remotePort`.
-- The frp server permits that remote port and the provider supports UDP proxies.
-- Only the Beatblock room UDP port is exposed. The local runtime API and IPC endpoints are not public room services.
+- the active room port equals `localPort`;
+- `frpc` reports the UDP proxy online;
+- the frps operating-system firewall and cloud security group permit inbound
+  UDP on `remotePort`;
+- the server permits that remote port and supports UDP proxies; and
+- only the room UDP port is exposed. The local API and game IPC are not public
+  room services.
 
-The FRP route replaces router UPnP/manual port forwarding for this connection
-path, but all room traffic and host upload now pass through the FRP server.
-Choose a nearby server with enough bandwidth and test from a device on a
-different network before the event. See the
+All host room traffic passes through the proxy. Choose a nearby server with
+enough bandwidth and test from another network. Consult the
 [official frp TCP/UDP proxy guide](https://gofrp.org/en/docs/features/tcp-udp/)
-for current proxy configuration syntax.
-
-### Player connection and result troubleshooting
-
-| Symptom                                  | What to check                                                                                                                                                                                                                    |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host address resolution fails            | Enter a valid public IPv4 address or DNS name in **Host Address**, without a URL scheme or port. Confirm the DNS name resolves on the Player's PC.                                                                               |
-| Connection times out                     | Confirm the room is still active, the proxy type is UDP, the room port equals `localPort`, the Player entered `remotePort`, and inbound UDP on `remotePort` is allowed by both the FRP server firewall and cloud security group. |
-| Password/authentication is rejected      | Re-enter the exact case-sensitive room password. Repeated failed attempts may require waiting before another attempt.                                                                                                            |
-| **username taken**                       | The room already reserves that trimmed name, ignoring ASCII letter casing. Choose a different display name; the client clears the rejected local room state instead of repeatedly reconnecting.                                  |
-| **Waiting for Approval** remains visible | The network connection and password succeeded; the host still needs to accept the Player.                                                                                                                                        |
-| Protocol is incompatible                 | Host and Player must install the same Beatblock Online release/protocol version.                                                                                                                                                 |
-| **Locate Matching Chart** appears        | The room connection succeeded, but the local chart does not match. Select the exact official chart, locate the matching custom chart, or request the host transfer when offered.                                                 |
-| Header shows **RECONNECTING**            | Keep Online open while the authenticated 30-second reconnect grace runs. If it returns Offline, rejoin the room; a runtime restart intentionally cannot restore ownership from a serialized snapshot.                            |
-| Result is **INVALID**                    | Open the participant and choose **Run Details**. Competitive rooms use INVALID for retry/integrity failures or unrecoverable ordered-event gaps; the runtime preserves that reason through reconnects.                           |
-| Result is **DNF**                        | Open **Run Details**. DNF means the attempt did not complete—for example an explicit quit, incomplete score, 30-second launch timeout, or disconnect expiry. Casual mode still enforces DNF.                                     |
-| **Online IPC is overloaded**             | Do not continue the race as if scoring were current. Return to Online and reconnect before another competitive attempt; lifecycle events have reserved queue capacity, but a completely full queue cannot accept more work.      |
-
-## Host a room
-
-1. Open **Online** and choose **Host a Room**.
-2. Enter a room name, UDP port, password, and display name. Choose **Play** to race or **Direct** to host without joining the race. Keep **Run Checks** on for competitive scoring, or turn it off for a casual room that permits retries and tolerates missing ordered score events.
-3. Share the `IP:port` or password-free `bbt://...?...v=3` link separately from the password.
-4. Select pending roster rows to approve/reject requests. Select admitted rows to change roles or remove a participant.
-5. The host's own roster row keeps **Direct Next Race** / **Play Next Race** available before later races, so the creation choice can be changed without rebuilding the room.
-6. Follow **Select Chart** to choose one official or custom chart. To run several charts in order, open **Setlist** and build the queue instead. Wait for every assigned player's exact verification.
-7. When the dashboard reports all assigned players ready, choose **Start Race**. A directing host can start once at least one Player is assigned and ready.
-
-The persistent header shows room name, runtime link, and lifecycle. The chart strip shows the locked chart and local verification. The six-row roster paginates by stable participant ID, while player, ready, and spectator totals stay visible even in a 16-player room.
-
-## Charts and setlists
-
-Open **Setlist** from the bottom utility bar.
-
-- The pinned **Select Chart** action is for a one-off chart. It first asks for **Official Chart** or **Custom Chart** and returns to the Room workspace after Beatblock's selector. Selecting one chart while an ordered set exists requires confirmation because it replaces that queue.
-- **Official Chart** uses Beatblock's official selector and never redistributes official content.
-- **Custom Chart** locks a custom chart for local hash, variant, and note-count verification. When chart transfers are enabled, Players still search locally first and can then request the authenticated host fallback. Official charts remain local-only.
-- Custom selection preserves Beatblock's authoritative UTF-8 package filename and raw song metadata, so punctuation and Unicode in chart names do not need to be renamed. Both `manifest.json` and legacy `level.json` custom packages are supported.
-- **Add Official** and **Add Custom** create an ordered set without replacing the locally verified active chart. The six-row queue identifies each chart's order, variant, and **Now**, **Next**, **Queued**, or **Done** state.
-- Select a row, then use **Move Up**, **Move Down**, or **Remove**. Completed entries cannot be reordered across the completed boundary, and the current completed chart cannot be removed from Results.
-- During countdown and gameplay, setlist editing is locked. Players and Spectators see the same queue read-only with a **Host Controlled** heading.
-- After Results, use the pinned **Next Chart** action. It is the only continuation control: it advances the authoritative queue and opens the matching official or custom selector so a playing host can verify it locally. If the set is complete, use **Add Official/Custom** to extend it or use the pinned single-chart action to replace it.
-
-Readiness requires the supported game and mod versions, selected variant, expected maximum hits, gameplay settings, allowed-mod inventory, and exact package hash. A player with a mismatch sees **Locate Matching Chart** rather than Ready.
-
-## Admission, roles, and Force Start
-
-Password-only rooms admit valid clients immediately. Host-approval rooms place them in the roster as **Pending** until accepted. Pending requests do not count toward player/spectator/ready totals.
-
-Role changes and removals are disabled during countdown/gameplay. **Room Options > Force Start** deliberately bypasses readiness and asks for confirmation. Escape and controller pause inputs are ignored during online gameplay, while offline practice retains the native pause menu. Complete valid journals rank normally. In competitive rooms, retries, integrity failures, and unrecoverable score-event gaps become **INVALID**; explicit quits, incomplete attempts, launch timeouts, and expired disconnects become **DNF**. Either verdict contributes `0.00` to the set total, and the Player remains in the room for later charts.
-
-Host participation is also locked during countdown/gameplay. Directing keeps room and Broadcast authority but excludes the host from readiness, scoring, and renderer assignment; returning to Play clears stale readiness and requires fresh chart verification.
-
-**Run Checks** is a host-only room policy and can be changed from **Settings** before countdown. **On / Competitive** rejects missing ordered score events and honors client integrity/retry invalidations. **Off / Casual** accepts the next cumulative score update after an event gap and treats a retry as a fresh attempt. Both modes still reject malformed or impossible counters, require exact chart verification, and mark incomplete, launch-timeout, or disconnected runs DNF. Select an INVALID or DNF participant at Results and choose **Run Details** to see the authoritative reason.
-
-## Networking
-
-The installer adds a program-scoped UDP firewall rule for the runtime. Private/domain profiles are the default; public-profile access is opt-in. If automatic port mapping fails, forward the configured UDP port manually. CGNAT requires a VPN or a different host because BBT has no relay service.
-
-An automatically-created UPnP mapping is renewed only while its owning room is
-active and is removed on a normal leave, close, or runtime shutdown. A crashed
-runtime still relies on the router's finite two-hour lease.
-
-For a normal player or spectator, budget 5 Mbps download and 1 Mbps upload. A full 16-player/32-spectator host should have at least 250 Mbps stable upload, low packet loss, and preferably wired Ethernet. The large host figure comes from sending each peer a complete room snapshot at up to 20 Hz: the current maximum-room schema models at about 160.6 Mbps of payload before transport overhead. An eight-participant room models near 5.8 Mbps of host payload, so 10 Mbps upload is a minimum for that size and 20 Mbps or more provides safer headroom. Streaming to Twitch, YouTube, or another service is additional.
-
-Use **Settings** for the explicit **HUD**, **Run Checks**, **Build**, and transfer-request states, the renderer's exact-PID **Desktop Mute**, transfer-cache cleanup, Beatblock Online adapter/runtime versions, protocol match, tested Beatblock baseline, detected game build, and diagnostic shortcuts. The complete policy is in [Beatblock compatibility](compatibility.md). **Restart Runtime** is a one-retry recovery action and invalidates an active competitive run. **Help** provides state-specific guidance plus log/installer shortcuts.
+for current frp syntax.
 
 ## End the event
 
-At Results, review the rankings, then use the pinned **Next Chart** action to continue the ordered set. Open **Setlist** to extend or reorder only the remaining queue, or use the pinned single-chart action after set completion to replace it with a one-off chart. Match summaries remain in History until deletion; raw SQLite and NDJSON journals are automatically retained for 30 days by default. Runtime logs are capped at 14 days/64 MiB and chart-hash cache entries at 30 days/128 MiB. Choose **Room Options > Exit Online** after the event to close the room, flush storage, stop renderers/API/exports, and terminate the hidden runtime.
+At Results, use **Next Chart** to continue the ordered set. To end:
+
+1. Review Results and History.
+2. Select the host’s own roster row and choose **Close Room**.
+3. From the Room workspace, press Back and confirm **Exit Online**.
+
+Closing the room disconnects participants. Exiting Online flushes storage and
+stops local exports, API, renderers, and the hidden runtime. Match summaries
+remain until deleted. Raw journals retain 30 days by default; runtime logs and
+chart-hash cache have their own bounded retention.
+
+## Runtime and API-only capabilities
+
+The following are implemented below the in-game dashboard but are not current
+player controls:
+
+- **Password-only admission:** supported by the runtime and bearer-protected
+  local API; the in-game host form always requests host approval.
+- **Force Start:** supported by protocol/runtime/API; the in-game dashboard
+  sends `force=false` and has no override control.
+- **`bbt://` join URI:** generated by the runtime/API without the password; the
+  in-game Connect form still requires separate address and UDP port fields.
+
+Treat these as integration surfaces, not as released dashboard features. The
+local API is documented under [Third-party local API](obs-setup.md#third-party-local-api),
+and wire behavior is documented in [protocol v3](protocol.md).

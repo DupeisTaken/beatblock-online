@@ -1,5 +1,7 @@
 # Installer-only architecture
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
 ```text
 BeatblockOnlineInstaller.exe (maintenance only, exits)
     -> Lovely + one adapter + hidden runtime + optional OBS plugin

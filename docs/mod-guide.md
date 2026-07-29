@@ -1,5 +1,15 @@
 # Online shell and room roles
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
+## Contents
+
+- [Room workspace](#room-workspace)
+- [Global workspaces](#global-workspaces)
+- [Chart matching and host fallback](#chart-matching-and-host-fallback)
+- [Commentator Broadcast mirror](#commentator-broadcast-mirror)
+- [Screenshot verification](#screenshot-verification)
+
 Opening **Online** lazily starts the hidden runtime. The interface always uses Beatblock's `600×360` logical canvas and shows one workspace at a time. Only forms, destructive confirmations, transfer consent, and full error details use a modal.
 
 The header identifies **BEATBLOCK ONLINE** once and pairs the installed version with **Ready**, **Starting**, or **Offline**. Beneath it, the pinned session strip shows the current room/chart, verification context, and exactly one next action: host, select chart, locate chart, ready, start, wait, next chart, or view results. Button labels use measured font metrics and every button is at least 22 logical pixels high. Visually disabled controls have no activation callback, so mouse, keyboard, and controller cannot bypass lifecycle locks.
@@ -41,7 +51,11 @@ The host grants or revokes Commentator from the participant inspector. A role ch
 - **Broadcast** owns the host's four Stream A–D assignments. The default view shows candidate, assignment, Feature, Stop, and local health; **Advanced Export** edits mode, resolution, FPS, and delay per stream and warns on 1080p60.
 - **History** lists saved match summaries.
 - **Settings** uses explicit state controls for **HUD**, **Run Checks**, **Build**, and chart-transfer **Requests**. Exact-PID renderer **Desktop Mute** and **Clear Transfer Cache** remain separate full-width local actions. It shows adapter/runtime versions, protocol match, the tested Beatblock baseline, and the running game's top-right build identity. The complete policy is in [Beatblock compatibility](compatibility.md). Update checks run asynchronously with a bounded timeout; stable builds ignore prereleases, while preview builds can offer a newer preview and open its release page.
-- **Help** explains roles, controls, chart transfer, and player troubleshooting without granting room controls. Runtime errors remain visible in the footer, while complete INVALID/DNF reasons live in **Run Details**.
+- **Help** summarizes roles, controls, and chart-transfer consent, then points to
+  logs for complete runtime errors. Runtime errors remain visible in the
+  footer, while complete INVALID/DNF reasons live in **Run Details**. The
+  task-focused troubleshooting tables are in the
+  [Player Guide](player-guide.md#troubleshooting).
 
 Back closes one modal or returns one workspace. Keyboard, controller, and mouse update the same focus model. In host and join forms, text follows the active keyboard layout; Backspace or Delete removes the final complete character, including Unicode input.
 

@@ -1,5 +1,7 @@
 # Direct-host protocol v3
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
 Reliable messages use:
 
 ```json

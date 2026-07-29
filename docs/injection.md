@@ -1,5 +1,14 @@
 # Installation and injection
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
+## Contents
+
+- [Recommended path](#recommended-path)
+- [Launch verification](#launch-verification)
+- [Repairing the missing-dashboard alpha](#repairing-the-missing-dashboard-alpha)
+- [Developer/test path](#developertest-path)
+
 ## Recommended path
 
 Run `BeatblockOnlineInstaller.exe`. Its four Unity Mod Manager-style tabs are installation-only:

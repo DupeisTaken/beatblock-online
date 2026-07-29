@@ -1,5 +1,7 @@
 # Release history
 
+> Documentation: [Player Guide](../player-guide.md) · [Technical Reference](../technical-reference.md)
+
 Public release notes are intentionally short and are used verbatim for GitHub
 Release descriptions. Technical changelogs retain implementation rationale,
 migration details, validation evidence, and known limitations.

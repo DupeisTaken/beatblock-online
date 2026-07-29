@@ -1,5 +1,7 @@
 # Creating issues
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
 Use GitHub issues for reproducible defects, focused improvements, documentation
 gaps, and questions that are not answered by the existing guides. Choose the
 template that matches the issue:

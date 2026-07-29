@@ -1,5 +1,14 @@
 # Benchmarks, stress gates, and trials
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
+## Contents
+
+- [Temporary artifact hygiene](#temporary-artifact-hygiene)
+- [Recommended system and network specifications](#recommended-system-and-network-specifications)
+  - [Expected incremental usage](#expected-incremental-usage)
+  - [Basis for the estimates](#basis-for-the-estimates)
+
 Run `pnpm test:stress`, `pnpm benchmark`, or `pnpm trial` from a developer checkout. Release users do not run these commands.
 
 ## Temporary artifact hygiene

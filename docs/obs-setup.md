@@ -1,5 +1,18 @@
 # OBS, reconstructed streams, and text exports
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
+## Contents
+
+- [Install the native OBS source](#install-the-native-obs-source)
+- [Optional Autoplay mix](#optional-autoplay-mix)
+- [Broadcast-host performance budget](#broadcast-host-performance-budget)
+- [Diagnose a missing source](#diagnose-a-missing-source)
+- [Diagnose missing, duplicated, or audible renderer audio](#diagnose-missing-duplicated-or-audible-renderer-audio)
+- [Text capture](#text-capture)
+- [Rebuild the reviewed plugin artifact](#rebuild-the-reviewed-plugin-artifact)
+- [Third-party local API](#third-party-local-api)
+
 The Online shell and hidden runtime own four stable slots: Stream A, B, C, and D. Select a Player in the Room inspector, open **Broadcast**, and assign that candidate to a slot. Reassigning a slot does not require changing the OBS scene.
 
 The host's revisioned configuration is labeled **Host Plan**. A host-granted Commentator receives the same plan read-only and may explicitly enable **This PC** mirroring after the resource warning. A Commentator needs the locked chart locally (or must accept the host transfer) before local video can start.

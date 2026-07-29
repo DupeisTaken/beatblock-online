@@ -1,5 +1,14 @@
 # Beatblock compatibility
 
+> Documentation: [Player Guide](player-guide.md) · [Technical Reference](technical-reference.md)
+
+## Contents
+
+- [Current release](#current-release)
+- [Installation policy](#installation-policy)
+- [Same-build rooms](#same-build-rooms)
+- [When a new Beatblock release breaks Online](#when-a-new-beatblock-release-breaks-online)
+
 ## Current release
 
 GitHub Release titles include the Beatblock version exercised by that Online
