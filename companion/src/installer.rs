@@ -2413,9 +2413,6 @@ fn process_is_running(executable_name: &str) -> Result<bool> {
     if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
         let error = unsafe { GetLastError() };
         unsafe { CloseHandle(snapshot) };
-        if error == ERROR_NO_MORE_FILES {
-            return Ok(false);
-        }
         bail!("could not start process enumeration (Windows error {error})");
     }
     loop {
