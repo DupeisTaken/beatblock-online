@@ -93,6 +93,25 @@ assert(selected.sessionId=='Ready' and #visible==2)
 selected,visible=Dashboard.selectedParticipant(filteredContext,'pending','Ready')
 assert(selected.sessionId=='Pending' and #visible==1)
 
+-- Setlist selection follows the stable entry id when snapshots reorder rows.
+local entries={
+  {id='one',chart=chart,completed=true},
+  {id='two',chart=chart,completed=false},
+  {id='three',chart=chart,completed=false},
+}
+local selectedEntry,selectedIndex=Dashboard.selectedSetlistEntry(entries,'three',1)
+assert(selectedEntry.id=='three' and selectedIndex==3)
+entries={entries[1],entries[3],entries[2]}
+selectedEntry,selectedIndex=Dashboard.selectedSetlistEntry(entries,'three',1)
+assert(selectedEntry.id=='three' and selectedIndex==2)
+selectedEntry,selectedIndex=Dashboard.selectedSetlistEntry(entries,'missing',3)
+assert(selectedEntry.id=='two' and selectedIndex==3)
+assert(Dashboard.setlistEntryState(entries,1,1,'chart_locked')=='DONE')
+assert(Dashboard.setlistEntryState(entries,2,1,'chart_locked')=='NOW')
+assert(Dashboard.setlistEntryState(entries,3,1,'chart_locked')=='NEXT')
+entries[#entries+1]={id='four',chart=chart,completed=false}
+assert(Dashboard.setlistEntryState(entries,4,1,'chart_locked')=='QUEUED')
+
 assert(Dashboard.score(host,'ready').rank==nil)
 local liveScore=Dashboard.score(host,'playing')
 assert(liveScore.rank=='—' and liveScore.accuracy=='99.25%')

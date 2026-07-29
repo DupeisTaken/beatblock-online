@@ -17,7 +17,7 @@ address of the proxy server and **UDP Port** is the proxy's public
 public and local ports identical.
 
 1. Install the same Beatblock Online release as the host, then launch Beatblock.
-2. Open **Online** and confirm the header shows your Beatblock Online version followed by **ONLINE**, then wait for the session panel to show **READY TO CONNECT**. Open **Settings** to compare the adapter, runtime, protocol, tested Beatblock baseline, and the exact build token read from Beatblock's top-right version label.
+2. Open **Online** and confirm the header shows **BEATBLOCK ONLINE** on the left and your Online version followed by **READY** on the right, then wait for the session panel to show **READY TO CONNECT**. Open **Settings** to compare the adapter, runtime, protocol, tested Beatblock baseline, and the exact build token read from Beatblock's top-right version label.
 3. Choose **Join as Player**.
 4. Enter a display name that is not already in use in the room. Names are compared without ASCII letter casing; a conflict is rejected with **username taken** rather than adding a numbered suffix. In **Host Address**, enter only the public IPv4 address or DNS name, such as `203.0.113.10` or `play.example.net`; do not include `http://`, `https://`, or a port.
 5. Enter the public **UDP Port** and room **Password**, then choose **Join**.
@@ -100,7 +100,7 @@ for current proxy configuration syntax.
 3. Share the `IP:port` or password-free `bbt://...?...v=3` link separately from the password.
 4. Select pending roster rows to approve/reject requests. Select admitted rows to change roles or remove a participant.
 5. The host's own roster row keeps **Direct Next Race** / **Play Next Race** available before later races, so the creation choice can be changed without rebuilding the room.
-6. Follow **Select Chart**, build an optional setlist, and wait for every assigned player's exact verification.
+6. Follow **Select Chart** to choose one official or custom chart. To run several charts in order, open **Setlist** and build the queue instead. Wait for every assigned player's exact verification.
 7. When the dashboard reports all assigned players ready, choose **Start Race**. A directing host can start once at least one Player is assigned and ready.
 
 The persistent header shows room name, runtime link, and lifecycle. The chart strip shows the locked chart and local verification. The six-row roster paginates by stable participant ID, while player, ready, and spectator totals stay visible even in a 16-player room.
@@ -109,11 +109,14 @@ The persistent header shows room name, runtime link, and lifecycle. The chart st
 
 Open **Setlist** from the bottom utility bar.
 
-- **Select Official** uses Beatblock's official selector and never redistributes official content.
-- **Select Custom** locks a custom chart for local hash, variant, and note-count verification. When chart transfers are enabled, Players still search locally first and can then request the authenticated host fallback. Official charts remain local-only.
+- The pinned **Select Chart** action is for a one-off chart. It first asks for **Official Chart** or **Custom Chart** and returns to the Room workspace after Beatblock's selector. Selecting one chart while an ordered set exists requires confirmation because it replaces that queue.
+- **Official Chart** uses Beatblock's official selector and never redistributes official content.
+- **Custom Chart** locks a custom chart for local hash, variant, and note-count verification. When chart transfers are enabled, Players still search locally first and can then request the authenticated host fallback. Official charts remain local-only.
 - Custom selection preserves Beatblock's authoritative UTF-8 package filename and raw song metadata, so punctuation and Unicode in chart names do not need to be renamed. Both `manifest.json` and legacy `level.json` custom packages are supported.
-- **Add Official/Custom** creates an ordered set. Select a row, then use **Up**, **Down**, or **Remove** to edit its play order. After Results, the completed boundary is locked so an unplayed chart cannot be moved behind it and silently skipped.
-- After Results, the host returns to Setlist. **Next Chart** / **Continue to Next Chart** locks the next entry and opens the matching official or custom selector so a playing host can verify it locally. If the set is complete, add another entry first.
+- **Add Official** and **Add Custom** create an ordered set without replacing the locally verified active chart. The six-row queue identifies each chart's order, variant, and **Now**, **Next**, **Queued**, or **Done** state.
+- Select a row, then use **Move Up**, **Move Down**, or **Remove**. Completed entries cannot be reordered across the completed boundary, and the current completed chart cannot be removed from Results.
+- During countdown and gameplay, setlist editing is locked. Players and Spectators see the same queue read-only with a **Host Controlled** heading.
+- After Results, use the pinned **Next Chart** action. It is the only continuation control: it advances the authoritative queue and opens the matching official or custom selector so a playing host can verify it locally. If the set is complete, use **Add Official/Custom** to extend it or use the pinned single-chart action to replace it.
 
 Readiness requires the supported game and mod versions, selected variant, expected maximum hits, gameplay settings, allowed-mod inventory, and exact package hash. A player with a mismatch sees **Locate Matching Chart** rather than Ready.
 
@@ -137,8 +140,8 @@ runtime still relies on the router's finite two-hour lease.
 
 For a normal player or spectator, budget 5 Mbps download and 1 Mbps upload. A full 16-player/32-spectator host should have at least 250 Mbps stable upload, low packet loss, and preferably wired Ethernet. The large host figure comes from sending each peer a complete room snapshot at up to 20 Hz: the current maximum-room schema models at about 160.6 Mbps of payload before transport overhead. An eight-participant room models near 5.8 Mbps of host payload, so 10 Mbps upload is a minimum for that size and 20 Mbps or more provides safer headroom. Streaming to Twitch, YouTube, or another service is additional.
 
-Use **Settings** for the Beatblock Online adapter/runtime versions, protocol match, tested Beatblock baseline, detected game build, Same Build room policy, link state, transfer cache, and diagnostic shortcuts. The complete policy is in [Beatblock compatibility](compatibility.md). **Restart Runtime** is a one-retry recovery action and invalidates an active competitive run. **Help** provides state-specific guidance plus log/installer shortcuts.
+Use **Settings** for the explicit **HUD**, **Run Checks**, **Build**, and transfer-request states, the renderer's exact-PID **Desktop Mute**, transfer-cache cleanup, Beatblock Online adapter/runtime versions, protocol match, tested Beatblock baseline, detected game build, and diagnostic shortcuts. The complete policy is in [Beatblock compatibility](compatibility.md). **Restart Runtime** is a one-retry recovery action and invalidates an active competitive run. **Help** provides state-specific guidance plus log/installer shortcuts.
 
 ## End the event
 
-At Results, review the rankings, then use **Next Chart** to continue or **Select Next Chart** to extend/reorder a completed set. Match summaries remain in History until deletion; raw SQLite and NDJSON journals are automatically retained for 30 days by default. Runtime logs are capped at 14 days/64 MiB and chart-hash cache entries at 30 days/128 MiB. Choose **Room Options > Exit Online** after the event to close the room, flush storage, stop renderers/API/exports, and terminate the hidden runtime.
+At Results, review the rankings, then use the pinned **Next Chart** action to continue the ordered set. Open **Setlist** to extend or reorder only the remaining queue, or use the pinned single-chart action after set completion to replace it with a one-off chart. Match summaries remain in History until deletion; raw SQLite and NDJSON journals are automatically retained for 30 days by default. Runtime logs are capped at 14 days/64 MiB and chart-hash cache entries at 30 days/128 MiB. Choose **Room Options > Exit Online** after the event to close the room, flush storage, stop renderers/API/exports, and terminate the hidden runtime.

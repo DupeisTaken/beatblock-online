@@ -411,13 +411,16 @@ impl RoomEngine {
         if from >= self.snapshot.setlist.len() || to >= self.snapshot.setlist.len() {
             bail!("setlist index is out of range");
         }
-        if matches!(
-            self.snapshot.lifecycle,
-            RoomLifecycle::Results | RoomLifecycle::SetComplete
-        ) && self
-            .snapshot
-            .current_setlist_index
-            .is_some_and(|active| from <= active || to <= active)
+        let crosses_completed_entry =
+            self.snapshot.setlist[from].completed || self.snapshot.setlist[to].completed;
+        if crosses_completed_entry
+            || matches!(
+                self.snapshot.lifecycle,
+                RoomLifecycle::Results | RoomLifecycle::SetComplete
+            ) && self
+                .snapshot
+                .current_setlist_index
+                .is_some_and(|active| from <= active || to <= active)
         {
             bail!("completed setlist entries cannot be reordered");
         }
@@ -1586,6 +1589,7 @@ mod tests {
         assert_eq!(room.snapshot.lifecycle, RoomLifecycle::ChartLocked);
         assert_eq!(room.snapshot.current_setlist_index, Some(1));
         assert_eq!(room.snapshot.chart.as_ref().unwrap().song_name, "Second");
+        assert!(room.move_setlist(1, 0).is_err());
         assert!(!room.player(&host).unwrap().ready);
         assert!(!room.player(&host).unwrap().verified);
     }

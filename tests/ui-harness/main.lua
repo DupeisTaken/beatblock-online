@@ -56,6 +56,29 @@ local chart={
   hash=string.rep('a',64),packageName='signal.zip',songName='Signal Through The Static',
   variant='Expert',expectedMaxHits=842,official=false,transferMode='host_transfer',
 }
+local function setlistEntry(index,name,variant,completed,official)
+  return {
+    id='set-'..tostring(index),
+    chart={
+      hash=string.rep(string.char(96+(index%6)+1),64),
+      packageName='chart-'..tostring(index)..'.zip',
+      songName=name or ('Chart '..tostring(index)),
+      variant=variant or (index%2==0 and 'Hard' or 'Expert'),
+      expectedMaxHits=800+index,
+      official=official==true,
+      transferMode=official and 'verify_only' or 'host_transfer',
+    },
+    completed=completed==true,
+  }
+end
+local function setlistOf(count)
+  local entries={}
+  for index=1,count do
+    entries[index]=setlistEntry(index,index==1 and chart.songName or nil)
+  end
+  entries[1].chart=chart
+  return entries
+end
 local participants={
   player('host-1','Host','host',true,true,1,99.82),
   player('request-1','New Challenger With A Very Long Name','player',false,false,nil,nil),
@@ -69,11 +92,7 @@ local roomFixture={
   id='visual-room',name='Saturday Showcase',hostSessionId='host-1',lifecycle='ready',
   admissionMode='host_approval',allowChartTransfers=true,validityChecksEnabled=true,requireSameGameBuild=true,participants=participants,chart=chart,
   forceStart=false,currentSetlistIndex=0,createdAtMs=1,updatedAtMs=1,
-  setlist={
-    {id='set-1',chart=chart,completed=false},
-    {id='set-2',chart={songName='Neon Relay',variant='Hard'},completed=false},
-    {id='set-3',chart={songName='Final Circuit',variant='Expert'},completed=false},
-  },
+  setlist=setlistOf(3),
 }
 local baseRenderers={}
 for index,id in ipairs({'A','B','C','D'}) do
@@ -89,7 +108,9 @@ BBT={
   testedBeatblockVersion='1.7.1a',
   context={sessionId='host-1',playerName='Host',lobbyId='visual-room'},
   lastLobby=roomFixture,companionConnected=true,runtimeStarting=false,connected=true,
-  chartVerified=true,hudEnabled=true,settings={hostAddress='192.168.1.24',hostPort=32145,hudEnabled=true},
+  chartVerified=true,hudEnabled=true,settings={
+    hostAddress='192.168.1.24',hostPort=32145,hudEnabled=true,rendererDesktopMute=true,
+  },
   renderers=baseRenderers,history={
     {name='Friday Finals',status='CLOSED'},{name='Practice Room',status='SET COMPLETE'},
   },
@@ -123,8 +144,13 @@ function BBT.update() end
 function BBT.maybeLaunchScheduledChart() return false end
 function BBT.exitOnline() end
 function BBT.openInstaller() end
-function BBT.openOfficialSelect() end
-function BBT.openChartSelect() end
+BBT.selectorLog={}
+function BBT.openOfficialSelect(mode)
+  BBT.selectorLog[#BBT.selectorLog+1]={source='official',mode=mode}
+end
+function BBT.openChartSelect(mode)
+  BBT.selectorLog[#BBT.selectorLog+1]={source='custom',mode=mode}
+end
 
 local forwardedKey
 local forwardedText
@@ -154,7 +180,11 @@ local function reset()
   BBT.companionConnected=true; BBT.runtimeStarting=false; BBT.lastError=nil; BBT.chartTransfer=nil
   BBT.renderers=baseRenderers; BBT.mirrorEnabled=false
   BBT.commandLog={}; BBT.pendingRequestId=nil; BBT.lastCompletedRequestId=nil
-  roomFixture.validityChecksEnabled=true
+  BBT.selectorLog={}; BBT.chartVerified=true
+  BBT.settings.hudEnabled=true; BBT.settings.rendererDesktopMute=true
+  roomFixture.allowChartTransfers=true; roomFixture.autoRequestChartTransfers=false
+  roomFixture.validityChecksEnabled=true; roomFixture.requireSameGameBuild=true
+  roomFixture.chart=chart; roomFixture.setlist=setlistOf(3); roomFixture.currentSetlistIndex=0
   for _,participant in ipairs(participants) do
     participant.validity=participant.admitted and 'valid' or 'pending'
     participant.invalidReason=nil
@@ -163,7 +193,7 @@ local function reset()
   roomFixture.lifecycle='ready'; participants[3].verified=true; participants[3].ready=true
   online.workspace='room'; online.rosterFilter='all'; online.selectedSessionId='host-1'
   online.modal=nil; online.broadcastAdvanced=false; online.broadcastSlot='A'; online.broadcastDraft=nil
-  online.setlistSelection=1; online.setlistOffset=0
+  online.setlistSelection=1; online.selectedSetlistEntryId=nil; online.setlistOffset=0
   online.advanceRequestId=nil; online.advancePreviousHash=nil; online.focusId='session_primary'
 end
 local scenarios={
@@ -185,11 +215,67 @@ local scenarios={
   {'consent-warning',function() reset(); BBT.context.sessionId='player-2'; online.modal={kind='confirm',title='SCRIPT CONTENT',message='This package contains Lua or executable content and requires separate explicit confirmation.',label='ACCEPT',run=function() end} end},
   {'live-results',function() reset(); roomFixture.lifecycle='results'; participants[4].validity='dnf'; participants[5].validity='invalid'; participants[5].invalidReason='Missing ordered score event 27'; online.selectedSessionId='player-4' end},
   {'host-directing',function() reset(); participants[1].role='spectator'; participants[1].ready=true; participants[1].verified=true; online.selectedSessionId='host-1' end},
+  {'setlist-empty',function()
+    reset(); roomFixture.chart=nil; roomFixture.setlist={}; roomFixture.currentSetlistIndex=nil
+    roomFixture.lifecycle='forming'; online.workspace='setlist'
+  end},
   {'setlist',function() reset(); online.workspace='setlist' end},
-  {'setlist-results',function() reset(); roomFixture.lifecycle='results'; online.workspace='setlist'; online.setlistSelection=2 end},
+  {'setlist-six',function()
+    reset(); roomFixture.setlist=setlistOf(6); online.workspace='setlist'
+  end},
+  {'setlist-overflow',function()
+    reset(); roomFixture.setlist=setlistOf(9); online.workspace='setlist'
+    online.selectedSetlistEntryId='set-8'; online.setlistSelection=8
+  end},
+  {'setlist-results',function()
+    reset(); roomFixture.lifecycle='results'; roomFixture.setlist[1].completed=true
+    online.workspace='setlist'; online.selectedSetlistEntryId='set-2'; online.setlistSelection=2
+  end},
+  {'setlist-complete',function()
+    reset(); roomFixture.lifecycle='set_complete'; roomFixture.currentSetlistIndex=2
+    for _,entry in ipairs(roomFixture.setlist) do entry.completed=true end
+    online.workspace='setlist'; online.selectedSetlistEntryId='set-3'; online.setlistSelection=3
+  end},
+  {'setlist-locked',function()
+    reset(); roomFixture.lifecycle='playing'; roomFixture.setlist=setlistOf(6)
+    online.workspace='setlist'; online.selectedSetlistEntryId='set-3'; online.setlistSelection=3
+  end},
+  {'setlist-readonly',function()
+    reset(); roomFixture.setlist=setlistOf(6); BBT.context.sessionId='player-2'
+    online.workspace='setlist'; online.selectedSetlistEntryId='set-3'; online.setlistSelection=3
+  end},
+  {'setlist-unicode',function()
+    reset(); roomFixture.setlist=setlistOf(6)
+    roomFixture.setlist[3].chart.songName=string.rep(string.char(231,149,140),20)..' Finale'
+    roomFixture.setlist[3].chart.variant='超長難度名'
+    online.workspace='setlist'; online.selectedSetlistEntryId='set-3'; online.setlistSelection=3
+  end},
+  {'single-chart-source',function()
+    reset(); roomFixture.chart=nil; roomFixture.setlist={}; roomFixture.currentSetlistIndex=nil
+    roomFixture.lifecycle='forming'; online:openSingleChartSource()
+  end},
+  {'single-chart-replace',function()
+    reset(); roomFixture.lifecycle='set_complete'; roomFixture.currentSetlistIndex=2
+    for _,entry in ipairs(roomFixture.setlist) do entry.completed=true end
+    online:openSingleChartSource(); online:chooseSingleChartSource(true)
+  end},
   {'history',function() reset(); online.workspace='history' end},
   {'settings',function() reset(); online.workspace='settings' end},
   {'settings-casual',function() reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false end},
+  {'settings-automatic',function()
+    reset(); online.workspace='settings'; roomFixture.autoRequestChartTransfers=true
+  end},
+  {'settings-maximum',function()
+    reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false
+    roomFixture.requireSameGameBuild=false; roomFixture.autoRequestChartTransfers=true
+    BBT.settings.hudEnabled=false; BBT.settings.rendererDesktopMute=false
+  end},
+  {'settings-locked',function()
+    reset(); online.workspace='settings'; roomFixture.lifecycle='playing'
+  end},
+  {'settings-readonly',function()
+    reset(); online.workspace='settings'; BBT.context.sessionId='player-2'
+  end},
   {'help',function() reset(); online.workspace='help' end},
   {'confirmation',function() reset(); online.modal={kind='confirm',title='CLOSE ROOM',message='Close this room and disconnect every participant?',label='CLOSE ROOM',run=function() end} end},
   {'broadcast-basic',function() reset(); online.workspace='broadcast' end},
@@ -303,11 +389,41 @@ function love.load()
   online:drawState()
   local settingsText={}
   for _,entry in ipairs(BBT.layoutAudit.text or {}) do settingsText[entry.value]=true end
-  assert(settingsText['BBT v0.3.0-beta.4  /  ONLINE'],'Header must show the Beatblock Online product version')
+  assert(settingsText['BEATBLOCK ONLINE'],'Header must identify the product without a duplicate abbreviation')
+  assert(settingsText['v0.3.0-beta.4  /  READY'],'Header must show version and concise runtime state')
   assert(settingsText['v0.3.0-beta.4'],'Compatibility must show the installed Online version')
   assert(settingsText['V3 / MATCH'],'Compatibility must document the matching protocol')
   assert(settingsText['1.7.1a+'],'Compatibility must identify the tested Beatblock baseline')
   assert(settingsText['BUILD [d40b7083]'],'Compatibility must show the running game build token')
+  for _,label in ipairs({
+    'HUD: ON','RUN CHECKS: ON','BUILD: SAME','REQUESTS: MANUAL',
+    'DESKTOP MUTE: ON','CLEAR TRANSFER CACHE',
+  }) do
+    assert(settingsText[label],'Settings must expose the complete state/action label '..label)
+  end
+  activate('settings_hud')
+  assert(BBT.commandLog[1].kind=='settings.update' and BBT.commandLog[1].payload.hudEnabled==false,
+    'Settings HUD state control must emit the disabled state')
+
+  reset(); online.workspace='settings'
+  activate('settings_renderer_mute')
+  assert(BBT.commandLog[1].kind=='settings.update'
+    and BBT.commandLog[1].payload.rendererDesktopMute==false,
+    'Desktop mute state control must preserve the renderer isolation setting')
+
+  reset(); online.workspace='settings'
+  activate('settings_transfer_policy')
+  assert(BBT.commandLog[1].kind=='room.chart_transfer_policy_set'
+    and BBT.commandLog[1].payload.autoRequest==true,
+    'Settings Requests state control must enable automatic requests explicitly')
+
+  reset(); online.workspace='settings'
+  activate('settings_clear_cache')
+  assert(online.modal and online.modal.kind=='confirm','Clearing transfer cache must remain destructive')
+  activate('modal_confirm')
+  assert(BBT.commandLog[1].kind=='chart.cache_clear','Transfer cache confirmation must emit the cache command')
+
+  reset(); online.workspace='settings'
   activate('settings_validity')
   assert(online.modal and online.modal.kind=='confirm','Disabling run checks must explain the competitive tradeoff')
   activate('modal_confirm')
@@ -325,6 +441,37 @@ function love.load()
   activate('settings_validity')
   assert(BBT.commandLog[1].kind=='room.validity_checks_set' and BBT.commandLog[1].payload.enabled==true,'Settings must re-enable checks without a destructive confirmation')
 
+  reset(); online.workspace='settings'; roomFixture.requireSameGameBuild=false
+  activate('settings_build_policy')
+  assert(BBT.commandLog[1].kind=='room.game_build_policy_set'
+    and BBT.commandLog[1].payload.required==true,
+    'Settings Build state control must restore exact matching without a destructive confirmation')
+
+  reset(); online.workspace='settings'; roomFixture.lifecycle='playing'; online:drawState()
+  for _,id in ipairs({'settings_validity','settings_build_policy','settings_transfer_policy'}) do
+    assert(not optionalControl(id),'Host room policy must lock during play: '..id)
+  end
+  for _,id in ipairs({'settings_hud','settings_renderer_mute','settings_clear_cache'}) do
+    assert(optionalControl(id),'Local Settings action must remain available during play: '..id)
+  end
+
+  reset(); online.workspace='settings'; BBT.context.sessionId='player-2'; online:drawState()
+  for _,id in ipairs({'settings_validity','settings_build_policy','settings_transfer_policy'}) do
+    assert(not optionalControl(id),'Non-host room policy must remain read-only: '..id)
+  end
+
+  reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false
+  roomFixture.requireSameGameBuild=false; roomFixture.autoRequestChartTransfers=true
+  BBT.settings.hudEnabled=false; BBT.settings.rendererDesktopMute=false
+  online:drawState()
+  local maximumSettings={}
+  for _,entry in ipairs(BBT.layoutAudit.text or {}) do maximumSettings[entry.value]=true end
+  for _,label in ipairs({
+    'HUD: OFF','RUN CHECKS: OFF','BUILD: ANY','REQUESTS: AUTO','DESKTOP MUTE: OFF',
+  }) do
+    assert(maximumSettings[label],'Maximum Settings combination must preserve '..label)
+  end
+
   reset(); roomFixture.lifecycle='results'; participants[5].validity='invalid'; participants[5].invalidReason='Missing ordered score event 27'; online.selectedSessionId='player-4'
   activate('participant_run_details')
   assert(online.modal and online.modal.message=='Missing ordered score event 27','Invalid result details must expose the authoritative reason')
@@ -340,16 +487,99 @@ function love.load()
   assert(online.rosterOffset>0,'Selecting an off-page invalid result must reveal its roster page')
   assert(online.modal and online.modal.message:find('did not provide',1,true),'Invalid results without a legacy reason must still expose details')
 
-  reset(); online.workspace='setlist'; online.setlistSelection=2
+  reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'; online.setlistSelection=2
+  online:drawState()
   local setlistUp=findControl('setlist_up')
-  local setlistRemove=findControl('setlist_remove')
   local setlistDown=findControl('setlist_down')
-  assert(setlistUp.x+setlistUp.w<=setlistRemove.x
-    and setlistRemove.x+setlistRemove.w<=setlistDown.x,
-    'Setlist reorder/remove controls must remain in UP, REMOVE, DOWN visual order')
+  local setlistRemove=findControl('setlist_remove')
+  assert(setlistUp.x+setlistUp.w<=setlistDown.x
+    and setlistDown.x+setlistDown.w<=setlistRemove.x,
+    'Setlist row actions must remain in Move Up, Move Down, Remove visual order')
+  assert(online.selectedSetlistEntryId=='set-2' and online.setlistSelection==2,
+    'Setlist selection must resolve the selected entry id')
+  roomFixture.setlist[2],roomFixture.setlist[3]=roomFixture.setlist[3],roomFixture.setlist[2]
+  online:drawState()
+  assert(online.selectedSetlistEntryId=='set-2' and online.setlistSelection==3,
+    'Setlist selection must follow a stable entry id across async snapshot reorder')
   activate('setlist_up')
   assert(BBT.commandLog[1].kind=='setlist.move','Setlist Up must emit a move command')
-  assert(BBT.commandLog[1].payload.from==1 and BBT.commandLog[1].payload.to==0,'Setlist ordering must use zero-based runtime indexes')
+  assert(BBT.commandLog[1].payload.from==2 and BBT.commandLog[1].payload.to==1,
+    'Setlist ordering must resolve the current stable id to zero-based runtime indexes')
+  assert(online.selectedSetlistEntryId=='set-2',
+    'A pending move must retain selected identity until the authoritative snapshot arrives')
+
+  reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'; online.setlistSelection=2
+  online:drawState(); table.remove(roomFixture.setlist,2); online:drawState()
+  assert(online.selectedSetlistEntryId=='set-3' and online.setlistSelection==2,
+    'A removed selected entry must fall back to the adjacent authoritative row')
+
+  reset(); roomFixture.chart=nil; roomFixture.setlist={}; roomFixture.currentSetlistIndex=nil
+  roomFixture.lifecycle='forming'
+  activate('session_primary')
+  assert(online.modal and online.modal.kind=='chart_source',
+    'Global Select Chart must open the single-chart source dialog')
+  activate('single_chart_official')
+  assert(#BBT.selectorLog==1 and BBT.selectorLog[1].source=='official'
+    and BBT.selectorLog[1].mode=='single',
+    'One-off official selection must leave for Beatblock only after the source choice')
+
+  reset(); roomFixture.lifecycle='set_complete'; roomFixture.currentSetlistIndex=2
+  for _,entry in ipairs(roomFixture.setlist) do entry.completed=true end
+  activate('session_primary')
+  assert(online.modal and online.modal.kind=='chart_source',
+    'Select Next Chart must use the same single-chart source dialog')
+  activate('single_chart_custom')
+  assert(online.modal and online.modal.kind=='confirm' and #BBT.selectorLog==0,
+    'Replacing a nonempty ordered set must confirm before leaving Online')
+  activate('modal_cancel')
+  assert(#BBT.selectorLog==0 and #roomFixture.setlist==3,
+    'Cancelling replacement must preserve the ordered queue and avoid SongSelect')
+  activate('session_primary'); activate('single_chart_custom'); activate('modal_confirm')
+  assert(#BBT.selectorLog==1 and BBT.selectorLog[1].source=='custom'
+    and BBT.selectorLog[1].mode=='single',
+    'Confirmed replacement must open the one-off custom selector')
+
+  reset(); online.workspace='setlist'
+  activate('setlist_add_official')
+  assert(BBT.selectorLog[1].source=='official' and BBT.selectorLog[1].mode=='setlist',
+    'Setlist Add Official must append instead of replacing the ordered set')
+  reset(); online.workspace='setlist'
+  activate('setlist_add_custom')
+  assert(BBT.selectorLog[1].source=='custom' and BBT.selectorLog[1].mode=='setlist',
+    'Setlist Add Custom must append instead of replacing the ordered set')
+
+  reset(); roomFixture.lifecycle='playing'; online.workspace='setlist'; online:drawState()
+  for _,id in ipairs({
+    'setlist_add_official','setlist_add_custom','setlist_up','setlist_down','setlist_remove',
+  }) do
+    assert(not optionalControl(id),'Setlist editing must lock during play: '..id)
+  end
+  reset(); BBT.context.sessionId='player-2'; online.workspace='setlist'; online:drawState()
+  for _,id in ipairs({
+    'setlist_add_official','setlist_add_custom','setlist_up','setlist_down','setlist_remove',
+  }) do
+    assert(not optionalControl(id),'Non-host Setlist must remain read-only: '..id)
+  end
+
+  reset(); roomFixture.lifecycle='results'; roomFixture.setlist[1].completed=true
+  online.workspace='setlist'; online:drawState()
+  local nextChartLabels=0
+  for _,entry in ipairs(BBT.layoutAudit.text or {}) do
+    if entry.value=='NEXT CHART' then nextChartLabels=nextChartLabels+1 end
+  end
+  assert(nextChartLabels==1 and not optionalControl('setlist_next'),
+    'Results must expose exactly one global Next Chart action')
+
+  reset(); online.workspace='setlist'; online.selectedSetlistEntryId='set-2'
+  online.setlistSelection=2; online:drawState()
+  local controlOrder={}
+  for index,control in ipairs(online.controls) do controlOrder[control.id]=index end
+  assert(controlOrder['setlist_entry_set-1']<controlOrder.setlist_add_official
+    and controlOrder.setlist_add_official<controlOrder.setlist_add_custom
+    and controlOrder.setlist_add_custom<controlOrder.setlist_up
+    and controlOrder.setlist_up<controlOrder.setlist_down
+    and controlOrder.setlist_down<controlOrder.setlist_remove,
+    'Setlist focus must follow rows, add actions, then selected-row actions')
 
   reset(); online.workspace='broadcast'; online.broadcastAdvanced=true
   online.broadcastDraft={mode='clean',width=1280,height=720,fps=60,delayMs=500}
@@ -379,8 +609,10 @@ function love.load()
   online.workspace='setlist'
   online:drawState()
   for _,control in ipairs(online.controls) do
-    assert(control.id~='setlist_official','disabled Setlist action remained interactive')
-    assert(control.id~='setlist_custom','disabled Setlist action remained interactive')
+    assert(control.id~='setlist_add_official','disabled Setlist add action remained interactive')
+    assert(control.id~='setlist_add_custom','disabled Setlist add action remained interactive')
+    assert(control.id~='setlist_up' and control.id~='setlist_down'
+      and control.id~='setlist_remove','disabled Setlist row action remained interactive')
   end
   -- Allowed Unicode names can exceed a byte-based label budget. Opening a
   -- destructive confirmation must preserve valid UTF-8.
