@@ -5,6 +5,7 @@ gaps, and questions that are not answered by the existing guides. Choose the
 template that matches the issue:
 
 - [Bug report](https://github.com/DupeisTaken/beatblock-online/issues/new?template=bug_report.yml)
+- [Beatblock compatibility report](https://github.com/DupeisTaken/beatblock-online/issues/new?template=beatblock_compatibility.yml)
 - [Feature request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=feature_request.yml)
 - [Enhancement request](https://github.com/DupeisTaken/beatblock-online/issues/new?template=enhancement_request.yml)
 - [Documentation change](https://github.com/DupeisTaken/beatblock-online/issues/new?template=documentation.yml)
@@ -18,8 +19,8 @@ prioritize, and close without losing related discussion.
 
 ## Choose an issue tag
 
-GitHub calls these tags **labels**. Each issue template applies the matching
-primary label automatically:
+GitHub calls these tags **labels**. Each issue form applies the matching label
+automatically. Compatibility reports receive both `bug` and `compatibility`:
 
 | Label           | Use it for                                                                 |
 | --------------- | -------------------------------------------------------------------------- |
@@ -28,6 +29,7 @@ primary label automatically:
 | `enhancement`   | A focused improvement to existing behavior                                 |
 | `documentation` | Missing, unclear, or inaccurate documentation                              |
 | `question`      | A usage or development question not answered by the documentation          |
+| `compatibility` | An unverified Beatblock build or an update that breaks integration         |
 
 Maintainers may add or replace labels during triage:
 
@@ -74,6 +76,12 @@ problem:
 Copy error text exactly, but remove room passwords, public addresses, usernames,
 filesystem user names, tokens, and other personal or secret data. Do not attach
 an entire log when a short excerpt around the failure is enough.
+
+Use the dedicated compatibility form when a newer Beatblock build is accepted
+but unverified, or when an update breaks installation or runtime behavior.
+Include the complete displayed Beatblock version and bracketed build token.
+Newer builds remain unverified until that exact version and build token pass
+the compatibility suite.
 
 ## Request a feature or enhancement
 

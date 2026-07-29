@@ -5,14 +5,13 @@
 GitHub Release titles include the Beatblock version exercised by that Online
 release:
 
-| Beatblock Online | Online protocol | Tested Beatblock build            | Newer Beatblock builds   |
-| ---------------- | --------------: | --------------------------------- | ------------------------ |
-| `0.3.0-beta.4`   |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted, but unverified |
+| Beatblock Online | Online protocol | Tested Beatblock build            | Newer Beatblock builds |
+| ---------------- | --------------: | --------------------------------- | ---------------------- |
+| `0.3.0-beta.4`   |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted, unverified   |
 
 The release title is **v0.3.0-beta.4 for Beatblock 1.7.1a+**. The `+` means the
-installer accepts later structurally valid Beatblock releases; it does not mean
-those releases were tested. `1.7.1a (Early Access)[d40b7083]` is the only
-verified baseline for this Online release.
+installer may accept newer structurally valid Beatblock releases; it does not
+mean they are verified or promise forward compatibility.
 
 The Git tag remains the machine-readable semver tag `v0.3.0-beta.4`. Keeping
 human compatibility text in the GitHub Release title preserves update checks,
@@ -22,8 +21,10 @@ package-version verification, and normal Git tooling.
 
 The installer validates the Beatblock folder structure, the injection method,
 and Beatblock Online's own payloads. It does not reject a new upstream release
-because `Beatblock.exe` changed. This means an already downloaded installer can
-normally install after Beatblock updates without a new Beatblock Online build.
+because `Beatblock.exe` changed. This means an already downloaded installer may
+install after a Beatblock update, but that newer build remains unverified until
+the exact displayed version and bracketed build token pass the compatibility
+suite.
 
 Exact Beatblock identity becomes available after the game starts. Beatblock
 draws a version such as `1.7.1a (Early Access)[d40b7083]` in the top-right
@@ -58,8 +59,10 @@ avoids an in-flight relaxed connection crossing into a newly strict roster.
 
 ## When a new Beatblock release breaks Online
 
-Newer releases are accepted but unverified. An upstream change can still move
-an injection point, rename a required file, or change gameplay behavior.
+Newer structurally valid releases may be accepted but remain unverified until
+their exact displayed version and bracketed build token pass the compatibility
+suite. Upstream changes can move an injection point, rename a required file, or
+change gameplay behavior.
 
 1. Confirm the complete version and bracketed build token in Beatblock's
    top-right corner.
@@ -67,11 +70,10 @@ an injection point, rename a required file, or change gameplay behavior.
 3. Save a sanitized installer/runtime log. Do not upload Beatblock executables
    or game archives.
 4. File the dedicated
-   [Installer incompatible with latest Beatblock release](https://github.com/DupeisTaken/beatblock-online/issues/new?template=beatblock_compatibility.yml)
+   [Beatblock build compatibility](https://github.com/DupeisTaken/beatblock-online/issues/new?template=beatblock_compatibility.yml)
    report.
 
-That issue category records the failure stage, complete displayed version, and
-exact bracketed upstream build token so maintainers can schedule and reproduce
-an adapter update. The tested baseline can advance in the next Online release,
-but existing installers continue accepting structurally valid later builds
-unless an actual upstream break requires new code.
+That issue category records the failure stage and exact upstream build so
+maintainers can schedule an adapter update. The tested baseline can advance in
+the next Online release after the exact version and build token pass the
+compatibility suite.

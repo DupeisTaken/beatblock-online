@@ -1,18 +1,19 @@
-name: Installer incompatible with latest Beatblock release
-description: Report that a new Beatblock update no longer installs, injects, starts Online, or joins rooms correctly
-title: '[Beatblock compatibility]: '
-labels: [bug]
+name: Beatblock build compatibility
+description: Report an unverified Beatblock build or update that breaks Beatblock Online
+labels: [bug, compatibility]
 body:
   - type: markdown
     attributes:
       value: |
-        Beatblock Online accepts newer structurally valid Beatblock builds, but they remain unverified until the exact displayed version and bracketed build token pass the compatibility suite. Use this category when an accepted Beatblock update breaks the installer or runtime so maintainers can reproduce it and schedule an adapter update. Before reporting, read the [compatibility policy](https://github.com/DupeisTaken/beatblock-online/blob/main/docs/compatibility.md).
+        Beatblock Online accepts newer structurally valid Beatblock builds, but they remain unverified until the exact displayed version and bracketed build token pass the compatibility suite. Use this form when an unverified build or Beatblock update breaks installation or runtime behavior. Before reporting, read the [compatibility policy](https://github.com/DupeisTaken/beatblock-online/blob/main/docs/compatibility.md).
   - type: checkboxes
     id: checks
     attributes:
       label: Before submitting
       options:
         - label: I reproduced this with the latest Beatblock Online release.
+          required: true
+        - label: I searched open and closed issues for this Beatblock build.
           required: true
         - label: I launched Beatblock once after its update and retried the installer.
           required: true
@@ -38,7 +39,7 @@ body:
     attributes:
       label: Failure stage
       options:
-        - Installer rejects or cannot locate the game
+        - Installer rejects, cannot locate, or marks the game incompatible
         - Installer completes but Online is missing
         - Online opens but the runtime fails
         - Same-build room join is rejected unexpectedly
