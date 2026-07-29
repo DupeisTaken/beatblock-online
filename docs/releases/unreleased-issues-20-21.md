@@ -47,6 +47,10 @@ scoring hitsound, and combining player channels duplicates the song.
   ExtraTap decisions.
 - Mines and mine-holds are avoided, and no custom miss, barely, or duplicate
   hitsound path is introduced.
+- Autoplay has a dedicated APPDATA/Lovely profile, disables Beatblock save
+  paths before changing options, and enables hitsounds plus nonzero music/SFX
+  volume only in its disposable in-memory settings. Ordinary renderer profiles
+  are unchanged.
 - Autoplay allocates no video canvases or frame ring, but it is still one
   additional Beatblock simulation/audio process.
 - Host and Commentator plans carry backward-compatible optional protocol-v3

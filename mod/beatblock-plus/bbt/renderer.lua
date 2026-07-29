@@ -226,6 +226,23 @@ function Renderer.useDefaultCostume()
   savedata.costumes.currentCostume='none'
 end
 
+function Renderer.disableProfilePersistence()
+  -- LÖVE's Windows save directory ignores the child APPDATA override. Disable
+  -- every known Beatblock save path before renderer-only options are changed,
+  -- so even a platform-specific save-directory fallback cannot persist them.
+  if sdfunc and sdfunc.save then
+    Renderer.originalSave = Renderer.originalSave or sdfunc.save
+    sdfunc.save = function() end
+  end
+  -- Results writes played-level data directly instead of going through
+  -- sdfunc.save. A renderer is a disposable replay process and must never
+  -- mutate the player's progress or unlock files.
+  if dpf and dpf.saveJson then
+    Renderer.originalDpfSaveJson = Renderer.originalDpfSaveJson or dpf.saveJson
+    dpf.saveJson = function() end
+  end
+end
+
 function Renderer.start()
   if not Renderer.active then return end
   local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
@@ -244,20 +261,7 @@ function Renderer.start()
     end
   end
   local previous = cs
-  -- LÖVE's Windows save directory ignores the child APPDATA override. The
-  -- renderer is disposable, so prevent it from writing the player's save when
-  -- leaving menu/game states.
-  if sdfunc and sdfunc.save then
-    Renderer.originalSave = Renderer.originalSave or sdfunc.save
-    sdfunc.save = function() end
-  end
-  -- Results writes played-level data directly instead of going through
-  -- sdfunc.save. A renderer is a disposable replay process and must never
-  -- mutate the player's progress or unlock files.
-  if dpf and dpf.saveJson then
-    Renderer.originalDpfSaveJson = Renderer.originalDpfSaveJson or dpf.saveJson
-    dpf.saveJson = function() end
-  end
+  Renderer.disableProfilePersistence()
   if savedata and savedata.options and savedata.options.game then
     -- The remote angle already contains circle-snap and April Fools offsets.
     -- Reapplying either in the hidden child produces a second, false motion.
@@ -312,6 +316,15 @@ function Renderer.installAutoplayHooks()
     -- guarantees exactly one normal positive hitsound per scoring opportunity.
     accessibility.taps = 'auto'
     accessibility.sides = 'auto'
+  end
+  local audio = savedata and savedata.options and savedata.options.audio
+  if audio then
+    -- Autoplay is a disposable, separately rooted process. Override a muted
+    -- player save only in this process so the canonical song-plus-hits mix
+    -- cannot silently omit native hitsounds.
+    audio.hitsounds = true
+    audio.sfxvolume = math.max(tonumber(audio.sfxvolume) or 7, 1)
+    audio.musicvolume = math.max(tonumber(audio.musicvolume) or 7, 1)
   end
   if Block and Block.checkTouchingPaddle then
     Block.checkTouchingPaddle = function(note)

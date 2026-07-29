@@ -76,11 +76,8 @@ struct SyncEpoch {
     released: bool,
 }
 
-/// Creates an isolated APPDATA tree for spectator Beatblock processes. Keeping
-/// this outside the installer avoids pulling installer UI/payload code into the
-/// lightweight runtime binary.
-pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
-    let profile = data_dir.join("renderer-profile");
+fn prepare_profile(data_dir: &Path, directory_name: &str) -> Result<PathBuf> {
+    let profile = data_dir.join(directory_name);
     let directory = profile.join("Beatblock/Mods/BeatblockOnlineRenderer");
     std::fs::create_dir_all(directory.join("bbt"))?;
     std::fs::create_dir_all(directory.join("lovely"))?;
@@ -97,6 +94,20 @@ pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
         std::fs::write(target, bytes)?;
     }
     Ok(profile)
+}
+
+/// Creates an isolated APPDATA tree for spectator Beatblock processes. Keeping
+/// this outside the installer avoids pulling installer UI/payload code into the
+/// lightweight runtime binary.
+pub fn prepare_renderer_profile(data_dir: &Path) -> Result<PathBuf> {
+    prepare_profile(data_dir, "renderer-profile")
+}
+
+/// Autoplay changes accessibility and audio options in memory to drive native
+/// hits. Give it a separate filesystem root as well as the Lua no-save guard so
+/// no APPDATA-respecting Beatblock path can contaminate ordinary renderers.
+pub fn prepare_autoplay_profile(data_dir: &Path) -> Result<PathBuf> {
+    prepare_profile(data_dir, "autoplay-profile")
 }
 
 pub struct RendererManager {
@@ -1851,7 +1862,10 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("bbt-autoplay-command-{}", rand::random::<u64>()));
         let manager = RendererManager::new(root.clone()).unwrap();
-        let profile = prepare_renderer_profile(&root).unwrap();
+        let renderer_profile = prepare_renderer_profile(&root).unwrap();
+        let renderer_state = renderer_profile.join("Beatblock/renderer-state.json");
+        std::fs::write(&renderer_state, b"ordinary-renderer-settings").unwrap();
+        let profile = prepare_autoplay_profile(&root).unwrap();
         let command = manager.autoplay_command(
             Path::new("Beatblock.exe"),
             &profile,
@@ -1868,6 +1882,14 @@ mod tests {
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("AUTOPLAY")));
         assert_eq!(env("BBT_RENDERER_AUTOPLAY"), Some(PathBuf::from("1")));
         assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
+        assert_eq!(env("APPDATA"), Some(profile.clone()));
+        assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
+        assert_ne!(env("APPDATA"), Some(renderer_profile));
+        assert_eq!(
+            std::fs::read(&renderer_state).unwrap(),
+            b"ordinary-renderer-settings",
+            "preparing Autoplay must not alter ordinary renderer profile state"
+        );
         assert_eq!(
             env("BBT_RENDERER_STATE_PATH"),
             Some(manager.state_path(AUTOPLAY_SLOT))

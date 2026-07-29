@@ -79,6 +79,12 @@ for each positive scoring opportunity, including taps, holds, bounce, side, and
 extra-tap paths. Mines and mine-holds are deliberately avoided; no miss or
 barely sound is synthesized.
 
+Autoplay uses a dedicated APPDATA/Lovely profile instead of the profile shared
+by visual renderers. Before applying its renderer-only accessibility settings,
+the Lua adapter disables both Beatblock save paths; it then enables hitsounds
+and ensures nonzero music/SFX volumes in memory. Those changes cannot persist
+into, or be observed by, an ordinary renderer profile.
+
 Autoplay requires an active featured renderer. Enablement and its featured clock
 source are locked during countdown/gameplay. Host-granted Commentator mirrors
 receive the optional plan field and may reproduce the source only after enabling

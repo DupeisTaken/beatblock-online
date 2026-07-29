@@ -25,13 +25,46 @@ type LuaClose = unsafe extern "C" fn(*mut c_void);
 fn canonical_autoplay_uses_native_one_shot_guards_and_avoids_hazards() {
     let renderer = include_str!("../../mod/shared/bbt/renderer.lua");
     let scenarios = r#"
-savedata={options={accessibility={taps='default',sides='default'}}}
 Block={checkTouchingPaddle=function() return false,true end}
 MineHold={checkTouchingPaddle=function() return true end}
+local ordinaryProfile={options={
+  accessibility={taps='default',sides='default'},
+  audio={hitsounds=false,sfxvolume=0,musicvolume=0}
+}}
+savedata=ordinaryProfile
+Renderer.autoplay=false
 Renderer.installAutoplayHooks()
+assert(ordinaryProfile.options.accessibility.taps=='default')
+assert(ordinaryProfile.options.accessibility.sides=='default')
+assert(ordinaryProfile.options.audio.hitsounds==false)
+assert(ordinaryProfile.options.audio.sfxvolume==0)
+assert(ordinaryProfile.options.audio.musicvolume==0)
 
+local autoplayProfile={options={
+  accessibility={taps='default',sides='default'},
+  audio={hitsounds=false,sfxvolume=0,musicvolume=0}
+}}
+savedata=autoplayProfile
+local saveCalls,jsonSaveCalls=0,0
+sdfunc={save=function() saveCalls=saveCalls+1 end}
+dpf={saveJson=function() jsonSaveCalls=jsonSaveCalls+1 end}
+Renderer.autoplay=true
+Renderer.autoplayHooksInstalled=false
+Renderer.disableProfilePersistence()
+Renderer.installAutoplayHooks()
+sdfunc.save()
+dpf.saveJson()
+assert(saveCalls==0 and jsonSaveCalls==0)
 assert(savedata.options.accessibility.taps=='auto')
 assert(savedata.options.accessibility.sides=='auto')
+assert(savedata.options.audio.hitsounds==true)
+assert(savedata.options.audio.sfxvolume>0)
+assert(savedata.options.audio.musicvolume>0)
+assert(ordinaryProfile.options.accessibility.taps=='default')
+assert(ordinaryProfile.options.accessibility.sides=='default')
+assert(ordinaryProfile.options.audio.hitsounds==false)
+assert(ordinaryProfile.options.audio.sfxvolume==0)
+assert(ordinaryProfile.options.audio.musicvolume==0)
 
 local function positiveCollision(name)
   local note={name=name,hitYet=false}

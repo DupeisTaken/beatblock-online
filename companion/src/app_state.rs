@@ -3232,7 +3232,7 @@ impl AppState {
             .chart
             .clone()
             .context("Autoplay Mix is waiting for the host to lock a chart")?;
-        let profile = crate::renderer::prepare_renderer_profile(&self.data_dir)?;
+        let profile = crate::renderer::prepare_autoplay_profile(&self.data_dir)?;
         let chart_path = self
             .selected_chart_path
             .read()
