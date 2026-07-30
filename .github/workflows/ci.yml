@@ -28,6 +28,10 @@ jobs:
       - run: git diff --exit-code -- protocol/schemas/v3/protocol.json
       - run: pnpm package:mods
       - run: pnpm test:patch-validation
+      # pnpm test:ui needs the game fixture and so stays local. This static gate
+      # enforces the parts of that contract which drifted unnoticed: the harness
+      # font table, and the audit classes the pixel comparison cannot see.
+      - run: pnpm test:ui-contract
       # The full mod gate remains local because it validates signatures against
       # the user's isolated, legally obtained game fixture.
       - run: pnpm test:mod:source
