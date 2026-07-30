@@ -19,9 +19,17 @@ local function externalFont(name,size)
   local bytes=file:read('*a'); file:close()
   return love.graphics.newFont(love.filesystem.newFileData(bytes,name),size)
 end
+-- These MUST mirror the shipped game's preload/fonts.lua exactly. Beatblock
+-- builds them as:
+--   main         = love.graphics.newFont("assets/fonts/Axmolotl.ttf", 16)
+--   digitalDisco = love.graphics.newFont("assets/fonts/DigitalDisco-Thin.ttf", 16)
+-- Online reasserts fonts.digitalDisco every frame, so any drift between this
+-- table and the game means the whole dashboard is baselined at metrics that do
+-- not exist in the product. A smaller size here silently hides real text
+-- overflow; do not "fix" a layout failure by changing a face or a size.
 fonts={
-  main=externalFont('DigitalDisco.ttf',14),
-  digitalDisco=externalFont('DigitalDisco-Thin.ttf',12),
+  main=externalFont('Axmolotl.ttf',16),
+  digitalDisco=externalFont('DigitalDisco-Thin.ttf',16),
 }
 love.graphics.setFont(fonts.digitalDisco)
 mouse={rx=0,ry=0,pressed=nil,disableGameplay=function() end}
@@ -652,7 +660,14 @@ function love.load()
 end
 
 function love.update(dt)
-  local x,y=love.mouse.getPosition(); mouse.rx=x; mouse.ry=y
+  -- Online moves focus onto whatever control the pointer is over, so sampling
+  -- the real cursor made the "deterministic" captures depend on where the
+  -- physical mouse happened to rest: any scenario with an enabled control under
+  -- that point recorded a different focused button. Park the pointer off-canvas
+  -- for autorun so focus comes only from focusId, and keep the live cursor for
+  -- the interactive harness a reviewer drives by hand.
+  if autorun then mouse.rx=-1000; mouse.ry=-1000
+  else local x,y=love.mouse.getPosition(); mouse.rx=x; mouse.ry=y end
   online:updateState(dt); pendingInputs={}; mouse.pressed=nil
   if not autorun then return end
   frames=frames+1

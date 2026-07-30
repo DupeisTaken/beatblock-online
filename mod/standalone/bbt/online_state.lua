@@ -20,12 +20,17 @@ local WORKSPACES = {
   {id='broadcast',label='BROADCAST'}, {id='history',label='HISTORY'},
   {id='settings',label='SETTINGS'}, {id='help',label='HELP'},
 }
+-- Chip widths are sized for the game's real 16pt menu font, not for an
+-- abbreviation that only fits a smaller QA font.
 local FILTERS = {
-  {id='all',label='ALL'}, {id='players',label='PLAYERS'},
-  {id='spectators',label='SPECTATORS'}, {id='pending',label='PENDING'},
+  {id='all',label='ALL',width=54}, {id='players',label='PLAYERS',width=76},
+  {id='spectators',label='SPECTATORS',width=100}, {id='pending',label='PENDING',width=74},
 }
 local STREAMS = {'A','B','C','D'}
 local ROSTER_PAGE_SIZE = 6
+-- Inspector action stack pitch: a 24px control plus a 2px gap. Four stacked
+-- actions plus five detail rows still end on the panel floor at 16pt.
+local ACTION_PITCH = 26
 
 local function pressed(name)
   if not maininput or not maininput.pressed then return false end
@@ -229,26 +234,30 @@ local function header(self)
   local room=currentRoom()
   local primary=Dashboard.primary(context())
   ui:panel(12,27,576,44)
+  -- Two 18px lines need a 19px pitch inside the 44px session strip. The
+  -- session action is wide enough for the longest primary label at 16pt.
   if room then
     local chart=room.chart
-    ui:text(room.name or 'ONLINE SESSION',22,34,220,'left','muted')
-    ui:text(chart and (chart.songName or chart.packageName) or 'NO CHART SELECTED',22,49,300,'left',chart and 'white' or 'yellow')
+    ui:text(room.name or 'ONLINE SESSION',22,31,220,'left','muted')
+    ui:text(chart and (chart.songName or chart.packageName) or 'NO CHART SELECTED',22,50,272,'left',chart and 'white' or 'yellow')
     if chart and primary.id~='request_chart' then
-      ui:text((chart.variant or '')..(chart.official and '  /  OFFICIAL' or '  /  CUSTOM'),325,34,125,'right','muted')
+      -- Ends 5px before the session action. The button paints an opaque fill, so
+      -- a right-aligned run that reached x=419 lost its last glyph under it.
+      ui:text((chart.variant or '')..(chart.official and '  /  OFFICIAL' or '  /  CUSTOM'),280,31,129,'right','muted')
     end
   else
-    ui:text('ONLINE SESSION',22,34,220,'left','muted')
-    ui:text(BBT.companionConnected and 'READY TO CONNECT' or 'LOCAL RUNTIME REQUIRED',22,49,300,'left',BBT.companionConnected and 'green' or 'yellow')
+    ui:text('ONLINE SESSION',22,31,220,'left','muted')
+    ui:text(BBT.companionConnected and 'READY TO CONNECT' or 'LOCAL RUNTIME REQUIRED',22,50,272,'left',BBT.companionConnected and 'green' or 'yellow')
   end
   if primary.id=='request_chart' then
-    button(self,'session_local_chart',325,36,122,26,'FIND LOCAL',function()
+    button(self,'session_local_chart',295,36,114,26,'FIND LOCAL',function()
       local active=currentRoom()
       if active and active.chart then
         if active.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
       end
     end,'cyan')
   end
-  button(self,'session_primary',454,36,124,26,primary.label,function() runPrimary(self,primary) end,primary.tone,primary.enabled)
+  button(self,'session_primary',414,36,164,26,primary.label,function() runPrimary(self,primary) end,primary.tone,primary.enabled)
 end
 
 function runPrimary(self,item)
@@ -283,23 +292,23 @@ local function participantActionButtons(self,target,x,y,w)
       button(self,'participant_approve',x,y,w,24,'APPROVE',function()
         BBT.command('room.admission_set',{sessionId=target.sessionId,admit=true,role=target.role})
       end,'green',room.lifecycle~='playing' and room.lifecycle~='countdown')
-      y=y+29
+      y=y+ACTION_PITCH
       button(self,'participant_reject',x,y,w,24,'REJECT',function()
         openConfirm(self,'REJECT REQUEST','Reject '..bounded(target.displayName,32)..' from this room?','REJECT',function()
           BBT.command('room.admission_set',{sessionId=target.sessionId,admit=false,role=target.role})
         end)
       end,'red')
-      return y+29
+      return y+ACTION_PITCH
     end
     button(self,'participant_role',x,y,w,24,target.role=='spectator' and 'MAKE PLAYER' or 'MAKE SPECTATOR',function()
       BBT.command('room.role_set',{sessionId=target.sessionId,role=target.role=='spectator' and 'player' or 'spectator'})
     end,'yellow',room.lifecycle~='playing' and room.lifecycle~='countdown')
-    y=y+29
+    y=y+ACTION_PITCH
     if target.role=='spectator' then
       button(self,'participant_commentator',x,y,w,24,target.commentatorAccess and 'REVOKE COMMENTATOR' or 'GRANT COMMENTATOR',function()
         BBT.command('room.commentator_set',{sessionId=target.sessionId,enabled=not target.commentatorAccess})
       end,target.commentatorAccess and 'yellow' or 'cyan')
-      y=y+29
+      y=y+ACTION_PITCH
     end
     button(self,'participant_remove',x,y,w,24,'REMOVE',function()
       openConfirm(self,'REMOVE PARTICIPANT','Remove '..bounded(target.displayName,32)..' from the room?','REMOVE',function()
@@ -313,7 +322,7 @@ local function participantActionButtons(self,target,x,y,w)
       button(self,'participant_host_play',x,y,w,24,participating and 'DIRECT NEXT RACE' or 'PLAY NEXT RACE',function()
         BBT.command('room.host_play_set',{participating=not participating})
       end,participating and 'yellow' or 'green',editable)
-      y=y+29
+      y=y+ACTION_PITCH
     end
     local transfer=BBT.chartTransfer
     if transfer and (transfer.state=='offer' or transfer.state=='consent') then
@@ -328,30 +337,30 @@ local function participantActionButtons(self,target,x,y,w)
           openConfirm(self,'SCRIPT CONTENT','This package contains script or executable content. Only accept it if you trust this room host.','ACCEPT',run)
         else run() end
       end,'green')
-      y=y+29
+      y=y+ACTION_PITCH
       button(self,'participant_transfer_trust',x,y,w,24,'TRUST THIS ROOM',function()
         BBT.command('chart.transfer_decision',{
           requestId=transfer.requestId,accept=true,trustRoom=true,
           executableContentConfirmed=false,
         })
       end,'cyan',not transfer.containsExecutableContent)
-      y=y+29
+      y=y+ACTION_PITCH
     elseif target.role~='spectator' and not target.verified and room.chart then
       button(self,'participant_locate',x,y,w,24,'SELECT LOCAL CHART',function()
         if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
       end,'cyan')
-      y=y+29
+      y=y+ACTION_PITCH
       if not isHost() then
         button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()
           BBT.command('chart.transfer_request',{chartHash=room.chart.hash})
         end,'yellow',room.allowChartTransfers~=false
           and not room.chart.official and room.chart.transferMode=='host_transfer')
-        y=y+29
+        y=y+ACTION_PITCH
       end
     elseif target.role~='spectator' and target.ready
       and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready') then
       button(self,'participant_unready',x,y,w,24,'UNREADY',function() BBT.command('room.ready_request',{ready=false}) end,'yellow')
-      y=y+29
+      y=y+ACTION_PITCH
     end
     local action=isHost() and 'CLOSE ROOM' or 'LEAVE ROOM'
     button(self,'participant_leave_room',x,y,w,24,action,function()
@@ -367,7 +376,7 @@ local function drawRoster(self,results)
   ui:panel(12,78,360,225,results and 'CURRENT RESULTS' or 'PARTICIPANTS')
   local x=20
   for _,filter in ipairs(FILTERS) do
-    local width=filter.id=='spectators' and 87 or 65
+    local width=filter.width
     chip(self,'filter_'..filter.id,x,104,width,filter.label,self.rosterFilter==filter.id,function()
       self.rosterFilter=filter.id
       self.rosterOffset=0
@@ -388,15 +397,15 @@ local function drawRoster(self,results)
   end
   local lifecycle=room.lifecycle
   local showScore=lifecycle=='playing' or lifecycle=='results' or lifecycle=='set_complete'
-  ui:text('NAME',20,132,142,'left','muted')
+  ui:text('NAME',20,129,142,'left','muted')
   if showScore then
-    ui:text('RANK',205,132,48,'right','muted'); ui:text('ACCURACY',267,132,92,'right','muted')
-  else ui:text('STATE',238,132,121,'right','muted') end
+    ui:text('RANK',205,129,48,'right','muted'); ui:text('ACCURACY',267,129,92,'right','muted')
+  else ui:text('STATE',238,129,121,'right','muted') end
   for row=1,ROSTER_PAGE_SIZE do
     local index=self.rosterOffset+row
     local participant=list[index]
     if not participant then break end
-    local rowY=146+(row-1)*21
+    local rowY=147+(row-1)*21
     local focused=self.selectedSessionId==participant.sessionId
     register(self,'participant_'..participant.sessionId,18,rowY,346,20,function()
       self.selectedSessionId=participant.sessionId
@@ -404,27 +413,27 @@ local function drawRoster(self,results)
     if focused then ui:color('raised'); love.graphics.rectangle('fill',18,rowY,346,20,2,2) end
     local participantIsHost=room and participant.sessionId==room.hostSessionId
     local role=participantIsHost and '[H]' or (participant.role=='spectator' and (participant.commentatorAccess and '[C]' or '[S]') or '[P]')
-    ui:text(role..' '..participant.displayName,23,rowY+4,174,'left',focused and 'black' or 'white')
+    ui:text(role..' '..participant.displayName,23,rowY+1,174,'left',focused and 'black' or 'white')
     if showScore then
       local score=Dashboard.score(participant,lifecycle)
-      ui:text(score.rank or '—',185,rowY+4,72,'right',focused and 'black' or score.tone or 'white')
-      ui:text(score.accuracy or '—',265,rowY+4,94,'right',focused and 'black' or score.tone or 'white')
+      ui:text(score.rank or '—',185,rowY+1,72,'right',focused and 'black' or score.tone or 'white')
+      ui:text(score.accuracy or '—',265,rowY+1,94,'right',focused and 'black' or score.tone or 'white')
     else
       local label,color=Dashboard.participantStatus(participant)
-      ui:text(label,226,rowY+4,133,'right',focused and 'black' or color)
+      ui:text(label,226,rowY+1,133,'right',focused and 'black' or color)
     end
   end
   if #list==0 then ui:text('NO PARTICIPANTS IN THIS FILTER',30,178,324,'center','muted') end
   if #list>ROSTER_PAGE_SIZE then
     local page=math.floor(self.rosterOffset/ROSTER_PAGE_SIZE)+1
     local pages=math.ceil(#list/ROSTER_PAGE_SIZE)
-    button(self,'roster_previous',20,275,34,22,'<',function()
+    button(self,'roster_previous',20,276,34,22,'<',function()
       self.rosterOffset=math.max(0,self.rosterOffset-ROSTER_PAGE_SIZE)
       local participant=list[self.rosterOffset+1]
       if participant then self.selectedSessionId=participant.sessionId end
     end,'white',self.rosterOffset>0)
-    ui:text('PAGE '..page..' / '..pages,60,280,259,'center','muted')
-    button(self,'roster_next',325,275,34,22,'>',function()
+    ui:text('PAGE '..page..' / '..pages,60,278,259,'center','muted')
+    button(self,'roster_next',325,276,34,22,'>',function()
       self.rosterOffset=math.min(maxOffset,self.rosterOffset+ROSTER_PAGE_SIZE)
       local participant=list[self.rosterOffset+1]
       if participant then self.selectedSessionId=participant.sessionId end
@@ -437,12 +446,14 @@ local function drawInspector(self,target)
   local room=currentRoom()
   ui:panel(379,78,209,225,'PARTICIPANT')
   if not target then
-    ui:wrapped('Select a participant to inspect their role, connection, chart verification, and host actions.',391,110,185,6,'muted')
+    ui:wrapped('Select a participant to inspect their role, connection, chart verification, and host actions.',391,108,185,6,'muted')
     return
   end
-  ui:text(target.displayName,391,106,185,'left','cyan')
+  ui:text(target.displayName,391,104,185,'left','cyan')
   local targetIsHost=room and target.sessionId==room.hostSessionId
-  local role=targetIsHost and (target.role=='spectator' and 'HOST / DIRECTING' or 'HOST / PLAYING')
+  -- The value column is 103px at 16pt, so the host role reads as a verb pair
+  -- instead of being ellipsized mid-word.
+  local role=targetIsHost and (target.role=='spectator' and 'HOST DIRECTS' or 'HOST PLAYS')
     or (target.role=='spectator' and (target.commentatorAccess and 'COMMENTATOR' or 'SPECTATOR') or 'PLAYER')
   local labels={
     {'ROLE',role}, {'CONNECTION',target.connected==false and 'OFFLINE' or 'CONNECTED'},
@@ -454,45 +465,49 @@ local function drawInspector(self,target)
   if room and (room.lifecycle=='results' or room.lifecycle=='set_complete') and target.role~='spectator' then
     labels[#labels+1]={'SET TOTAL',target.setTotal and string.format('%.2f',target.setTotal) or '—'}
   end
-  for index,item in ipairs(labels) do
-    local y=126+(index-1)*17
-    ui:text(item[1],391,y,78,'left','muted')
-    ui:text(item[2],469,y,107,'right',(item[2]=='MISMATCH' or item[2]=='INVALID' or item[2]=='DNF') and 'red' or 'white')
+  -- Flow the detail rows and the action stack from one cursor. An 18px line in
+  -- a 17px row printed over the next label, and fixed action offsets pushed the
+  -- final button through the panel floor.
+  local rowY=126
+  for _,item in ipairs(labels) do
+    ui:text(item[1],391,rowY,82,'left','muted')
+    ui:text(item[2],473,rowY,103,'right',(item[2]=='MISMATCH' or item[2]=='INVALID' or item[2]=='DNF') and 'red' or 'white')
+    rowY=rowY+19
   end
   local transfer=BBT.chartTransfer
-  local actionY=#labels>4 and 216 or 199
+  local actionY=rowY+4
   if transfer and target.sessionId==(BBT.context and BBT.context.sessionId) then
     local copy=transfer.state=='progress' and ('TRANSFER '..tostring(transfer.percent or 0)..'%')
       or transfer.state=='offer' and 'TRANSFER OFFER AVAILABLE'
       or transfer.state=='consent' and 'CONSENT REQUIRED'
       or nil
     if copy then
-      ui:text(copy,391,193,185,'left',transfer.state=='progress' and 'cyan' or 'yellow')
-      actionY=216
+      ui:text(copy,391,actionY,185,'left',transfer.state=='progress' and 'cyan' or 'yellow')
+      actionY=actionY+20
     end
   end
   if target.validity=='invalid' or target.validity=='dnf' then
     button(self,'participant_run_details',391,actionY,185,24,'RUN DETAILS',function()
       self.modal={kind='details',title=target.validity=='invalid' and 'INVALID RUN' or 'DID NOT FINISH',message=target.invalidReason or 'The runtime did not provide a detailed reason for this result.',returnFocus=self.focusId}
     end,'white')
-    actionY=actionY+29
+    actionY=actionY+ACTION_PITCH
   end
   participantActionButtons(self,target,391,actionY,185)
 end
 
 local function drawConnect(self)
   ui:panel(12,78,576,225,'CONNECT')
-  ui:text('CHOOSE HOW YOU JOIN',24,108,552,'center','cyan')
-  ui:wrapped('Create a direct-IP room from the session action above, or join an existing room below.',50,129,500,2,'muted')
+  ui:text('CHOOSE HOW YOU JOIN',24,103,552,'center','cyan')
+  ui:wrapped('Create a direct-IP room with the session action above, or join below.',50,124,500,1,'muted')
 
-  ui:text('PLAYER',32,161,250,'left','white')
-  ui:wrapped('Compete, verify the locked chart, then ready up.',32,178,250,2,'muted')
-  ui:text('SPECTATOR',318,161,250,'left','white')
-  ui:wrapped('Watch rankings without scoring. Commentator is host-granted.',318,178,250,2,'muted')
+  ui:text('PLAYER',32,147,250,'left','white')
+  ui:wrapped('Compete, verify the locked chart, then ready up.',32,166,250,2,'muted')
+  ui:text('SPECTATOR',318,147,250,'left','white')
+  ui:wrapped('Watch rankings without scoring. Commentator is host-granted.',318,166,250,2,'muted')
 
-  button(self,'connect_join',32,211,250,32,'JOIN AS PLAYER',function() openForm(self,'join',false) end,'cyan',BBT.companionConnected)
-  button(self,'connect_spectate',318,211,250,32,'JOIN AS SPECTATOR',function() openForm(self,'join',true) end,'white',BBT.companionConnected)
-  button(self,'connect_exit',418,256,150,27,'EXIT ONLINE',function()
+  button(self,'connect_join',32,207,250,30,'JOIN AS PLAYER',function() openForm(self,'join',false) end,'cyan',BBT.companionConnected)
+  button(self,'connect_spectate',318,207,250,30,'JOIN AS SPECTATOR',function() openForm(self,'join',true) end,'white',BBT.companionConnected)
+  button(self,'connect_exit',418,262,150,28,'EXIT ONLINE',function()
     openConfirm(self,'EXIT ONLINE','Stop the Online runtime and return to the main menu?','EXIT',function() BBT.exitOnline(); leaveToMenu(self) end)
   end,'red')
   local problem=BBT.lastError
@@ -500,9 +515,10 @@ local function drawConnect(self)
     problem=BBT.runtimeLaunchStatus or 'The local runtime is unavailable.'
   end
   if problem then
-    ui:wrapped(bounded(problem,180),32,255,368,3,'red')
+    -- Three 380px lines is the real budget beside the exit action at 16pt.
+    ui:wrapped(bounded(problem,165),24,241,380,3,'red')
   else
-    ui:text('HOSTING? USE THE SESSION ACTION ABOVE.',32,263,368,'left','muted')
+    ui:text('HOSTING? USE THE SESSION ACTION ABOVE.',24,246,380,'left','muted')
   end
 end
 
@@ -535,7 +551,7 @@ local function drawSetlist(self)
   self.setlistSelection,self.setlistOffset=Dashboard.scroll(
     self.setlistSelection,self.setlistOffset,#entries,0,6
   )
-  ui:text('ORDER',22,103,42,'center','muted')
+  ui:text('ORDER',20,103,46,'center','muted')
   ui:text('CHART',68,103,284,'left','muted')
   ui:text('VARIANT',360,103,102,'right','muted')
   ui:text('STATE',470,103,100,'right','muted')
@@ -543,7 +559,7 @@ local function drawSetlist(self)
     local index=self.setlistOffset+visibleIndex
     local entry=entries[index]
     if not entry then break end
-    local y=117+(visibleIndex-1)*22
+    local y=119+(visibleIndex-1)*22
     local active=room.currentSetlistIndex==index-1
     local selected=self.setlistSelection==index
     local state,stateTone=Dashboard.setlistEntryState(entries,index,room.currentSetlistIndex,room.lifecycle)
@@ -554,17 +570,17 @@ local function drawSetlist(self)
     if active then ui:color('raised'); love.graphics.rectangle('fill',20,y,560,22,2,2) end
     if selected then ui:color('cyan'); love.graphics.rectangle('line',20.5,y+.5,559,21,2,2) end
     local rowTone=active and 'black' or 'white'
-    ui:text(tostring(index),22,y+5,42,'center',rowTone)
-    ui:text(entry.chart.songName or entry.chart.packageName or 'Chart',68,y+5,284,'left',rowTone)
-    ui:text(entry.chart.variant or '',360,y+5,102,'right',active and 'black' or 'muted')
-    ui:text(state,470,y+5,100,'right',active and 'black' or stateTone)
+    ui:text(tostring(index),20,y+2,46,'center',rowTone)
+    ui:text(entry.chart.songName or entry.chart.packageName or 'Chart',68,y+2,284,'left',rowTone)
+    ui:text(entry.chart.variant or '',360,y+2,102,'right',active and 'black' or 'muted')
+    ui:text(state,470,y+2,100,'right',active and 'black' or stateTone)
   end
   if #entries==0 then ui:text('NO CHARTS IN THE ORDERED SET',28,160,544,'center','muted') end
   local canEdit=isHost() and room.lifecycle~='playing' and room.lifecycle~='countdown'
-  button(self,'setlist_add_official',20,252,276,22,'ADD OFFICIAL',function()
+  button(self,'setlist_add_official',20,254,276,22,'ADD OFFICIAL',function()
     BBT.openOfficialSelect('setlist')
   end,'green',canEdit)
-  button(self,'setlist_add_custom',304,252,276,22,'ADD CUSTOM',function()
+  button(self,'setlist_add_custom',304,254,276,22,'ADD CUSTOM',function()
     BBT.openChartSelect('setlist')
   end,'green',canEdit)
 
@@ -576,15 +592,15 @@ local function drawSetlist(self)
     if not selectedEntry or not targetEntry or selectedEntry.completed or targetEntry.completed then return false end
     return not activeSelection or (selection>activeSelection and target>activeSelection)
   end
-  button(self,'setlist_up',20,277,181,22,'MOVE UP',function()
+  button(self,'setlist_up',20,279,181,22,'MOVE UP',function()
     local target=selection-1
     BBT.command('setlist.move',{from=selection-1,to=target-1})
   end,'white',canEdit and canMoveTo(selection-1))
-  button(self,'setlist_down',209,277,181,22,'MOVE DOWN',function()
+  button(self,'setlist_down',209,279,181,22,'MOVE DOWN',function()
     local target=selection+1
     BBT.command('setlist.move',{from=selection-1,to=target-1})
   end,'white',canEdit and canMoveTo(selection+1))
-  button(self,'setlist_remove',398,277,182,22,'REMOVE',function()
+  button(self,'setlist_remove',398,279,182,22,'REMOVE',function()
     local entry=entries[selection]
     openConfirm(self,'REMOVE CHART','Remove '..bounded(entry and (entry.chart.songName or entry.chart.packageName) or 'this chart',28)..' from the setlist?','REMOVE',function()
       BBT.command('setlist.remove',{index=selection-1})
@@ -625,35 +641,35 @@ local function drawBroadcastAdvanced(self,room)
   ui:text('ADVANCED OBS EXPORT',24,105,220,'left','cyan')
   ui:text('STREAM '..self.broadcastSlot,356,105,220,'right','white')
 
-  ui:text('STREAM',24,137,66,'left','muted')
+  ui:text('STREAM',24,134,66,'left','muted')
   for index,id in ipairs(STREAMS) do
     chip(self,'broadcast_slot_'..id,96+(index-1)*60,132,54,id,self.broadcastSlot==id,function()
       loadBroadcastDraft(self,id)
     end,'cyan')
   end
-  ui:text('MODE',24,169,66,'left','muted')
+  ui:text('MODE',24,166,66,'left','muted')
   chip(self,'broadcast_mode_full',96,164,104,'FULL',draft.mode=='full',function() draft.mode='full' end,'cyan')
   chip(self,'broadcast_mode_clean',206,164,104,'CLEAN',draft.mode=='clean',function() draft.mode='clean' end,'cyan')
 
-  ui:text('SIZE',24,201,66,'left','muted')
+  ui:text('SIZE',24,198,66,'left','muted')
   chip(self,'broadcast_size_720',96,196,128,'1280 x 720',draft.width==1280,function()
     draft.width=1280; draft.height=720
   end,'cyan')
   chip(self,'broadcast_size_1080',230,196,128,'1920 x 1080',draft.width==1920,function()
     draft.width=1920; draft.height=1080
   end,'cyan')
-  ui:text('FPS',374,201,38,'left','muted')
+  ui:text('FPS',374,198,38,'left','muted')
   chip(self,'broadcast_fps_30',416,196,72,'30',draft.fps==30,function() draft.fps=30 end,'cyan')
   chip(self,'broadcast_fps_60',494,196,72,'60',draft.fps==60,function() draft.fps=60 end,'cyan')
 
-  ui:text('DELAY',24,233,66,'left','muted')
+  ui:text('DELAY',24,230,66,'left','muted')
   for index,value in ipairs({250,500,1000,1500}) do
     chip(self,'broadcast_delay_'..tostring(value),96+(index-1)*78,228,72,tostring(value)..' MS',draft.delayMs==value,function()
       draft.delayMs=value
     end,'cyan')
   end
   local highLoad=draft.width==1920 and draft.fps==60
-  ui:text(highLoad and 'HIGH GPU LOAD' or 'EXPORT CLOCK LOCKED',416,237,150,'right',highLoad and 'yellow' or 'muted')
+  ui:text(highLoad and 'HIGH GPU LOAD' or 'EXPORT CLOCK LOCKED',416,230,150,'right',highLoad and 'yellow' or 'muted')
 
   button(self,'broadcast_apply',24,267,172,25,'APPLY TO STREAM '..self.broadcastSlot,function()
     local slot=rendererSlot(self.broadcastSlot)
@@ -692,18 +708,27 @@ local function drawBroadcast(self)
   local rendererEditable=room and room.lifecycle~='playing' and room.lifecycle~='countdown'
   ui:text(authority=='host' and 'HOST PLAN' or 'HOST PLAN  /  READ ONLY',24,105,270,'left','cyan')
   ui:text(target and ('CANDIDATE: '..target.displayName) or 'CANDIDATE: SELECT A PLAYER',306,105,270,'right','muted')
+  -- STOP/ASSIGN and FEATURE need 56 and 63 pixels of glyphs at 16pt, so the
+  -- four stream cards span the whole panel instead of clipping their own
+  -- action labels inside a 132px card.
   for index,id in ipairs(STREAMS) do
     local slot=authority=='host' and rendererSlot(id) or planSlot(id)
-    local x=20+(index-1)*140
+    local x=18+(index-1)*142
     ui:color(slot.active and (slot.featured and 'cyan' or 'raised') or 'panel')
-    love.graphics.rectangle('fill',x,126,132,104,3,3)
-    ui:color('raised'); love.graphics.rectangle('line',x+.5,126.5,131,103,3,3)
-    ui:text('STREAM '..id,x+7,134,118,'left',slot.active and 'black' or 'white')
-    ui:text(slot.participantName or slot.participant_name or 'UNASSIGNED',x+7,153,118,'left',slot.active and 'black' or 'muted')
+    love.graphics.rectangle('fill',x,126,138,104,3,3)
+    ui:color('raised'); love.graphics.rectangle('line',x+.5,126.5,137,103,3,3)
+    ui:text('STREAM '..id,x+5,132,128,'left',slot.active and 'black' or 'white')
+    ui:text(slot.participantName or slot.participant_name or 'UNASSIGNED',x+5,151,128,'left',slot.active and 'black' or 'muted')
     local health=slot.lastError and 'ERROR' or slot.healthy and 'HEALTHY' or slot.active and 'STARTING' or 'STOPPED'
-    ui:text(health,x+7,173,118,'left',slot.lastError and 'red' or slot.healthy and 'green' or 'muted')
+    -- An active card fills light (cyan when featured, raised otherwise) and
+    -- `muted` is the same palette value as `raised`, so HEALTHY and STARTING
+    -- were painted in the card's own colour and vanished. The two lines above
+    -- already switch to black when active; this one was missed. Errors keep red,
+    -- which still reads against both light fills.
+    ui:text(health,x+5,170,128,'left',
+      slot.lastError and 'red' or slot.active and 'black' or slot.healthy and 'green' or 'muted')
     if authority=='host' then
-      button(self,'broadcast_assign_'..id,x+7,196,56,25,slot.active and 'STOP' or 'ASSIGN',function()
+      button(self,'broadcast_assign_'..id,x+5,196,58,26,slot.active and 'STOP' or 'ASSIGN',function()
         if slot.active then BBT.command('renderer.stop',{slot=id})
         elseif target and target.role~='spectator' then
           BBT.command('renderer.configure',{
@@ -713,7 +738,7 @@ local function drawBroadcast(self)
           })
         end
       end,slot.active and 'yellow' or 'cyan',slot.active or (rendererEditable and target and target.role~='spectator'))
-      button(self,'broadcast_feature_'..id,x+68,196,57,25,'FEATURE',function()
+      button(self,'broadcast_feature_'..id,x+68,196,65,26,'FEATURE',function()
         BBT.command('renderer.configure',{slot=id,participantId=slot.participantId,participantName=slot.participantName,mode=slot.mode,width=slot.width,height=slot.height,fps=slot.fps,delayMs=slot.delayMs,featured=true})
       end,'green',rendererEditable and slot.active and not slot.featured)
     end
@@ -724,8 +749,8 @@ local function drawBroadcast(self)
   end
   if authority=='commentator' then
     local enabled=BBT.mirrorEnabled or (BBT.runtimeSnapshot and BBT.runtimeSnapshot.mirrorEnabled)
-    ui:text('THIS PC',24,244,100,'left','white')
-    ui:text(enabled and 'LOCAL MIRROR ENABLED' or 'LOCAL MIRROR DISABLED',112,244,250,'left',enabled and 'green' or 'yellow')
+    ui:text('THIS PC',24,242,80,'left','white')
+    ui:text(enabled and 'LOCAL MIRROR ENABLED' or 'LOCAL MIRROR DISABLED',112,242,250,'left',enabled and 'green' or 'yellow')
     button(self,'broadcast_mirror',398,238,178,27,enabled and 'DISABLE MIRROR' or 'ENABLE MIRROR',function()
       if enabled then BBT.command('broadcast.mirror_set',{enabled=false})
       else
@@ -788,7 +813,7 @@ local function drawHistory(self)
       BBT.command('history.prune',{days=30})
     end)
   end,'yellow')
-  ui:wrapped('History is the archive. Current Results remain in the Room workspace.',413,185,163,5,'muted')
+  ui:wrapped('History is the archive. Current Results remain in the Room workspace.',413,185,163,4,'muted')
 end
 
 local function drawSettings(self)
@@ -806,10 +831,10 @@ local function drawSettings(self)
     settings.rendererDesktopMute==false and 'DRIVER FALLBACK' or 'EXACT-PID MUTE',
     169,104,189,'right',settings.rendererDesktopMute==false and 'yellow' or 'green'
   )
-  ui:text('TRANSFER CACHE',24,123,145,'left','muted')
+  ui:text('TRANSFER CACHE',24,124,145,'left','muted')
   ui:text(
     tostring((BBT.runtimeSnapshot and BBT.runtimeSnapshot.chartCacheSizeLabel) or '0 MB / 2 GB'),
-    169,123,189,'right','white'
+    169,124,189,'right','white'
   )
   button(self,'settings_hud',24,146,164,25,
     settings.hudEnabled==false and 'HUD: OFF' or 'HUD: ON',function()
@@ -863,23 +888,54 @@ local function drawSettings(self)
     ui:text(row[1],391,y,72,'left','muted')
     ui:text(row[2],463,y,113,'right',row[3])
   end
-  ui:text('GAME '..bounded(detectedVersion,24),391,194,185,'left','muted')
-  if detectedBuild~='' then ui:text('BUILD ['..detectedBuild:sub(1,12)..']',391,207,185,'left','cyan') end
-  button(self,'settings_logs',391,226,89,25,'LOGS',function() BBT.command('paths.open_logs',{}) end,'white')
-  button(self,'settings_exports',487,226,89,25,'EXPORTS',function() BBT.command('paths.open_exports',{}) end,'white')
-  button(self,'settings_diagnostics',391,260,185,25,'REFRESH DIAGNOSTICS',function() BBT.command('diagnostics.get',{}) end,'cyan')
+  -- 18px lines need a 19px pitch; the detected game and build lines printed
+  -- over each other on a 13px one.
+  ui:text('GAME '..bounded(detectedVersion,24),391,193,185,'left','muted')
+  if detectedBuild~='' then ui:text('BUILD ['..detectedBuild:sub(1,12)..']',391,212,185,'left','cyan') end
+  button(self,'settings_logs',391,234,89,25,'LOGS',function() BBT.command('paths.open_logs',{}) end,'white')
+  button(self,'settings_exports',487,234,89,25,'EXPORTS',function() BBT.command('paths.open_exports',{}) end,'white')
+  button(self,'settings_diagnostics',391,264,185,25,'REFRESH DIAGNOSTICS',function() BBT.command('diagnostics.get',{}) end,'cyan')
 end
+
+-- Help is two rows of two columns. Copy is stored, not positioned, so the
+-- sections are measured and flowed at the live font size instead of trusting
+-- offsets that were tuned for a smaller QA font.
+local HELP_SECTIONS = {
+  {'ROOM ROLES','Player competes. Spectator watches. Commentator is a host-granted Spectator permission that can mirror the Host Plan to this PC.'},
+  {'CHARTS & TRANSFER','Charts resolve locally first. Players may request a package; hosts automate only the request. Consent is local; scripts need confirmation.'},
+  -- Separator is '/' to match the footer legend. DigitalDisco-Thin has no U+2022,
+  -- so a bullet renders as a missing-glyph box at the game's real font.
+  {'CONTROLS','Arrows navigate  /  Enter selects  /  Esc returns one layer  /  Mouse uses the same focus.'},
+  {'TROUBLESHOOTING','Open Logs for full runtime errors. Broadcast error summaries stay bounded so controls never disappear.'},
+}
+local HELP_COLUMNS = {24,310}
+local HELP_COLUMN_WIDTH = 266
 
 local function drawHelp(self)
   ui:panel(12,78,576,225,'HELP')
-  ui:text('ROOM ROLES',24,106,160,'left','cyan')
-  ui:wrapped('Player competes. Spectator watches. Commentator is a host-granted Spectator permission that can mirror the Host Plan to this PC.',24,124,262,6,'muted')
-  ui:text('CHARTS & TRANSFER',310,106,250,'left','cyan')
-  ui:wrapped('Online searches local charts first. Players can request custom packages; hosts may automate only that request. Consent remains local and scripts always need separate confirmation.',310,124,254,7,'muted')
-  ui:text('CONTROLS',24,216,160,'left','cyan')
-  ui:wrapped('Arrows navigate  •  Enter selects  •  Esc returns one layer  •  Mouse uses the same focus.',24,234,262,4,'muted')
-  ui:text('TROUBLESHOOTING',310,216,250,'left','cyan')
-  ui:wrapped('Open Logs for full runtime errors. Broadcast error summaries stay bounded so controls never disappear.',310,234,254,4,'muted')
+  local font=love.graphics.getFont()
+  local lineHeight=font:getHeight()
+  local pitch=lineHeight+1
+  local floorY=299
+  local y=106
+  for row=1,2 do
+    local first=(row-1)*#HELP_COLUMNS+1
+    local bodyY=y+lineHeight+4
+    -- Never print past the panel: the remaining rows decide the line budget,
+    -- and the audit reports the shortfall instead of hiding it in an ellipsis.
+    local budget=math.max(0,math.floor((floorY-bodyY-lineHeight)/pitch)+1)
+    local used=0
+    for column=1,#HELP_COLUMNS do
+      local section=HELP_SECTIONS[first+column-1]
+      local x=HELP_COLUMNS[column]
+      ui:text(section[1],x,y,HELP_COLUMN_WIDTH,'left','cyan')
+      local _,lines=font:getWrap(section[2],HELP_COLUMN_WIDTH)
+      local shown=math.min(budget,#lines)
+      if shown>used then used=shown end
+      ui:wrapped(section[2],x,bodyY,HELP_COLUMN_WIDTH,shown,'muted')
+    end
+    y=bodyY+used*pitch+5
+  end
 end
 
 local function drawNavigation(self)
@@ -957,7 +1013,7 @@ local function drawModal(self)
       hasOrderedSet
         and 'Choose a Beatblock source. You will confirm before this single chart replaces the ordered set.'
         or 'Choose which Beatblock library supplies this one-off room chart.',
-      146,119,308,3,hasOrderedSet and 'yellow' or 'muted'
+      146,117,308,3,hasOrderedSet and 'yellow' or 'muted'
     )
     button(self,'single_chart_official',146,178,143,27,'OFFICIAL CHART',function()
       chooseSingleChartSource(self,true)
@@ -967,17 +1023,19 @@ local function drawModal(self)
     end,hasOrderedSet and 'yellow' or 'cyan')
     button(self,'modal_cancel',229,225,142,27,'CANCEL',function() closeModal(self) end,'white')
   elseif modal.kind=='details' then
+    -- Eight 372px lines is what the panel actually holds at 16pt; the byte
+    -- budget matches so the reason is never cut without being audited.
     ui:panel(94,60,412,240,modal.title)
-    ui:wrapped(bounded(modal.message,512),114,95,372,10,'red')
+    ui:wrapped(bounded(modal.message,400),114,93,372,8,'red')
     button(self,'modal_cancel',331,265,155,27,'CLOSE',function() closeModal(self) end,'white')
   else
     ui:panel(126,99,348,162,modal.title)
-    ui:wrapped(modal.message,146,133,308,5,modal.kind=='details' and 'red' or 'white')
+    ui:wrapped(modal.message,146,131,308,4,modal.kind=='details' and 'red' or 'white')
     if modal.kind=='confirm' then
-      button(self,'modal_confirm',146,218,143,27,modal.label,function() local run=modal.run; closeModal(self); run() end,'red')
-      button(self,'modal_cancel',311,218,143,27,'CANCEL',function() closeModal(self) end,'white')
+      button(self,'modal_confirm',146,213,143,27,modal.label,function() local run=modal.run; closeModal(self); run() end,'red')
+      button(self,'modal_cancel',311,213,143,27,'CANCEL',function() closeModal(self) end,'white')
     else
-      button(self,'modal_cancel',311,218,143,27,'CLOSE',function() closeModal(self) end,'white')
+      button(self,'modal_cancel',311,213,143,27,'CLOSE',function() closeModal(self) end,'white')
     end
   end
 end
@@ -1009,7 +1067,7 @@ local function draw(self)
       end
     end
   end
-  BBT.layoutAudit=ui.audit
+  BBT.layoutAudit=ui:finish()
 end
 
 local function focusIndex(self)
