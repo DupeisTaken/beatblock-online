@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
@@ -37,6 +39,39 @@ if (sourceOnly) {
 const gameFixture = resolve(process.env.BBT_GAME_FIXTURE ?? resolve(root, '.test/Beatblock'));
 const reference = resolve(gameFixture, 'packed');
 const gameExecutable = resolve(gameFixture, 'Beatblock.exe');
+const pinnedArtifacts = [
+  {
+    path: gameExecutable,
+    label: 'Beatblock.exe',
+    expected: fixture.reference.beatblockExeSha256,
+  },
+  {
+    path: resolve(reference, 'obj.zip'),
+    label: 'packed/obj.zip',
+    expected: fixture.reference.objectArchiveSha256,
+  },
+  {
+    path: resolve(reference, 'states.zip'),
+    label: 'packed/states.zip',
+    expected: fixture.reference.stateArchiveSha256,
+  },
+];
+const sha256File = (path) =>
+  new Promise((resolveHash, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(path);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolveHash(hash.digest('hex')));
+  });
+for (const artifact of pinnedArtifacts) {
+  const actual = await sha256File(artifact.path);
+  if (actual !== artifact.expected) {
+    throw new Error(
+      `Pinned fixture hash mismatch for ${artifact.label}: expected ${artifact.expected}, got ${actual}`,
+    );
+  }
+}
 const blocks = hooks.match(/\[\[patches\]\][\s\S]*?(?=\[\[patches\]\]|$)/g) ?? [];
 let sourceValidated = 0;
 for (const block of blocks) {

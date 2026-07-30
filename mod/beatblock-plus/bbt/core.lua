@@ -261,9 +261,16 @@ function BBT.openInstaller()
   path = path:gsub('[\r\n]+$', '')
   local ok, ffi = pcall(require, 'ffi')
   if not ok then BBT.lastError = 'Windows launcher is unavailable.'; return end
-  ffi.cdef[[void* ShellExecuteA(void*, const char*, const char*, const char*, const char*, int);]]
-  local result = tonumber(ffi.cast('intptr_t', ffi.C.ShellExecuteA(nil, 'open', path, nil, nil, 1)))
-  if not result or result <= 32 then BBT.lastError = 'Windows could not open the installer maintenance copy.' end
+  -- `ffi.C` only resolves symbols from libraries this process already imported,
+  -- and an unresolved symbol raises rather than returning nil. Load shell32
+  -- explicitly and keep the declaration and dispatch inside one pcall so the
+  -- repair screen reports a message instead of throwing out of the callback.
+  local launched, result = pcall(function()
+    ffi.cdef[[void* ShellExecuteA(void*, const char*, const char*, const char*, const char*, int);]]
+    local shell32 = ffi.load('shell32')
+    return tonumber(ffi.cast('intptr_t', shell32.ShellExecuteA(nil, 'open', path, nil, nil, 1)))
+  end)
+  if not launched or not result or result <= 32 then BBT.lastError = 'Windows could not open the installer maintenance copy.' end
 end
 
 -- Lovely's patch directory is outside LÖVE's virtual filesystem. Read visual

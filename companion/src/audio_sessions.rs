@@ -222,6 +222,11 @@ pub struct AudioIsolationWorker {
     states: Arc<Mutex<HashMap<String, AudioIsolationState>>>,
     enabled: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    /// `false` when the background thread could not be started at all (e.g.
+    /// the OS refused the spawn). In that state every operation degrades
+    /// gracefully: `isolate` records a warning, sends are silently dropped,
+    /// and the runtime continues with desktop audio unchanged.
+    available: bool,
 }
 
 impl AudioIsolationWorker {
@@ -229,17 +234,76 @@ impl AudioIsolationWorker {
         let (tx, rx) = mpsc::channel();
         let states = Arc::new(Mutex::new(HashMap::new()));
         let enabled_state = Arc::new(AtomicBool::new(enabled));
-        let worker = spawn_worker(rx, states.clone(), enabled_state.clone());
+        match spawn_worker(rx, states.clone(), enabled_state.clone()) {
+            Ok(worker) => Self {
+                tx,
+                states,
+                enabled: enabled_state,
+                worker: Some(worker),
+                available: true,
+            },
+            Err(error) => {
+                // `rx` was dropped when spawn failed, so any future `tx.send`
+                // returns Err immediately and is silently discarded by the
+                // callers below. Log once so the condition is visible in
+                // runtime logs without crashing.
+                tracing::warn!(
+                    %error,
+                    "renderer audio isolation worker could not be started; desktop audio stays unchanged for every renderer slot"
+                );
+                Self {
+                    tx,
+                    states,
+                    enabled: enabled_state,
+                    worker: None,
+                    available: false,
+                }
+            }
+        }
+    }
+
+    /// Returns `false` when the background thread failed to start. In that
+    /// case audio isolation is silently unavailable for the lifetime of this
+    /// worker.
+    pub fn available(&self) -> bool {
+        self.available
+    }
+
+    /// Construct a worker that is permanently unavailable, as if the OS had
+    /// refused the thread spawn. Used only by unit tests to exercise the
+    /// degraded path without actually exhausting thread resources.
+    #[cfg(test)]
+    fn new_unavailable() -> Self {
+        let (tx, rx) = mpsc::channel::<WorkerCommand>();
+        // Drop `rx` immediately so every `tx.send` returns `Err` at once,
+        // exactly matching the real spawn-failure path.
+        drop(rx);
         Self {
             tx,
-            states,
-            enabled: enabled_state,
-            worker: Some(worker),
+            states: Arc::new(Mutex::new(HashMap::new())),
+            enabled: Arc::new(AtomicBool::new(true)),
+            worker: None,
+            available: false,
         }
     }
 
     pub fn isolate(&self, key: &str, process_id: u32) {
         let key = key.to_ascii_uppercase();
+        if !self.available {
+            self.states.lock().expect("audio states poisoned").insert(
+                key,
+                AudioIsolationState {
+                    status: "warning".into(),
+                    muted: false,
+                    error: Some(
+                        "renderer desktop audio isolation is unavailable: \
+                         the worker thread could not be started"
+                            .into(),
+                    ),
+                },
+            );
+            return;
+        }
         if !self.enabled.load(Ordering::Acquire) {
             self.states.lock().expect("audio states poisoned").insert(
                 key,
@@ -384,7 +448,7 @@ fn spawn_worker(
     rx: mpsc::Receiver<WorkerCommand>,
     states: Arc<Mutex<HashMap<String, AudioIsolationState>>>,
     enabled: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
+) -> Result<std::thread::JoinHandle<()>, std::io::Error> {
     std::thread::Builder::new()
         .name("bbt-renderer-audio".into())
         .spawn(move || {
@@ -494,7 +558,6 @@ fn spawn_worker(
                 unsafe { CoUninitialize() };
             }
         })
-        .expect("spawn renderer audio isolation worker")
 }
 
 #[cfg(not(windows))]
@@ -502,8 +565,8 @@ fn spawn_worker(
     rx: mpsc::Receiver<WorkerCommand>,
     states: Arc<Mutex<HashMap<String, AudioIsolationState>>>,
     _enabled: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
+) -> Result<std::thread::JoinHandle<()>, std::io::Error> {
+    Ok(std::thread::spawn(move || {
         while let Ok(command) = rx.recv() {
             match command {
                 WorkerCommand::Isolate { key, .. } => {
@@ -525,7 +588,7 @@ fn spawn_worker(
                 WorkerCommand::SetEnabled(_) => {}
             }
         }
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -657,5 +720,31 @@ mod tests {
         assert!(!pending.contains_key("A"));
         assert!(!host.muted().unwrap());
         assert!(child.muted().unwrap());
+    }
+
+    /// When the worker thread could not be started, every operation must
+    /// degrade gracefully: `available()` returns false, `isolate` records a
+    /// warning state, and neither `restore` nor `set_enabled` panic.
+    #[test]
+    fn unavailable_worker_degrades_gracefully_without_panicking() {
+        let worker = AudioIsolationWorker::new_unavailable();
+
+        assert!(!worker.available());
+
+        // isolate must record a warning — not "pending" — so callers can see
+        // that the isolation request was not submitted to any background thread.
+        worker.isolate("slot-a", 1234);
+        let state = worker.state("slot-a").expect("state must be recorded");
+        assert_eq!(state.status, "warning", "expected warning, got {state:?}");
+        assert!(!state.muted);
+        assert!(state.error.is_some());
+
+        // restore on an unavailable worker must not panic even though there is
+        // nothing to restore and the channel send will fail immediately.
+        worker.restore("slot-a");
+
+        // set_enabled likewise must not panic.
+        worker.set_enabled(false);
+        worker.set_enabled(true);
     }
 }
