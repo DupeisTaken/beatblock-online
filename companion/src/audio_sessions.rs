@@ -247,10 +247,9 @@ impl AudioIsolationWorker {
                 // returns Err immediately and is silently discarded by the
                 // callers below. Log once so the condition is visible in
                 // runtime logs without crashing.
-                eprintln!(
-                    "bbt: renderer audio isolation worker could not be started \
-                     (OS refused thread spawn: {error}); \
-                     desktop audio will be left unchanged for all renderer slots"
+                tracing::warn!(
+                    %error,
+                    "renderer audio isolation worker could not be started; desktop audio stays unchanged for every renderer slot"
                 );
                 Self {
                     tx,
