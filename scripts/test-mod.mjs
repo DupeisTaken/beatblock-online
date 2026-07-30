@@ -88,6 +88,7 @@ const [
   hooks,
   commands,
   readme,
+  technicalReference,
   obsPlugin,
   companionRenderer,
   obsLocale,
@@ -105,6 +106,7 @@ const [
   read('mod/shared/lovely/hooks.toml'),
   read('companion/src/game_commands.rs'),
   read('README.md'),
+  read('docs/technical-reference.md'),
   read('obs-plugin/src/plugin.c'),
   read('companion/src/renderer.rs'),
   read('obs-plugin/data/locale/en-US.ini'),
@@ -574,14 +576,24 @@ for (const obsoleteCopy of [
   if (online.includes(obsoleteCopy))
     throw new Error(`Online state still contains obsolete exclusion copy: ${obsoleteCopy}`);
 }
+// The README is now a router: task-oriented entry points live in the Player
+// Guide and the deep reference lives in the Technical Reference. Assert each
+// document still carries the section it owns, so splitting the guides again
+// cannot quietly strand the installation, benchmarking, or command docs.
 for (const readmeSection of [
-  '## Player quick start',
-  '## Developer commands',
-  '## Detailed documentation',
-  'docs/injection.md',
-  'docs/benchmarking.md',
+  '## Start here',
+  'docs/player-guide.md',
+  'docs/technical-reference.md',
 ]) {
   if (!readme.includes(readmeSection)) throw new Error(`README is missing ${readmeSection}`);
+}
+for (const referenceSection of [
+  '## Common developer commands',
+  'injection.md',
+  'benchmarking.md',
+]) {
+  if (!technicalReference.includes(referenceSection))
+    throw new Error(`Technical Reference is missing ${referenceSection}`);
 }
 
 const requiredCommands = [
