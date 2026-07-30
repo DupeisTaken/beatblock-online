@@ -32,6 +32,34 @@ const MAX_CONTROL_FRAME: usize = 64 * 1024;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_PASSWORD_FAILURE_IPS: usize = 4_096;
 const MAX_PASSWORD_FAILURES_PER_IP: usize = 5;
+/// Rate-limiting bucket key. IPv4 addresses are tracked per-address (full
+/// 32-bit). IPv6 addresses are collapsed to their /64 prefix — the smallest
+/// standard routed allocation — so all 2^64 addresses within one /64 share a
+/// single bucket and a single failure counter. Without this, one machine with a
+/// routed /64 could fill the 4 096-entry table using distinct /128 addresses
+/// and evict every other legitimate player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RateLimitBucket {
+    /// Full IPv4 address — each host is its own bucket.
+    V4(Ipv4Addr),
+    /// Top 64 bits of an IPv6 address (the /64 network prefix).
+    V6Prefix([u8; 8]),
+}
+
+impl RateLimitBucket {
+    fn from_addr(addr: IpAddr) -> Self {
+        match addr {
+            IpAddr::V4(v4) => RateLimitBucket::V4(v4),
+            IpAddr::V6(v6) => {
+                let octets = v6.octets();
+                let mut prefix = [0u8; 8];
+                prefix.copy_from_slice(&octets[..8]);
+                RateLimitBucket::V6Prefix(prefix)
+            }
+        }
+    }
+}
+
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING_AUTHENTICATIONS: usize = 64;
@@ -184,7 +212,7 @@ pub struct NetworkHub {
     server_writer: Arc<RwLock<Option<mpsc::Sender<Envelope>>>>,
     server_connection: Arc<RwLock<Option<Connection>>>,
     endpoint: Arc<Mutex<Option<Endpoint>>>,
-    password_failures: Arc<RwLock<HashMap<IpAddr, VecDeque<Instant>>>>,
+    password_failures: Arc<RwLock<HashMap<RateLimitBucket, VecDeque<Instant>>>>,
     resume_sessions: Arc<RwLock<HashMap<String, String>>>,
     client_resume_token: Arc<RwLock<Option<String>>>,
     incoming_transfer_authorizations:
@@ -679,7 +707,11 @@ impl NetworkHub {
         let remote_address = connection.remote_address();
         {
             let mut failures = self.password_failures.write().await;
-            if !password_attempt_allowed(&mut failures, remote_address.ip(), Instant::now()) {
+            if !password_attempt_allowed(
+                &mut failures,
+                RateLimitBucket::from_addr(remote_address.ip()),
+                Instant::now(),
+            ) {
                 bail!("too many password attempts from {remote_address}; retry later");
             }
         }
@@ -732,7 +764,11 @@ impl NetworkHub {
             // Hold the write guard in a named binding so deref coercion reaches
             // the underlying map instead of passing the guard wrapper itself.
             let mut failures = self.password_failures.write().await;
-            record_password_failure(&mut failures, remote_address.ip(), Instant::now());
+            record_password_failure(
+                &mut failures,
+                RateLimitBucket::from_addr(remote_address.ip()),
+                Instant::now(),
+            );
             drop(failures);
             write_frame(
                 &mut send,
@@ -778,7 +814,7 @@ impl NetworkHub {
         self.password_failures
             .write()
             .await
-            .remove(&remote_address.ip());
+            .remove(&RateLimitBucket::from_addr(remote_address.ip()));
         let (session_id, resume_token) = if let Some(token) = hello.resume_token.as_ref() {
             let session = self.resume_sessions.read().await.get(token).cloned();
             if let Some(session) = session {
@@ -1154,9 +1190,12 @@ fn random_resume_token() -> String {
 }
 
 /// Removes expired authentication state and enforces a hard upper bound on
-/// distinct source addresses. An internet-facing host must not let spoofed or
+/// distinct rate-limit buckets. An internet-facing host must not let spoofed or
 /// rotating addresses grow this map for the lifetime of the process.
-fn prune_password_failures(failures: &mut HashMap<IpAddr, VecDeque<Instant>>, now: Instant) {
+fn prune_password_failures(
+    failures: &mut HashMap<RateLimitBucket, VecDeque<Instant>>,
+    now: Instant,
+) {
     failures.retain(|_, attempts| {
         while attempts
             .front()
@@ -1168,31 +1207,64 @@ fn prune_password_failures(failures: &mut HashMap<IpAddr, VecDeque<Instant>>, no
     });
 }
 
+/// Evict the bucket whose most-recent failure is the oldest, i.e. the one that
+/// has been idle the longest. This is the least-recently-active entry and the
+/// safest to remove: it has had the most time to exhaust its window naturally.
+///
+/// Self-eviction concern: can an attacker clear their own live 5-strike record
+/// by flooding the table with new buckets? With /64 bucketing, every address
+/// from one /64 maps to the *same* bucket, so the attacker controls exactly one
+/// entry and cannot evict it with their own traffic. An attacker would need
+/// MAX_PASSWORD_FAILURE_IPS distinct /64s or IPv4 addresses to push out a
+/// single victim. At 4 096 buckets that is a non-trivial resource requirement,
+/// and the victim simply gets a fresh (empty) bucket on their next attempt
+/// rather than being permanently locked out — which is strictly better than the
+/// previous bug that locked them out entirely.
+fn evict_oldest_bucket(failures: &mut HashMap<RateLimitBucket, VecDeque<Instant>>) {
+    // Find the bucket whose most-recent failure is furthest in the past.
+    let oldest_key = failures
+        .iter()
+        .min_by_key(|(_, attempts)| attempts.back().copied())
+        .map(|(key, _)| *key);
+    if let Some(key) = oldest_key {
+        failures.remove(&key);
+    }
+}
+
 fn password_attempt_allowed(
-    failures: &mut HashMap<IpAddr, VecDeque<Instant>>,
-    address: IpAddr,
+    failures: &mut HashMap<RateLimitBucket, VecDeque<Instant>>,
+    bucket: RateLimitBucket,
     now: Instant,
 ) -> bool {
     prune_password_failures(failures, now);
+    // A full table never denies an unknown bucket. Returning false here would
+    // let an attacker with many /64s lock out all legitimate players — the
+    // exact defect this function replaces. Instead we evict the stalest bucket
+    // at record time (see record_password_failure) and always admit unknowns.
     failures
-        .get(&address)
-        .map_or(failures.len() < MAX_PASSWORD_FAILURE_IPS, |attempts| {
-            attempts.len() < MAX_PASSWORD_FAILURES_PER_IP
-        })
+        .get(&bucket)
+        .is_none_or(|attempts| attempts.len() < MAX_PASSWORD_FAILURES_PER_IP)
 }
 
 fn record_password_failure(
-    failures: &mut HashMap<IpAddr, VecDeque<Instant>>,
-    address: IpAddr,
+    failures: &mut HashMap<RateLimitBucket, VecDeque<Instant>>,
+    bucket: RateLimitBucket,
     now: Instant,
 ) {
     prune_password_failures(failures, now);
-    if let Some(attempts) = failures.get_mut(&address) {
+    if let Some(attempts) = failures.get_mut(&bucket) {
         if attempts.len() < MAX_PASSWORD_FAILURES_PER_IP {
             attempts.push_back(now);
         }
-    } else if failures.len() < MAX_PASSWORD_FAILURE_IPS {
-        failures.insert(address, VecDeque::from([now]));
+    } else {
+        // If the table is at capacity, evict the least-recently-active bucket
+        // before inserting. Because buckets are keyed by /64 prefix (IPv6) or
+        // full address (IPv4), an attacker from one /64 owns exactly one bucket
+        // and cannot evict it with their own traffic.
+        if failures.len() >= MAX_PASSWORD_FAILURE_IPS {
+            evict_oldest_bucket(failures);
+        }
+        failures.insert(bucket, VecDeque::from([now]));
     }
 }
 
@@ -1272,6 +1344,7 @@ pub fn certificate_fingerprint(certificate: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv6Addr;
 
     fn game_build(version: &str) -> GameBuildIdentity {
         GameBuildIdentity::from_displayed_version(version).unwrap()
@@ -1360,33 +1433,227 @@ mod tests {
         host.shutdown().await;
     }
 
+    /// Build an IPv6 address where the /64 prefix encodes `index` in the first
+    /// 8 bytes. This gives each index a distinct /64 bucket even after /64
+    /// collapsing, which is required to fill the failure table.
+    fn ipv6_with_prefix(index: u64) -> IpAddr {
+        let prefix_bytes = index.to_be_bytes();
+        let mut octets = [0u8; 16];
+        octets[..8].copy_from_slice(&prefix_bytes);
+        IpAddr::V6(Ipv6Addr::from(octets))
+    }
+
     #[test]
     fn password_failure_tracking_expires_and_stays_bounded() {
         let now = Instant::now();
         let stale = now - AUTH_FAILURE_WINDOW - Duration::from_secs(1);
-        let mut failures = HashMap::new();
-        failures.insert(IpAddr::from([10, 0, 0, 1]), VecDeque::from([stale]));
-        failures.insert(IpAddr::from([10, 0, 0, 2]), VecDeque::from([now]));
-        prune_password_failures(&mut failures, now);
-        assert!(!failures.contains_key(&IpAddr::from([10, 0, 0, 1])));
-        assert!(failures.contains_key(&IpAddr::from([10, 0, 0, 2])));
 
+        // Expiry: stale entries are pruned, fresh ones are kept.
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+        failures.insert(
+            RateLimitBucket::from_addr(IpAddr::from([10, 0, 0, 1])),
+            VecDeque::from([stale]),
+        );
+        failures.insert(
+            RateLimitBucket::from_addr(IpAddr::from([10, 0, 0, 2])),
+            VecDeque::from([now]),
+        );
+        prune_password_failures(&mut failures, now);
+        assert!(!failures.contains_key(&RateLimitBucket::from_addr(IpAddr::from([10, 0, 0, 1]))));
+        assert!(failures.contains_key(&RateLimitBucket::from_addr(IpAddr::from([10, 0, 0, 2]))));
+
+        // Bounded table: filling the table and then adding one more causes
+        // eviction of the oldest entry rather than denying the new one.
         failures.clear();
         for index in 0..MAX_PASSWORD_FAILURE_IPS {
-            let address = IpAddr::V6(std::net::Ipv6Addr::from(index as u128 + 1));
-            record_password_failure(&mut failures, address, now);
+            // Use distinct /64 prefixes so each address maps to a different bucket.
+            let address = ipv6_with_prefix(index as u64 + 1);
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(address), now);
         }
         assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
-        let overflow = IpAddr::from([192, 0, 2, 1]);
-        record_password_failure(&mut failures, overflow, now);
-        assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
-        assert!(!password_attempt_allowed(&mut failures, overflow, now));
 
-        let tracked = IpAddr::V6(std::net::Ipv6Addr::from(1));
+        // A brand-new address must be admitted even when the table is full.
+        // Previously this returned false (the defect). Now it evicts the oldest
+        // bucket and inserts the new one, so the new address is allowed.
+        let overflow = IpAddr::from([192, 0, 2, 1]);
+        record_password_failure(&mut failures, RateLimitBucket::from_addr(overflow), now);
+        // After eviction the table stays at capacity.
+        assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
+        // The overflow address has exactly one failure, which is below the per-IP
+        // limit, so it must be allowed (not denied as the old code did).
+        assert!(password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(overflow),
+            now
+        ));
+
+        // A bucket that has consumed all its attempts is still denied.
+        let tracked = ipv6_with_prefix(1);
+        // tracked already has 1 failure from the fill loop; add the rest.
         for _ in 1..MAX_PASSWORD_FAILURES_PER_IP {
-            record_password_failure(&mut failures, tracked, now);
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(tracked), now);
         }
-        assert!(!password_attempt_allowed(&mut failures, tracked, now));
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(tracked),
+            now
+        ));
+    }
+
+    // --- Regression tests for the two-part fix ---
+
+    #[test]
+    fn full_table_admits_fresh_legitimate_address() {
+        let now = Instant::now();
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+        // Fill table with MAX_PASSWORD_FAILURE_IPS distinct buckets.
+        for index in 0..MAX_PASSWORD_FAILURE_IPS {
+            let addr = ipv6_with_prefix(index as u64 + 1);
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(addr), now);
+        }
+        assert_eq!(failures.len(), MAX_PASSWORD_FAILURE_IPS);
+
+        // A fresh address never seen before must be admitted, even with a full table.
+        let legitimate = IpAddr::from([198, 51, 100, 42]);
+        assert!(password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(legitimate),
+            now
+        ));
+    }
+
+    #[test]
+    fn ipv6_slash64_buckets_distinct_within_prefix() {
+        let now = Instant::now();
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+
+        // 4 096 addresses all in the same /64 (only lower 8 bytes differ).
+        let mut base_octets = [0u8; 16];
+        base_octets[..8].copy_from_slice(&42u64.to_be_bytes()); // fixed /64 prefix
+        for host in 0u64..4096 {
+            let mut octets = base_octets;
+            octets[8..].copy_from_slice(&host.to_be_bytes());
+            let addr = IpAddr::V6(Ipv6Addr::from(octets));
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(addr), now);
+        }
+
+        // All those addresses share one /64 bucket, so only 1 entry in the table.
+        assert_eq!(failures.len(), 1);
+
+        // The single bucket now has MAX_PASSWORD_FAILURES_PER_IP failures and
+        // must be denied (all 4 096 "hosts" saturated the shared counter).
+        let representative = {
+            let mut octets = base_octets;
+            octets[8..].copy_from_slice(&0u64.to_be_bytes());
+            IpAddr::V6(Ipv6Addr::from(octets))
+        };
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(representative),
+            now
+        ));
+    }
+
+    #[test]
+    fn two_ipv6_slash64s_are_limited_independently() {
+        let now = Instant::now();
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+
+        // Saturate /64 prefix A.
+        let prefix_a = 0xAAAA_u64;
+        let prefix_b = 0xBBBB_u64;
+        let make_addr = |prefix: u64, host: u64| {
+            let mut octets = [0u8; 16];
+            octets[..8].copy_from_slice(&prefix.to_be_bytes());
+            octets[8..].copy_from_slice(&host.to_be_bytes());
+            IpAddr::V6(Ipv6Addr::from(octets))
+        };
+
+        for _ in 0..MAX_PASSWORD_FAILURES_PER_IP {
+            record_password_failure(
+                &mut failures,
+                RateLimitBucket::from_addr(make_addr(prefix_a, 1)),
+                now,
+            );
+        }
+
+        // /64 A is blocked.
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(make_addr(prefix_a, 1)),
+            now
+        ));
+
+        // /64 B is still fully open — independent bucket.
+        assert!(password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(make_addr(prefix_b, 1)),
+            now
+        ));
+    }
+
+    #[test]
+    fn ipv4_is_limited_per_full_address() {
+        let now = Instant::now();
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+        let addr_a = IpAddr::from([10, 0, 0, 1]);
+        let addr_b = IpAddr::from([10, 0, 0, 2]);
+
+        // Saturate addr_a.
+        for _ in 0..MAX_PASSWORD_FAILURES_PER_IP {
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(addr_a), now);
+        }
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(addr_a),
+            now
+        ));
+        // addr_b shares a /24 but is a different bucket — still allowed.
+        assert!(password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(addr_b),
+            now
+        ));
+    }
+
+    #[test]
+    fn exhausted_bucket_stays_denied_under_eviction_pressure() {
+        let now = Instant::now();
+        // Use a time slightly in the past so the window hasn't expired.
+        let recent = now - Duration::from_secs(1);
+        let mut failures: HashMap<RateLimitBucket, VecDeque<Instant>> = HashMap::new();
+
+        // Saturate the victim bucket with failures at `recent`.
+        let victim = IpAddr::from([203, 0, 113, 1]);
+        for _ in 0..MAX_PASSWORD_FAILURES_PER_IP {
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(victim), recent);
+        }
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(victim),
+            now
+        ));
+
+        // Fill the rest of the table and then overflow it, causing eviction.
+        // The victim's bucket must NOT be evicted: its failures are at `recent`,
+        // which is newer than the fill-loop entries that were inserted at even
+        // earlier synthetic times. We give the filler entries staler timestamps
+        // so the eviction algorithm picks one of them.
+        let staler = now - Duration::from_secs(30);
+        for index in 1..MAX_PASSWORD_FAILURE_IPS {
+            let addr = ipv6_with_prefix(index as u64 + 1000);
+            record_password_failure(&mut failures, RateLimitBucket::from_addr(addr), staler);
+        }
+        // Now the table is full. Adding one more evicts the stalest filler, not the victim.
+        let newcomer = ipv6_with_prefix(9_999_999);
+        record_password_failure(&mut failures, RateLimitBucket::from_addr(newcomer), now);
+
+        // The victim is still denied — its 5-failure record survived eviction pressure.
+        assert!(!password_attempt_allowed(
+            &mut failures,
+            RateLimitBucket::from_addr(victim),
+            now
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
