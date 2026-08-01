@@ -27,6 +27,7 @@ local BBT = {
   requestSequence = 0,
   hudEnabled = true,
   scoreDirty = false,
+  resultsReportedRunId = nil,
 }
 
 local CLIENT_INSTANCE_ID = tostring(os.time())..'-'..tostring(math.random(100000,999999))
@@ -747,12 +748,19 @@ local function resultsTotals(forceScore, scoreMax)
   return current
 end
 function BBT.onResults(forceScore, scoreMax)
+  local resultRunId = BBT.context.runId or false
+  if BBT.resultsReportedRunId == resultRunId then return end
   -- Results is a terminal scoring boundary even when the final gameplay frame
   -- made no hooked mutation. Always queue this snapshot before run.finished.
   local final = resultsTotals(forceScore, scoreMax)
   if emitScoreDelta(true, final) then BBT.scoreDirty=false end
   emitRenderKeyframe(final, true, forceScore, scoreMax)
-  BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId })
+  if BBT.send('run.finished', { lobbyId = BBT.context.lobbyId, runId = BBT.context.runId }) then
+    -- Lovely enters this hook before Beatblock's native `self.results` guard.
+    -- Remember a successful terminal publication so duplicate Show Results
+    -- events cannot emit another score mutation or completion for this run.
+    BBT.resultsReportedRunId = resultRunId
+  end
 end
 
 function BBT.shouldHoldStart()
@@ -1080,6 +1088,7 @@ function BBT.update(dt)
   local runReady = inGame and current.maxHits > 0
   if runReady and not BBT.wasRunReady then
     BBT.launching = false
+    BBT.resultsReportedRunId = nil
     BBT.context.runId = 'run_' .. tostring(os.time()) .. '_' .. tostring(math.random(100000, 999999))
     BBT.runSequence = 0
     BBT.send('run.started', {

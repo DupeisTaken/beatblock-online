@@ -53,6 +53,14 @@ function love.load()
   cs.vfx.chromaticAberration.enabled=true
   Renderer.init()
   assert(Renderer.active,'renderer fixture did not initialize')
+  -- Every drop path must publish the diagnostic counter used by the dashboard
+  -- and the four-renderer soak, not merely update process-local Lua state.
+  Renderer.recordDroppedFrames(2)
+  local ffi=require('ffi')
+  assert(tonumber(ffi.cast('uint64_t*',Renderer.frames.pointer+48)[0])==2,
+    'renderer did not publish its dropped-frame counter')
+  Renderer.droppedFrames=0
+  ffi.cast('uint64_t*',Renderer.frames.pointer+48)[0]=0
   Renderer.useDefaultCostume()
   assert(savedata.costumes.currentCostume=='none',
     'renderer did not force Beatblock default Cranky costume')
@@ -153,13 +161,20 @@ function love.load()
     self.results=true
     cs={name='Results'}
   end
+  local gameplayVfx=gameplayState.vfx
+  gameplayState.startPending=true
+  gameplayState.vfx=nil
+  Renderer.update()
+  assert(cs==gameplayState and Renderer.resultsReady,
+    'renderer consumed terminal Results before threaded Game preload was safe')
+  gameplayState.startPending=false
+  gameplayState.vfx=gameplayVfx
   Renderer.update()
   assert(cs.name=='Results' and cs.hits==97 and cs.misses==2 and cs.barelies==1
     and cs.maxCombo==75 and cs.pctGrade==97.75 and cs.pctGradeRender=='97.75'
     and cs.offset==-10.25 and cs.lGrade=='s',
     'renderer Results did not come from the final player keyframe')
   cs=gameplayState
-  local ffi=require('ffi')
   local scoreWords=ffi.cast('uint32_t*',Renderer.scores.pointer)
   scoreWords[0]=0
   Renderer.update()

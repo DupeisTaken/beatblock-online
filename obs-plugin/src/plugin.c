@@ -7,11 +7,13 @@
 #define AUDIO_WINDOW_FORMAT "Beatblock Online Renderer %s:SDL_app:Beatblock.exe"
 #define AUTOPLAY_AUDIO_WINDOW "Beatblock Online Autoplay:SDL_app:Beatblock.exe"
 #define DEFAULT_AUDIO_SYNC_MS 0
-#define HEADER_SIZE 64
+#define HEADER_SIZE 80
 #define FRAME_MAGIC "BBTFRAME"
-#define FRAME_VERSION 3
+#define FRAME_VERSION 4
 #define FRAME_PIXEL_FORMAT_OFFSET 28
 #define FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB 1
+#define FRAME_SLOT_SEQUENCE_OFFSET 56
+#define MAX_FRAME_COUNT 3
 
 static const char *normalize_audio_target(const char *target)
 {
@@ -52,12 +54,45 @@ static uint32_t read_header_u32(const uint8_t *header, size_t offset)
     return value;
 }
 
+static uint64_t read_header_u64(const uint8_t *header, size_t offset)
+{
+    uint64_t value;
+    memcpy(&value, header + offset, sizeof(value));
+    return value;
+}
+
 static bool frame_header_has_supported_pixels(const uint8_t *header)
 {
     return memcmp(header, FRAME_MAGIC, 8) == 0 &&
         read_header_u32(header, 8) == FRAME_VERSION &&
         read_header_u32(header, FRAME_PIXEL_FORMAT_OFFSET) ==
         FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB;
+}
+
+static size_t frame_slot_sequence_offset(uint64_t sequence, uint32_t frame_count)
+{
+    return FRAME_SLOT_SEQUENCE_OFFSET +
+        (size_t)(sequence % frame_count) * sizeof(uint64_t);
+}
+
+// Header v4 gives each modulo slot its own generation. The producer clears the
+// marker before reuse and commits it only after all pixels are present. Checking
+// the marker on both sides of a copy closes the N/N+3 race that a global
+// sequence snapshot alone cannot detect.
+static bool frame_slot_has_committed_sequence(
+    const uint8_t *header, uint32_t frame_count, uint64_t sequence)
+{
+    if (!sequence || !frame_count || frame_count > MAX_FRAME_COUNT)
+        return false;
+    return read_header_u64(header,
+        frame_slot_sequence_offset(sequence, frame_count)) == sequence;
+}
+
+static bool frame_header_has_committed_frame(
+    const uint8_t *header, uint32_t frame_count, uint64_t sequence)
+{
+    return read_header_u64(header, 32) == sequence &&
+        frame_slot_has_committed_sequence(header, frame_count, sequence);
 }
 
 #ifndef BBT_AUDIO_TARGET_TEST
@@ -248,14 +283,14 @@ static bool ensure_frame_mapping(struct bbt_video *ctx)
 
 // The frame view is deliberately FILE_MAP_READ. A locked interlocked
 // read-modify-write faults on that mapping even when the exchange value is
-// unchanged. The sequence field is 8-byte aligned and the plugin is x64-only,
-// so aligned loads are atomic; barriers keep the two snapshots around the
-// pixel copy from being reordered.
-static uint64_t read_committed_sequence(const uint8_t *header)
+// unchanged. Every v4 commit field is 8-byte aligned and the plugin is x64-only,
+// so aligned loads are atomic; barriers keep snapshots around the pixel copy
+// from being reordered.
+static uint64_t read_committed_sequence(const uint8_t *header, size_t offset)
 {
     uint64_t sequence;
     MemoryBarrier();
-    memcpy(&sequence, header + 32, sizeof(sequence));
+    memcpy(&sequence, header + offset, sizeof(sequence));
     MemoryBarrier();
     return sequence;
 }
@@ -383,10 +418,11 @@ static void video_tick(void *data, float seconds)
     memcpy(&height, header + 16, 4);
     memcpy(&stride, header + 20, 4);
     memcpy(&frame_count, header + 24, 4);
-    sequence = read_committed_sequence(header);
+    sequence = read_committed_sequence(header, 32);
     memcpy(&frame_size, header + 40, 8);
     if (!width || width > 1920 || !height || height > 1080 || stride != width * 4 ||
-        !frame_count || frame_count > 3 || !sequence || frame_size != (uint64_t)stride * height ||
+        !frame_count || frame_count > MAX_FRAME_COUNT || !sequence ||
+        frame_size != (uint64_t)stride * height ||
         frame_size > (uint64_t)1920 * 1080 * 4 ||
         sequence == ctx->sequence) {
         clear_stale_resources(ctx);
@@ -397,6 +433,11 @@ static void video_tick(void *data, float seconds)
         ctx->pixel_capacity = (size_t)frame_size;
     }
     uint64_t index = sequence % frame_count;
+    size_t slot_sequence_offset = frame_slot_sequence_offset(sequence, frame_count);
+    if (read_committed_sequence(header, slot_sequence_offset) != sequence) {
+        clear_stale_resources(ctx);
+        return;
+    }
     uint64_t offset = HEADER_SIZE + index * frame_size;
     if (offset > ctx->mapped_size || frame_size > ctx->mapped_size - offset) {
         retry_frame_mapping_later(ctx);
@@ -404,8 +445,9 @@ static void video_tick(void *data, float seconds)
     }
     memcpy(ctx->pixels, ctx->mapped + offset, (size_t)frame_size);
     MemoryBarrier();
-    uint64_t confirmed = read_committed_sequence(header);
-    if (confirmed != sequence)
+    uint64_t confirmed_slot = read_committed_sequence(header, slot_sequence_offset);
+    uint64_t confirmed_sequence = read_committed_sequence(header, 32);
+    if (confirmed_slot != sequence || confirmed_sequence != sequence)
         return;
 
     obs_enter_graphics();

@@ -244,6 +244,8 @@ for (const contract of [
   [renderer, 'dataSize ~= Renderer.frameSize'],
   [renderer, 'Renderer.readbackRequests = {nil,nil}'],
   [renderer, 'Renderer.frames.pointer + 32'],
+  [renderer, 'function Renderer.recordDroppedFrames(count)'],
+  [renderer, 'slotSequence[0] = 0'],
   [renderer, 'function Renderer.steerPaddle()'],
   [renderer, 'function Renderer.applyClock()'],
   [renderer, 'function Renderer.afterGameUpdate()'],
@@ -345,16 +347,24 @@ for (const lifecycleContract of [
   if (!companionRenderer.includes(lifecycleContract))
     throw new Error(`Renderer relaunch contract is missing ${lifecycleContract}`);
 }
-if (!obsPlugin.includes('read_committed_sequence(header)'))
-  throw new Error('OBS source does not confirm read-only sequence snapshots around its frame copy');
+if (
+  !obsPlugin.includes('confirmed_slot = read_committed_sequence(header, slot_sequence_offset)') ||
+  !obsPlugin.includes('confirmed_sequence = read_committed_sequence(header, 32)')
+)
+  throw new Error(
+    'OBS source does not confirm read-only global and per-slot snapshots around its frame copy',
+  );
 if (obsPlugin.includes('InterlockedCompareExchange64'))
   throw new Error('OBS source performs a write primitive against its FILE_MAP_READ frame view');
 for (const videoContract of [
   'obs_source_draw(ctx->texture, 0, 0, ctx->width, ctx->height, false)',
   'OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB',
   '.video_get_color_space = video_color_space',
-  '#define FRAME_VERSION 3',
+  '#define FRAME_VERSION 4',
   '#define FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB 1',
+  '#define FRAME_SLOT_SEQUENCE_OFFSET 56',
+  'frame_slot_sequence_offset(sequence, frame_count)',
+  'frame_header_has_committed_frame',
 ]) {
   if (!obsPlugin.includes(videoContract))
     throw new Error(`OBS display-RGBA video contract is missing ${videoContract}`);
@@ -684,6 +694,9 @@ for (const contract of [
   'current.hits = math.max(current.hits, math.max(0, current.maxHits - current.misses))',
   'local final = resultsTotals(forceScore, scoreMax)',
   'emitScoreDelta(true, final)',
+  'local resultRunId = BBT.context.runId or false',
+  'if BBT.resultsReportedRunId == resultRunId then return end',
+  'BBT.resultsReportedRunId = resultRunId',
 ]) {
   if (!resultsBoundary.includes(contract))
     throw new Error(`Results terminal-score regression contract is missing ${contract}`);
@@ -693,6 +706,12 @@ if (
   resultsBoundary.indexOf("BBT.send('run.finished'")
 )
   throw new Error('Results completion is queued before its terminal score snapshot');
+const runStartBoundary = core.slice(
+  core.indexOf('if runReady and not BBT.wasRunReady then'),
+  core.indexOf('BBT.wasRunReady = runReady'),
+);
+if (!runStartBoundary.includes('BBT.resultsReportedRunId = nil'))
+  throw new Error('A new run does not reset the Results publication guard');
 if (
   !core.includes('local MAX_STANDARD_OUTBOUND = 480') ||
   !core.includes("['run.finished'] = true")

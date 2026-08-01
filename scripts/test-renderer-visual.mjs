@@ -13,7 +13,9 @@ const framePath = resolve(stage, 'stream-A.bbtframe');
 const statePath = resolve(stage, 'stream-A.bbtstate');
 const scorePath = resolve(stage, 'stream-A.bbtscore');
 const errorPath = resolve(stage, 'stream-A.bbterror');
-const mappedSize = 64 + 1920 * 1080 * 4 * 3;
+const frameHeaderSize = 80;
+const frameSlotSequenceOffset = 56;
+const mappedSize = frameHeaderSize + 1920 * 1080 * 4 * 3;
 
 try {
   await mkdir(resolve(stage, 'bbt'), { recursive: true });
@@ -37,9 +39,9 @@ try {
   ])
     score.writeUInt32LE(value, offset);
   await writeFile(scorePath, score);
-  const header = Buffer.alloc(64);
+  const header = Buffer.alloc(frameHeaderSize);
   header.write('BBTFRAME', 0, 'ascii');
-  header.writeUInt32LE(3, 8);
+  header.writeUInt32LE(4, 8);
   header.writeUInt32LE(320, 12);
   header.writeUInt32LE(180, 16);
   header.writeUInt32LE(320 * 4, 20);
@@ -101,7 +103,7 @@ try {
 
   const frame = await readFile(framePath);
   assert.equal(frame.subarray(0, 8).toString('ascii'), 'BBTFRAME');
-  assert.equal(frame.readUInt32LE(8), 3);
+  assert.equal(frame.readUInt32LE(8), 4);
   assert.equal(
     frame.readUInt32LE(28),
     1,
@@ -132,7 +134,13 @@ try {
     `renderer dropped ${dropped} frames for ${sequence} outputs`,
   );
 
-  const offset = 64 + (sequence % frameCount) * frameSize;
+  const slotIndex = sequence % frameCount;
+  assert.equal(
+    Number(frame.readBigUInt64LE(frameSlotSequenceOffset + slotIndex * 8)),
+    sequence,
+    'renderer frame slot generation must match the global commit',
+  );
+  const offset = frameHeaderSize + slotIndex * frameSize;
   const center = offset + (Math.floor(height / 2) * width + Math.floor(width / 2)) * 4;
   const centerPixel = [...frame.subarray(center, center + 4)];
   const expectedCenter = mode === 'full' ? [153, 102, 51, 255] : [0, 255, 0, 255];

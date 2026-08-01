@@ -15,12 +15,16 @@ use std::{
     env,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
+    mem::size_of,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
 
-const HEADER_SIZE: usize = 64;
+const HEADER_SIZE: usize = 80;
+const FRAME_VERSION: u32 = 4;
+const FRAME_SLOT_SEQUENCE_OFFSET: usize = 56;
+const MAX_FRAME_COUNT: u32 = 3;
 type CommittedFrame = (u64, u32, u32, Vec<u8>);
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
@@ -37,6 +41,19 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(value.try_into()?))
 }
 
+fn frame_slot_sequence_offset(sequence: u64, frame_count: u32) -> Result<usize> {
+    if sequence == 0 || !(1..=MAX_FRAME_COUNT).contains(&frame_count) {
+        bail!("renderer frame does not identify a committed slot");
+    }
+    Ok(FRAME_SLOT_SEQUENCE_OFFSET
+        + usize::try_from(sequence % u64::from(frame_count))? * size_of::<u64>())
+}
+
+fn header_has_committed_frame(header: &[u8], frame_count: u32, sequence: u64) -> Result<bool> {
+    Ok(read_u64(header, 32)? == sequence
+        && read_u64(header, frame_slot_sequence_offset(sequence, frame_count)?)? == sequence)
+}
+
 fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -49,7 +66,10 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     }
     let mut header = [0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
-    if &header[..8] != b"BBTFRAME" || read_u32(&header, 8)? != 3 || read_u32(&header, 28)? != 1 {
+    if &header[..8] != b"BBTFRAME"
+        || read_u32(&header, 8)? != FRAME_VERSION
+        || read_u32(&header, 28)? != 1
+    {
         bail!("renderer frame has an unsupported header");
     }
     let width = read_u32(&header, 12)?;
@@ -71,6 +91,10 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     {
         bail!("renderer frame metadata is invalid");
     }
+    let slot_sequence_offset = frame_slot_sequence_offset(sequence, frame_count)?;
+    if !header_has_committed_frame(&header, frame_count, sequence)? {
+        return Ok(None);
+    }
     let offset = (HEADER_SIZE as u64)
         .checked_add(
             (sequence % u64::from(frame_count))
@@ -88,15 +112,48 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     let mut pixels = vec![0u8; usize::try_from(frame_size)?];
     file.seek(SeekFrom::Start(offset))?;
     file.read_exact(&mut pixels)?;
-    // Mirror the OBS reader's commit check: discard a slot that changed while
-    // its pixels were copied rather than diagnosing a torn producer frame.
+    // Mirror the OBS reader's v4 commit check. The per-slot marker detects an
+    // N+3 overwrite of the same modulo slot even while the global sequence is
+    // still N; both generations must remain stable around the pixel copy.
+    file.seek(SeekFrom::Start(slot_sequence_offset as u64))?;
+    let mut slot_confirmation = [0u8; 8];
+    file.read_exact(&mut slot_confirmation)?;
     file.seek(SeekFrom::Start(32))?;
     let mut confirmation = [0u8; 8];
     file.read_exact(&mut confirmation)?;
-    if u64::from_le_bytes(confirmation) != sequence {
+    if u64::from_le_bytes(slot_confirmation) != sequence
+        || u64::from_le_bytes(confirmation) != sequence
+    {
         return Ok(None);
     }
     Ok(Some((sequence, width, height, pixels)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_commit_rejects_in_progress_and_modulo_reuse_generations() {
+        let mut header = [0u8; HEADER_SIZE];
+        let frame_count = 3;
+        let sequence = 1;
+        let offset = frame_slot_sequence_offset(sequence, frame_count).unwrap();
+
+        header[32..40].copy_from_slice(&sequence.to_le_bytes());
+        header[offset..offset + 8].copy_from_slice(&sequence.to_le_bytes());
+        assert!(header_has_committed_frame(&header, frame_count, sequence).unwrap());
+
+        header[offset..offset + 8].copy_from_slice(&0u64.to_le_bytes());
+        assert!(!header_has_committed_frame(&header, frame_count, sequence).unwrap());
+
+        let reused = sequence + u64::from(frame_count);
+        header[offset..offset + 8].copy_from_slice(&reused.to_le_bytes());
+        assert!(!header_has_committed_frame(&header, frame_count, sequence).unwrap());
+        assert!(!header_has_committed_frame(&header, frame_count, reused).unwrap());
+        header[32..40].copy_from_slice(&reused.to_le_bytes());
+        assert!(header_has_committed_frame(&header, frame_count, reused).unwrap());
+    }
 }
 
 fn push_playing_sample(

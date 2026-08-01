@@ -219,6 +219,11 @@ pub struct Installer {
     // candidate so an invalid manual choice cannot silently fall back to a
     // different installation while the user believes the chosen one is used.
     obs_directory_override: RwLock<Option<PathBuf>>,
+    // Fixture-backed installer tests must never depend on an unrelated OBS
+    // process running on the developer's workstation. Production builds do
+    // not contain this override, so the real process lock remains mandatory.
+    #[cfg(test)]
+    obs_running_override: Option<bool>,
 }
 
 impl Installer {
@@ -227,6 +232,8 @@ impl Installer {
             data_dir,
             mods_directory_override: None,
             obs_directory_override: RwLock::new(None),
+            #[cfg(test)]
+            obs_running_override: None,
         }
     }
 
@@ -236,7 +243,16 @@ impl Installer {
             data_dir,
             mods_directory_override: Some(mods_directory),
             obs_directory_override: RwLock::new(None),
+            obs_running_override: Some(false),
         }
+    }
+
+    fn detected_obs_running(&self) -> Result<bool> {
+        #[cfg(test)]
+        if let Some(running) = self.obs_running_override {
+            return Ok(running);
+        }
+        obs_is_running()
     }
 
     /// Selects an OBS root (or a folder/executable beneath that root). The
@@ -1332,7 +1348,7 @@ impl Installer {
             bail!("this installer build does not contain the OBS plugin payload");
         }
         validate_obs_payload(OBS_PLUGIN_PAYLOAD)?;
-        if obs_is_running().context(
+        if self.detected_obs_running().context(
             "could not inspect running OBS Studio processes before installing its source",
         )? {
             bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
@@ -1412,7 +1428,7 @@ impl Installer {
     /// Reports whether OBS currently owns its plugin DLLs so the installer UI
     /// can defer only that optional component instead of blocking core setup.
     pub fn obs_running(&self) -> Result<bool> {
-        obs_is_running()
+        self.detected_obs_running()
     }
 
     /// Reports whether any Beatblock process can still own the managed game
@@ -1565,7 +1581,8 @@ impl Installer {
             );
         }
         if self.obs_plugin_managed()
-            && obs_is_running()
+            && self
+                .detected_obs_running()
                 .context("could not inspect running OBS Studio processes before uninstalling")?
         {
             bail!(

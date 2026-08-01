@@ -1,6 +1,10 @@
 local autoplay = os.getenv('BBT_RENDERER_AUTOPLAY') == '1'
 local rendererSlot = tostring(os.getenv('BBT_RENDERER_STREAM') or 'A'):upper()
 if not autoplay and not rendererSlot:match('^[A-D]$') then rendererSlot = 'A' end
+local FRAME_HEADER_SIZE = 80
+local FRAME_COUNT = 3
+local FRAME_SLOT_SEQUENCE_OFFSET = 56
+local MAX_FRAME_SIZE = 1920 * 1080 * 4
 
 local Renderer = {
   active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil or autoplay,
@@ -119,6 +123,18 @@ local function reportError(message)
   end
 end
 
+-- Keep every rejected or missed capture visible to the runtime soak metrics.
+-- A shared helper avoids drop paths updating only Lua state while leaving the
+-- frame header's diagnostic counter stale.
+function Renderer.recordDroppedFrames(count)
+  count = tonumber(count) or 1
+  if count <= 0 then return end
+  Renderer.droppedFrames = Renderer.droppedFrames + count
+  if Renderer.frames then
+    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+  end
+end
+
 function Renderer.shutdown()
   if Renderer.audioEnabled and love and love.audio and love.audio.setVolume then
     pcall(love.audio.setVolume, 0)
@@ -184,7 +200,10 @@ function Renderer.init()
   end
   Renderer.frameSize = Renderer.width * Renderer.height * 4
   Renderer.frameInterval = 1 / math.max(1, Renderer.fps)
-  Renderer.frames = mapFile(Renderer.framePath, 64 + 1920 * 1080 * 4 * 3)
+  Renderer.frames = mapFile(
+    Renderer.framePath,
+    FRAME_HEADER_SIZE + MAX_FRAME_SIZE * FRAME_COUNT
+  )
   Renderer.scores = mapFile(Renderer.scorePath, 48)
   if not Renderer.frames or not Renderer.scores then
     return failInitialization('renderer video shared-memory files could not be mapped')
@@ -397,7 +416,14 @@ local function updateSourceScore()
     end
     return
   end
-  if sequence==Renderer.lastScoreSequence then return end
+  if sequence==Renderer.lastScoreSequence then
+    -- A terminal keyframe can reach a freshly launched child while Beatblock is
+    -- still completing its threaded Game preload. Keep retrying the safe native
+    -- handoff after startPending clears; no new source score is expected once
+    -- the source player has already entered Results.
+    if Renderer.resultsReady then enterSourceResults() end
+    return
+  end
   local flags=tonumber(ffi.cast('uint32_t*',Renderer.scores.pointer+4)[0])
   local sourceAccuracy=tonumber(ffi.cast('float*',Renderer.scores.pointer+8)[0])
   local sourceOffset=tonumber(ffi.cast('float*',Renderer.scores.pointer+12)[0])
@@ -629,7 +655,7 @@ end
 
 local function copyFrame(data, readbackSlot, ticket)
   if Renderer.readbackTickets[readbackSlot] ~= ticket then
-    Renderer.droppedFrames = Renderer.droppedFrames + 1
+    Renderer.recordDroppedFrames()
     return
   end
   Renderer.readbackPending[readbackSlot] = false
@@ -637,8 +663,7 @@ local function copyFrame(data, readbackSlot, ticket)
   Renderer.readbackStartedAt[readbackSlot] = nil
   if not Renderer.frames then return end
   if not data then
-    Renderer.droppedFrames = Renderer.droppedFrames + 1
-    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    Renderer.recordDroppedFrames()
     return
   end
   local pointer = data.getFFIPointer and data:getFFIPointer() or nil
@@ -647,19 +672,32 @@ local function copyFrame(data, readbackSlot, ticket)
   -- otherwise receive a frame made from new leading bytes and stale trailing
   -- bytes while its sequence check still appeared healthy.
   if not pointer or dataSize ~= Renderer.frameSize then
-    Renderer.droppedFrames = Renderer.droppedFrames + 1
-    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    Renderer.recordDroppedFrames()
     return
   end
   -- Async callbacks are permitted to complete out of order. Never publish an
   -- older capture over a newer one already visible to OBS.
-  if ticket <= Renderer.sequence then Renderer.droppedFrames = Renderer.droppedFrames + 1; return end
-  Renderer.sequence = ticket
-  local index = Renderer.sequence % 3
-  ffi.copy(Renderer.frames.pointer + 64 + index * Renderer.frameSize, pointer, Renderer.frameSize)
+  if ticket <= Renderer.sequence then Renderer.recordDroppedFrames(); return end
+  local index = ticket % FRAME_COUNT
+  local slotSequence = ffi.cast(
+    'uint64_t*',
+    Renderer.frames.pointer + FRAME_SLOT_SEQUENCE_OFFSET + index * 8
+  )
+  -- Invalidate this modulo slot before touching its pixels. Header v4 readers
+  -- require the same slot generation before and after their copy, so reusing
+  -- slot N for N+3 can never pass as the older committed frame.
+  slotSequence[0] = 0
+  ffi.copy(
+    Renderer.frames.pointer + FRAME_HEADER_SIZE + index * Renderer.frameSize,
+    pointer,
+    Renderer.frameSize
+  )
   ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
-  -- The aligned sequence is the commit marker and is written after all pixels.
-  ffi.cast('uint64_t*', Renderer.frames.pointer + 32)[0] = Renderer.sequence
+  slotSequence[0] = ticket
+  -- The aligned global sequence is the final commit and is published only after
+  -- the matching per-slot generation and all pixels are visible.
+  ffi.cast('uint64_t*', Renderer.frames.pointer + 32)[0] = ticket
+  Renderer.sequence = ticket
 end
 
 function Renderer.reclaimStalledReadbacks(now)
@@ -672,10 +710,7 @@ function Renderer.reclaimStalledReadbacks(now)
       Renderer.readbackStartedAt[slot]=nil
       -- Invalidate the abandoned request before this canvas is reused.
       Renderer.readbackTickets[slot]=nil
-      Renderer.droppedFrames=Renderer.droppedFrames+1
-      if Renderer.frames then
-        ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0]=Renderer.droppedFrames
-      end
+      Renderer.recordDroppedFrames()
     end
   end
 end
@@ -691,7 +726,7 @@ local function finishReadbacks()
         Renderer.readbackRequests[slot] = nil
         Renderer.readbackPending[slot] = false
         Renderer.readbackStartedAt[slot] = nil
-        Renderer.droppedFrames = Renderer.droppedFrames + 1
+        Renderer.recordDroppedFrames()
       elseif complete then
         local failed = request:hasError()
         local data = not failed and request:getImageData() or nil
@@ -699,7 +734,7 @@ local function finishReadbacks()
           Renderer.readbackRequests[slot] = nil
           Renderer.readbackPending[slot] = false
           Renderer.readbackStartedAt[slot] = nil
-          Renderer.droppedFrames = Renderer.droppedFrames + 1
+          Renderer.recordDroppedFrames()
         else
           copyFrame(data, slot, Renderer.readbackTickets[slot])
         end
@@ -718,15 +753,14 @@ function Renderer.capture(cleanSource, shadedSource, finalShader)
   if now + .0005 < Renderer.nextFrameAt then return end
   if now - Renderer.nextFrameAt >= Renderer.frameInterval then
     local missed = math.floor((now - Renderer.nextFrameAt) / Renderer.frameInterval)
-    Renderer.droppedFrames = Renderer.droppedFrames + missed
+    Renderer.recordDroppedFrames(missed)
     Renderer.nextFrameAt = Renderer.nextFrameAt + (missed + 1) * Renderer.frameInterval
   else
     Renderer.nextFrameAt = Renderer.nextFrameAt + Renderer.frameInterval
   end
   local readbackSlot = not Renderer.readbackPending[1] and 1 or (not Renderer.readbackPending[2] and 2 or nil)
   if not readbackSlot then
-    Renderer.droppedFrames = Renderer.droppedFrames + 1
-    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    Renderer.recordDroppedFrames()
     return
   end
   local output=Renderer.outputs[readbackSlot]
@@ -756,8 +790,7 @@ function Renderer.capture(cleanSource, shadedSource, finalShader)
   if success then copyFrame(data,readbackSlot,ticket) else
     Renderer.readbackPending[readbackSlot] = false
     Renderer.readbackStartedAt[readbackSlot] = nil
-    Renderer.droppedFrames = Renderer.droppedFrames + 1
-    ffi.cast('uint64_t*', Renderer.frames.pointer + 48)[0] = Renderer.droppedFrames
+    Renderer.recordDroppedFrames()
   end
 end
 
