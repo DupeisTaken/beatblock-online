@@ -31,6 +31,7 @@ local Renderer = {
   tapQueue = {}, currentTapEvent = nil, seedPaddle = false,
   pendingAudioSync = false, lastAudioCorrectionAt = -math.huge,
   lastAppliedPaddleSequence = nil, paddleCumulativeAngle = nil,
+  windowIdentityCheckAt = -math.huge,
 }
 Renderer.statePath = os.getenv('BBT_RENDERER_STATE_PATH')
   or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
@@ -159,6 +160,29 @@ local function failInitialization(message)
   return Renderer
 end
 
+-- Lovely loads the renderer module while Beatblock's native startup is still
+-- assigning its default `Beatblock` window title. An early one-shot setTitle
+-- can therefore succeed and then be overwritten, which makes OBS' exact-title
+-- Application Audio Capture retry forever. Reassert and verify the identity at
+-- a bounded cadence so late startup and a later renderer reset stay routable.
+function Renderer.ensureWindowIdentity(force)
+  if not Renderer.active or not (love and love.window and love.window.setTitle) then
+    return false
+  end
+  local now = love.timer and love.timer.getTime and love.timer.getTime() or 0
+  if not force and now - Renderer.windowIdentityCheckAt < 1 then return true end
+  Renderer.windowIdentityCheckAt = now
+
+  if love.window.getTitle then
+    local readOk, current = pcall(love.window.getTitle)
+    if readOk and current == Renderer.windowTitle then return true end
+  end
+  if not pcall(love.window.setTitle, Renderer.windowTitle) then return false end
+  if not love.window.getTitle then return true end
+  local verifyOk, current = pcall(love.window.getTitle)
+  return verifyOk and current == Renderer.windowTitle
+end
+
 function Renderer.init()
   if not Renderer.active then return Renderer end
   if love and love.errorhandler and not Renderer.originalErrorHandler then
@@ -185,8 +209,7 @@ function Renderer.init()
   if Renderer.mode ~= 'clean' and Renderer.mode ~= 'full' then
     return failInitialization('renderer mode must be clean or full')
   end
-  if not (love and love.window and love.window.setTitle)
-    or not pcall(love.window.setTitle, Renderer.windowTitle) then
+  if not Renderer.ensureWindowIdentity(true) then
     return failInitialization('renderer window title could not be assigned')
   end
   Renderer.inputs = mapFile(Renderer.statePath, 32)
@@ -264,6 +287,11 @@ end
 
 function Renderer.start()
   if not Renderer.active then return end
+  -- Startup code after the Lovely bootstrap can restore Beatblock's default
+  -- title. Apply the OBS identity again at the final native launch boundary.
+  if not Renderer.ensureWindowIdentity(true) then
+    return failInitialization('renderer window title could not be retained')
+  end
   local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
   if not chart or chart == '' then return end
   if not string.match(chart, '[/\\]$') then chart = chart .. '/' end
@@ -451,7 +479,9 @@ local function updateSourceScore()
 end
 
 function Renderer.update()
-  if not Renderer.active or not Renderer.inputs then return end
+  if not Renderer.active then return end
+  Renderer.ensureWindowIdentity(false)
+  if not Renderer.inputs then return end
   updateSourceScore()
   local sequence = tonumber(ffi.cast('uint32_t*', Renderer.inputs.pointer + 8)[0])
   if sequence == 0 then return end

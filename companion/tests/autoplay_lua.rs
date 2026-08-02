@@ -135,6 +135,22 @@ local Renderer=(function()
 {renderer}
 end)()
 os.getenv=originalGetenv
+local mockTime=0
+local mockTitle='Beatblock'
+love={{
+  timer={{getTime=function() return mockTime end}},
+  window={{
+    getTitle=function() return mockTitle end,
+    setTitle=function(value) mockTitle=value end,
+  }},
+}}
+assert(Renderer.ensureWindowIdentity(true))
+assert(mockTitle=='Beatblock Online Autoplay')
+-- A later native reset must be corrected after the bounded poll interval.
+mockTitle='Beatblock'
+mockTime=2
+assert(Renderer.ensureWindowIdentity(false))
+assert(mockTitle=='Beatblock Online Autoplay')
 {scenarios}
 "#
     ));

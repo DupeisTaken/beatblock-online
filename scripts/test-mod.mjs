@@ -325,10 +325,16 @@ if (
   throw new Error('Renderer window minimization does not use the child-owned SDL window');
 if (renderer.includes('int SDL_MinimizeWindow(void*)'))
   throw new Error('Renderer uses the wrong ABI width for SDL_MinimizeWindow boolean results');
+if (
+  !core.includes("os.getenv('BBT_RENDERER_FRAME_PATH')") ||
+  !core.includes("os.getenv('BBT_RENDERER_AUTOPLAY') == '1'")
+)
+  throw new Error('Core does not bootstrap both video renderers and audio-only Autoplay');
 for (const rendererAudioContract of [
   "'Beatblock Online Renderer ' .. rendererSlot",
   "'Beatblock Online Autoplay'",
-  'pcall(love.window.setTitle, Renderer.windowTitle)',
+  'function Renderer.ensureWindowIdentity(force)',
+  'Renderer.ensureWindowIdentity(true)',
   'audioOptions.muteOnFocusLoss = false',
   'love.audio.setVolume(1)',
   'cs.source:setVolume(Renderer.audioEnabled and 1 or 0)',

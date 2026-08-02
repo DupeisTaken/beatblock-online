@@ -539,7 +539,11 @@ function BBT.init(distribution, modPath)
   _G.BBT_ACTIVE_DISTRIBUTION = distribution
   BBT.distribution = distribution
   BBT.modPath = modPath
-  if os.getenv('BBT_RENDERER_FRAME_PATH') then
+  -- Autoplay is intentionally audio-only and has no frame ring. Loading the
+  -- renderer solely from FRAME_PATH silently skipped its entire bootstrap,
+  -- leaving OBS with no stable window or audio-producing child to capture.
+  if os.getenv('BBT_RENDERER_FRAME_PATH')
+    or os.getenv('BBT_RENDERER_AUTOPLAY') == '1' then
     local rendererOk, renderer = pcall(require, 'bbt.renderer')
     if rendererOk then renderer.init() end
   end
