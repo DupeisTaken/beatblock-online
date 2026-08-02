@@ -1,7 +1,7 @@
 {
   "name": "beatblock-online",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "beatblockCompatibility": {
     "testedVersion": "1.7.1a",
     "testedBuildId": "d40b7083",

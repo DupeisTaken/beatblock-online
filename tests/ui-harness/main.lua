@@ -113,7 +113,7 @@ for index,id in ipairs({'A','B','C','D'}) do
 end
 
 BBT={
-  version='0.3.0',protocolVersion=3,
+  version='0.3.1',protocolVersion=3,
   testedBeatblockVersion='1.7.1a',
   context={sessionId='host-1',playerName='Host',lobbyId='visual-room'},
   lastLobby=roomFixture,companionConnected=true,runtimeStarting=false,connected=true,
@@ -124,7 +124,7 @@ BBT={
     {name='Friday Finals',status='CLOSED'},{name='Practice Room',status='SET COMPLETE'},
   },
   diagnostics={
-    protocolVersion=3,runtimeVersion='0.3.0',peerCount=14,
+    protocolVersion=3,runtimeVersion='0.3.1',peerCount=14,
     testedBeatblockVersion='1.7.1a',
     testedBeatblockBuildId='d40b7083',
     detectedBeatblockVersion='1.7.1a (Early Access)[d40b7083]',
@@ -409,8 +409,8 @@ function love.load()
   local settingsText={}
   for _,entry in ipairs(BBT.layoutAudit.text or {}) do settingsText[entry.value]=true end
   assert(settingsText['BEATBLOCK ONLINE'],'Header must identify the product without a duplicate abbreviation')
-  assert(settingsText['v0.3.0  /  READY'],'Header must show version and concise runtime state')
-  assert(settingsText['v0.3.0'],'Compatibility must show the installed Online version')
+  assert(settingsText['v0.3.1  /  READY'],'Header must show version and concise runtime state')
+  assert(settingsText['v0.3.1'],'Compatibility must show the installed Online version')
   assert(settingsText['V3 / MATCH'],'Compatibility must document the matching protocol')
   assert(settingsText['1.7.1a+'],'Compatibility must identify the tested Beatblock baseline')
   assert(settingsText['BUILD [d40b7083]'],'Compatibility must show the running game build token')
@@ -600,6 +600,15 @@ function love.load()
   activate('setlist_add_custom')
   assert(BBT.selectorLog[1].source=='custom' and BBT.selectorLog[1].mode=='setlist',
     'Setlist Add Custom must append instead of replacing the ordered set')
+
+  reset(); BBT.context.sessionId='player-2'; participants[3].verified=false
+  participants[3].ready=false; online.selectedSessionId='player-2'; online:drawState()
+  activate('participant_freeplay')
+  assert(BBT.selectorLog[1].source=='official' and BBT.selectorLog[1].mode=='verify',
+    'Chart validation must expose Beatblock Freeplay as an explicit source')
+  BBT.selectorLog={}; online:drawState(); activate('participant_locate')
+  assert(BBT.selectorLog[1].source=='custom' and BBT.selectorLog[1].mode=='verify',
+    'Chart validation must retain custom chart selection beside Freeplay')
 
   reset(); roomFixture.lifecycle='playing'; online.workspace='setlist'; online:drawState()
   for _,id in ipairs({

@@ -16,13 +16,14 @@ release:
 
 | Beatblock Online | Online protocol | Tested Beatblock build            | Newer Beatblock builds |
 | ---------------- | --------------: | --------------------------------- | ---------------------- |
+| `0.3.1`          |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted, unverified   |
 | `0.3.0`          |               3 | `1.7.1a (Early Access)[d40b7083]` | Accepted, unverified   |
 
-The release title is **v0.3.0 for Beatblock 1.7.1a+**. The `+` means the
+The release title is **v0.3.1 for Beatblock 1.7.1a+**. The `+` means the
 installer may accept newer structurally valid Beatblock releases; it does not
 mean they are verified or promise forward compatibility.
 
-The Git tag remains the machine-readable semver tag `v0.3.0`. Keeping
+The Git tag remains the machine-readable semver tag `v0.3.1`. Keeping
 human compatibility text in the GitHub Release title preserves update checks,
 package-version verification, and normal Git tooling.
 

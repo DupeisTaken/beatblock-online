@@ -67,9 +67,9 @@ test('release version metadata and generated asset names stay aligned', async ()
 });
 
 test('tagged releases must exactly match the package version', () => {
-  assert.deepEqual(validateReleaseTag({ refType: 'tag', refName: 'v0.3.0', version: '0.3.0' }), {
+  assert.deepEqual(validateReleaseTag({ refType: 'tag', refName: 'v0.3.1', version: '0.3.1' }), {
     tagged: true,
-    expected: 'v0.3.0',
+    expected: 'v0.3.1',
   });
   assert.deepEqual(
     validateReleaseTag({ refType: 'tag', refName: 'v0.4.0-beta.2', version: '0.4.0-beta.2' }),
@@ -80,27 +80,27 @@ test('tagged releases must exactly match the package version', () => {
       validateReleaseTag({
         refType: 'tag',
         refName: 'v0.4.0-alpha.2',
-        version: '0.3.0',
+        version: '0.3.1',
       }),
     /does not match package version/,
   );
-  assert.deepEqual(validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.0' }), {
+  assert.deepEqual(validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.1' }), {
     tagged: false,
-    expected: 'v0.3.0',
+    expected: 'v0.3.1',
   });
 });
 
 test('release display titles advertise the tested Beatblock baseline without changing tags', () => {
   assert.equal(
-    releaseDisplayTitle('v0.3.0', {
+    releaseDisplayTitle('v0.3.1', {
       testedVersion: '1.7.1a',
       newerBuilds: 'accepted-unverified',
     }),
-    'v0.3.0 for Beatblock 1.7.1a+',
+    'v0.3.1 for Beatblock 1.7.1a+',
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.3.0 for Beatblock 1.7.1a', {
+      releaseDisplayTitle('v0.3.1 for Beatblock 1.7.1a', {
         testedVersion: '1.7.1a',
         newerBuilds: 'accepted-unverified',
       }),
@@ -108,7 +108,7 @@ test('release display titles advertise the tested Beatblock baseline without cha
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.3.0', {
+      releaseDisplayTitle('v0.3.1', {
         testedVersion: '1.7.1a',
         newerBuilds: 'blocked',
       }),
