@@ -265,6 +265,11 @@ local scenarios={
     reset(); roomFixture.chart=nil; roomFixture.setlist={}; roomFixture.currentSetlistIndex=nil
     roomFixture.lifecycle='forming'; online:openSingleChartSource()
   end},
+  {'local-chart-source',function()
+    reset(); BBT.context.sessionId='player-2'; participants[3].verified=false
+    participants[3].ready=false; online.selectedSessionId='player-2'
+    online:openSingleChartSource('verify')
+  end},
   {'single-chart-replace',function()
     reset(); roomFixture.lifecycle='set_complete'; roomFixture.currentSetlistIndex=2
     for _,entry in ipairs(roomFixture.setlist) do entry.completed=true end
@@ -575,6 +580,23 @@ function love.load()
   assert(#BBT.selectorLog==1 and BBT.selectorLog[1].source=='official'
     and BBT.selectorLog[1].mode=='single',
     'One-off official selection must leave for Beatblock only after the source choice')
+
+  reset(); BBT.context.sessionId='player-2'; participants[3].verified=false
+  participants[3].ready=false; online.selectedSessionId='player-2'
+  activate('session_local_chart')
+  assert(online.modal and online.modal.kind=='chart_source'
+    and online.modal.selectionMode=='verify',
+    'Top Find Local must open the shared chart source dialog in verification mode')
+  activate('single_chart_official')
+  assert(#BBT.selectorLog==1 and BBT.selectorLog[1].source=='official'
+    and BBT.selectorLog[1].mode=='verify',
+    'Find Local Freeplay selection must verify the locked chart without replacing it')
+  reset(); BBT.context.sessionId='player-2'; participants[3].verified=false
+  participants[3].ready=false; online.selectedSessionId='player-2'
+  activate('session_local_chart'); activate('single_chart_custom')
+  assert(#BBT.selectorLog==1 and BBT.selectorLog[1].source=='custom'
+    and BBT.selectorLog[1].mode=='verify',
+    'Find Local Custom selection must verify the locked chart without replacing it')
 
   reset(); roomFixture.lifecycle='set_complete'; roomFixture.currentSetlistIndex=2
   for _,entry in ipairs(roomFixture.setlist) do entry.completed=true end

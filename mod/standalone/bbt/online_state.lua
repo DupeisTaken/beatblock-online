@@ -205,32 +205,37 @@ local function submitModifiers(self)
   else modal.error=bounded(BBT.lastError or 'MODIFIER POLICY COULD NOT BE SAVED',48) end
 end
 
-local function launchSingleChartSelector(official)
-  if official then BBT.openOfficialSelect('single')
-  else BBT.openChartSelect('single') end
+local function launchSingleChartSelector(official,selectionMode)
+  local mode=selectionMode or 'single'
+  if official then BBT.openOfficialSelect(mode)
+  else BBT.openChartSelect(mode) end
 end
 
 local function chooseSingleChartSource(self,official)
+  -- Hosting and local verification share this source picker, but only hosting
+  -- may replace an ordered set and therefore needs the destructive warning.
+  local selectionMode=self.modal and self.modal.selectionMode or 'single'
   local room=currentRoom()
   local entries=room and room.setlist or {}
-  if #entries>0 then
+  if selectionMode=='single' and #entries>0 then
     openConfirm(
       self,
       'REPLACE ORDERED SET',
       'Selecting one chart removes the current ordered set. Continue to Beatblock chart selection?',
       'REPLACE SET',
-      function() launchSingleChartSelector(official) end
+      function() launchSingleChartSelector(official,selectionMode) end
     )
     return
   end
   closeModal(self)
-  launchSingleChartSelector(official)
+  launchSingleChartSelector(official,selectionMode)
 end
 
-local function openSingleChartSource(self)
+local function openSingleChartSource(self,selectionMode)
   self.modal={
     kind='chart_source',
     title='SELECT SINGLE CHART',
+    selectionMode=selectionMode or 'single',
     returnFocus=self.focusId,
   }
   self.focusId='single_chart_official'
@@ -296,7 +301,7 @@ local function header(self)
     button(self,'session_local_chart',295,36,114,26,'FIND LOCAL',function()
       local active=currentRoom()
       if active and active.chart then
-        if active.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
+        openSingleChartSource(self,'verify')
       end
     end,'cyan')
   end
@@ -1117,19 +1122,23 @@ local function drawModal(self)
   elseif modal.kind=='chart_source' then
     local room=currentRoom()
     local hasOrderedSet=room and #(room.setlist or {})>0
+    local verifying=modal.selectionMode=='verify'
+    local replacing=hasOrderedSet and not verifying
     ui:panel(126,84,348,200,modal.title)
     ui:wrapped(
-      hasOrderedSet
+      verifying
+        and 'Choose where the locked chart is installed. Online will verify it without changing the ordered set.'
+        or hasOrderedSet
         and 'Choose a Beatblock source. You will confirm before this single chart replaces the ordered set.'
         or 'Choose which Beatblock library supplies this one-off room chart.',
-      146,117,308,3,hasOrderedSet and 'yellow' or 'muted'
+      146,117,308,3,replacing and 'yellow' or 'muted'
     )
     button(self,'single_chart_official',146,178,143,27,'OFFICIAL CHART',function()
       chooseSingleChartSource(self,true)
-    end,hasOrderedSet and 'yellow' or 'cyan')
+    end,replacing and 'yellow' or 'cyan')
     button(self,'single_chart_custom',311,178,143,27,'CUSTOM CHART',function()
       chooseSingleChartSource(self,false)
-    end,hasOrderedSet and 'yellow' or 'cyan')
+    end,replacing and 'yellow' or 'cyan')
     button(self,'modal_cancel',229,225,142,27,'CANCEL',function() closeModal(self) end,'white')
   elseif modal.kind=='details' then
     -- Eight 372px lines is what the panel actually holds at 16pt; the byte
@@ -1270,7 +1279,7 @@ return function()
   local st=Gamestate:new('Online')
   function st:openForm(mode,spectator) openForm(self,mode,spectator) end
   function st:submitForm() submitForm(self) end
-  function st:openSingleChartSource() openSingleChartSource(self) end
+  function st:openSingleChartSource(selectionMode) openSingleChartSource(self,selectionMode) end
   function st:chooseSingleChartSource(official) chooseSingleChartSource(self,official) end
   function st:openModifiers() openModifiers(self) end
   function st:submitModifiers() submitModifiers(self) end
