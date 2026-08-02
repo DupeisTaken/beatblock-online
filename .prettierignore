@@ -19,6 +19,7 @@ mod/releases/
 .pytest_cache/
 .ruff_cache/
 .test/
+.trial/
 .runtime-test/
 .reference/
 .worktrees/
