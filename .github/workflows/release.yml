@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Git refs use raw SemVer. Player-facing build labels retain the `v`.
+      - '[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
 
 permissions:
@@ -76,7 +77,7 @@ jobs:
             mod/releases/*.zip
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: beatblock-online-${{ github.ref_name }}
+          name: beatblock-online-v${{ github.ref_name }}
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -95,7 +96,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: beatblock-online-${{ github.ref_name }}
+          name: beatblock-online-v${{ github.ref_name }}
           path: release-assets
       - name: Publish tagged release
         shell: bash
@@ -103,7 +104,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_title="$(node scripts/release-title.mjs "$GITHUB_REF_NAME")"
-          release_notes="$GITHUB_WORKSPACE/docs/releases/${GITHUB_REF_NAME}.md"
+          release_notes="$GITHUB_WORKSPACE/docs/releases/v${GITHUB_REF_NAME}.md"
           if [[ ! -f "$release_notes" ]]; then
             echo "::error::Missing checked-in release notes: $release_notes"
             exit 1

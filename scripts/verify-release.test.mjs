@@ -67,32 +67,36 @@ test('release version metadata and generated asset names stay aligned', async ()
 });
 
 test('tagged releases must exactly match the package version', () => {
-  assert.deepEqual(validateReleaseTag({ refType: 'tag', refName: 'v0.3.1', version: '0.3.1' }), {
+  assert.deepEqual(validateReleaseTag({ refType: 'tag', refName: '0.3.1', version: '0.3.1' }), {
     tagged: true,
-    expected: 'v0.3.1',
+    expected: '0.3.1',
   });
   assert.deepEqual(
-    validateReleaseTag({ refType: 'tag', refName: 'v0.4.0-beta.2', version: '0.4.0-beta.2' }),
-    { tagged: true, expected: 'v0.4.0-beta.2' },
+    validateReleaseTag({ refType: 'tag', refName: '0.4.0-beta.2', version: '0.4.0-beta.2' }),
+    { tagged: true, expected: '0.4.0-beta.2' },
   );
   assert.throws(
     () =>
       validateReleaseTag({
         refType: 'tag',
-        refName: 'v0.4.0-alpha.2',
+        refName: '0.4.0-alpha.2',
         version: '0.3.1',
       }),
     /does not match package version/,
   );
+  assert.throws(
+    () => validateReleaseTag({ refType: 'tag', refName: 'v0.3.1', version: '0.3.1' }),
+    /does not match package version/,
+  );
   assert.deepEqual(validateReleaseTag({ refType: 'branch', refName: 'main', version: '0.3.1' }), {
     tagged: false,
-    expected: 'v0.3.1',
+    expected: '0.3.1',
   });
 });
 
 test('release display titles advertise the tested Beatblock baseline without changing tags', () => {
   assert.equal(
-    releaseDisplayTitle('v0.3.1', {
+    releaseDisplayTitle('0.3.1', {
       testedVersion: '1.7.1a',
       newerBuilds: 'accepted-unverified',
     }),
@@ -100,15 +104,15 @@ test('release display titles advertise the tested Beatblock baseline without cha
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.3.1 for Beatblock 1.7.1a', {
+      releaseDisplayTitle('v0.3.1', {
         testedVersion: '1.7.1a',
         newerBuilds: 'accepted-unverified',
       }),
-    /invalid tag/,
+    /invalid SemVer tag/,
   );
   assert.throws(
     () =>
-      releaseDisplayTitle('v0.3.1', {
+      releaseDisplayTitle('0.3.1', {
         testedVersion: '1.7.1a',
         newerBuilds: 'blocked',
       }),
@@ -278,9 +282,12 @@ test('hosted workflows pin third-party actions and isolate release publication',
   assert.match(publishJob, /needs:\s*build/);
   assert.match(publishJob, /contents:\s*write/);
   assert.match(release, /actions\/attest-build-provenance@[0-9a-f]{40}/);
+  assert.match(release, /- '\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*'/);
+  assert.doesNotMatch(release, /- 'v\*'/);
+  assert.match(release, /name: beatblock-online-v\$\{\{ github\.ref_name \}\}/);
   assert.match(
     publishJob,
-    /release_notes="\$GITHUB_WORKSPACE\/docs\/releases\/\$\{GITHUB_REF_NAME\}\.md"/,
+    /release_notes="\$GITHUB_WORKSPACE\/docs\/releases\/v\$\{GITHUB_REF_NAME\}\.md"/,
     'tagged releases must use the matching checked-in public release note',
   );
   assert.match(publishJob, /--notes-file "\$release_notes"/);

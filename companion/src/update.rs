@@ -435,7 +435,13 @@ fn evaluate_releases(current: &str, body: &str) -> Result<UpdateCheck> {
         .into_iter()
         .filter(|release| !release.draft)
         .filter_map(|release| {
-            let tag = release.tag_name.trim_start_matches(['v', 'V']);
+            // Current Git refs are raw SemVer. Accept one historical `v`
+            // prefix so cached metadata and older mirrors remain readable.
+            let tag = release
+                .tag_name
+                .strip_prefix('v')
+                .or_else(|| release.tag_name.strip_prefix('V'))
+                .unwrap_or(&release.tag_name);
             let version = Version::parse(tag).ok()?;
             if (release.prerelease || !version.pre.is_empty()) && !include_prereleases {
                 return None;
@@ -993,7 +999,7 @@ mod tests {
 
     fn asset(name: &str, size: u64, digest: Option<&str>) -> String {
         format!(
-            r#"{{"name":"{name}","browser_download_url":"https://github.com/DupeisTaken/beatblock-online/releases/download/v1/{name}","size":{size},"digest":{}}}"#,
+            r#"{{"name":"{name}","browser_download_url":"https://github.com/DupeisTaken/beatblock-online/releases/download/1.0.0/{name}","size":{size},"digest":{}}}"#,
             digest
                 .map(|value| format!("\"{value}\""))
                 .unwrap_or_else(|| "null".into())
@@ -1002,7 +1008,7 @@ mod tests {
 
     fn release_json(tag: &str, prerelease: bool, assets: &[String]) -> String {
         format!(
-            r#"[{{"tag_name":"v{tag}","html_url":"https://github.com/DupeisTaken/beatblock-online/releases/tag/v{tag}","draft":false,"prerelease":{prerelease},"assets":[{}]}}]"#,
+            r#"[{{"tag_name":"{tag}","html_url":"https://github.com/DupeisTaken/beatblock-online/releases/tag/{tag}","draft":false,"prerelease":{prerelease},"assets":[{}]}}]"#,
             assets.join(",")
         )
     }
@@ -1040,8 +1046,8 @@ mod tests {
     #[test]
     fn stable_build_ignores_prereleases_and_reports_current_release() {
         let body = r#"[
-            {"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/beta","draft":false,"prerelease":true,"assets":[]},
-            {"tag_name":"v1.0.0","html_url":"https://example.test/stable","draft":false,"prerelease":false,"assets":[]}
+            {"tag_name":"1.1.0-beta.1","html_url":"https://example.test/beta","draft":false,"prerelease":true,"assets":[]},
+            {"tag_name":"1.0.0","html_url":"https://example.test/stable","draft":false,"prerelease":false,"assets":[]}
         ]"#;
         let check = evaluate_releases("1.0.0", body).unwrap();
         assert!(!check.update_available());
@@ -1051,8 +1057,8 @@ mod tests {
     #[test]
     fn release_selection_uses_semver_instead_of_tag_text_order() {
         let body = r#"[
-            {"tag_name":"v0.9.9","html_url":"https://example.test/old","draft":false,"prerelease":false,"assets":[]},
-            {"tag_name":"v0.10.0","html_url":"https://example.test/new","draft":false,"prerelease":false,"assets":[]}
+            {"tag_name":"0.9.9","html_url":"https://example.test/old","draft":false,"prerelease":false,"assets":[]},
+            {"tag_name":"0.10.0","html_url":"https://example.test/new","draft":false,"prerelease":false,"assets":[]}
         ]"#;
         let check = evaluate_releases("0.9.0", body).unwrap();
         assert_eq!(check.latest_version, Some(Version::new(0, 10, 0)));
@@ -1060,6 +1066,23 @@ mod tests {
             check.release_url.as_deref(),
             Some("https://example.test/new")
         );
+    }
+
+    #[test]
+    fn one_historical_v_prefix_remains_readable_but_is_not_part_of_semver() {
+        let body = r#"[{
+            "tag_name":"v1.0.1",
+            "html_url":"https://example.test/legacy",
+            "draft":false,
+            "prerelease":false,
+            "assets":[]
+        }]"#;
+        let check = evaluate_releases("1.0.0", body).unwrap();
+        assert_eq!(check.latest_version, Some(Version::new(1, 0, 1)));
+
+        let malformed = body.replace("v1.0.1", "vv1.0.1");
+        let check = evaluate_releases("1.0.0", &malformed).unwrap();
+        assert!(check.latest_version.is_none());
     }
 
     #[test]
