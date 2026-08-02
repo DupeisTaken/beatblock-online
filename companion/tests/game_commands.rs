@@ -3,7 +3,7 @@ use beatblock_online_companion::{
     game_commands,
     model::{
         AdmissionMode, ChartLock, ChartTransferMode, CompanionConfig, Envelope, ParticipantRole,
-        RendererRequest, RoomLifecycle,
+        RendererRequest, RestartModifier, RoomLifecycle, TapModifier,
     },
     room::RoomEngine,
 };
@@ -667,5 +667,81 @@ async fn host_can_toggle_run_validity_checks_before_a_race() {
         .unwrap()
         .contains("boolean enabled"));
     assert!(!app.room.read().await.snapshot.validity_checks_enabled);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn host_can_set_native_room_modifiers_only_before_a_race() {
+    let root = temporary("room-modifiers-command");
+    let app = state(root.clone(), &"a".repeat(64)).await;
+    let strict = json!({
+        "rate":1.7,
+        "vfx":"decreased",
+        "taps":"strict",
+        "sides":"lenient",
+        "barelies":"strict",
+        "restartOn":"miss"
+    });
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.modifiers_set",
+            1,
+            json!({"requestId":"modifiers-strict","modifiers":strict}),
+        ),
+    )
+    .await
+    .unwrap();
+    let configured = app.room.read().await.snapshot.modifiers.clone();
+    assert_eq!(configured.rate, 1.7);
+    assert_eq!(configured.taps, TapModifier::Strict);
+    assert_eq!(configured.restart_on, RestartModifier::Miss);
+
+    app.room.write().await.snapshot.lifecycle = RoomLifecycle::Playing;
+    let mut events = app.events.subscribe();
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.modifiers_set",
+            2,
+            json!({"requestId":"modifiers-locked","modifiers":{
+                "rate":1.0,"vfx":"full","taps":"default","sides":"default",
+                "barelies":"default","restartOn":"none"
+            }}),
+        ),
+    )
+    .await
+    .unwrap();
+    let error = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "control.error" {
+            break event;
+        }
+    };
+    assert_eq!(error.payload["requestId"], "modifiers-locked");
+    assert_eq!(app.room.read().await.snapshot.modifiers, configured);
+
+    app.room.write().await.snapshot.lifecycle = RoomLifecycle::Ready;
+    game_commands::handle(
+        &app,
+        &Envelope::new(
+            "room.modifiers_set",
+            3,
+            json!({"requestId":"modifiers-off-step","modifiers":{
+                "rate":1.25,"vfx":"full","taps":"default","sides":"default",
+                "barelies":"default","restartOn":"none"
+            }}),
+        ),
+    )
+    .await
+    .unwrap();
+    let error = loop {
+        let event = events.recv().await.unwrap();
+        if event.kind == "control.error" && event.payload["requestId"] == "modifiers-off-step" {
+            break event;
+        }
+    };
+    assert!(error.payload["message"].as_str().unwrap().contains("0.1"));
+    assert_eq!(app.room.read().await.snapshot.modifiers, configured);
     let _ = std::fs::remove_dir_all(root);
 }

@@ -64,7 +64,7 @@ open so hosts can build continuously. One-off selection returns to Room.
 
 ## Chart matching and host fallback
 
-For every locked chart, Online tries the current selection and managed hash/path indexes before asking the Player. Official charts are local-only. For a custom chart, **Select Local Chart** verifies the canonical package hash, variant, and note count. If the host enabled transfers, **Request Host Transfer** requests the original archive (or a bounded archive produced from the host's selected directory).
+For every locked chart, Online tries the current selection and managed hash/path indexes before asking the Player. The Player inspector exposes **Select Freeplay** for built-in levels and **Select Custom Chart** for installed packages; both verify the authoritative chart identity, variant, and note count. Official charts are local-only. If the host enabled transfers, **Request Host Transfer** requests the original archive (or a bounded archive produced from the host's selected directory).
 
 Chart selection uses Beatblock's authoritative UTF-8 package filename instead
 of deriving a path from the rendered song title. Punctuation, division signs,

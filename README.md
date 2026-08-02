@@ -4,8 +4,8 @@ Beatblock Online is a Windows direct-IP competition mod for Beatblock. Host a
 password-protected room, invite Players and Spectators, run single charts or an
 ordered set, and review synchronized results without leaving Beatblock.
 
-> **Beta prerelease:** the current release is
-> [`v0.3.0-beta.5`](docs/releases/v0.3.0-beta.5.md), tested with Beatblock
+> **Current release:**
+> [`v0.3.1`](docs/releases/v0.3.1.md), tested with Beatblock
 > `1.7.1a (Early Access)[d40b7083]`. Newer Beatblock builds may install, but
 > remain unverified until tested. The installer is currently unsigned, so
 > Windows may show **Unknown publisher**.
@@ -21,7 +21,7 @@ ordered set, and review synchronized results without leaving Beatblock.
 The former README quickstart now lives in the Player Guide, where each task has
 its own steps and nearby troubleshooting.
 
-## What the current beta includes
+## What the current release includes
 
 - Direct-IP rooms for up to 16 Players and 32 Spectators.
 - Password authentication and host approval from the in-game host flow.

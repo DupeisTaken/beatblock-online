@@ -71,7 +71,7 @@ dashboard exposes and validates them.
 - [Reproducible release workflow](releasing.md)
 - [Release history](releases/index.md), pairing concise public notes with
   technical changelogs
-- [Current ship-readiness review](../reports/ship-readiness-review-v0.3.0-beta.5.md)
+- [Beta.5 ship-readiness review](../reports/ship-readiness-review-v0.3.0-beta.5.md)
 - [Security, correctness, resource, and UX audit](../reports/ship-readiness-audit-2026-07-20.md)
 - [Installer reliability evidence](../reports/trial-runs/installer-reliability-latest.md)
 - [Injected lifecycle evidence](../reports/trial-runs/injected-installer-lifecycle-latest.md)

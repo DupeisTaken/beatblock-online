@@ -1,5 +1,5 @@
 local BBT = {
-  version = '0.3.0-beta.5',
+  version = '0.3.1',
   protocolVersion = 3,
   testedBeatblockVersion = '1.7.1a',
   sequence = 0,
@@ -55,6 +55,17 @@ local COALESCED_CHANNELS = {
   ['client.ping'] = 'bbt_heartbeat_latest',
 }
 
+local DEFAULT_ROOM_MODIFIERS = {
+  rate=1.0, vfx='full', taps='default', sides='default', barelies='default', restartOn='none',
+}
+local MODIFIER_DOMAINS = {
+  vfx={full=true,decreased=true,none=true},
+  taps={default=true,lenient=true,strict=true,auto=true},
+  sides={default=true,lenient=true,auto=true},
+  barelies={default=true,lenient=true,strict=true},
+  restartOn={none=true,miss=true,barely=true},
+}
+
 local function monotonicMs()
   return love and love.timer and math.floor(love.timer.getTime() * 1000) or 0
 end
@@ -96,6 +107,78 @@ local function resultsAccuracy(totals)
   -- Results uses the chart-wide maximum rather than the live HUD denominator.
   -- Keep the source keyframe identical to the player's native Results screen.
   return math.floor((((totals.maxHits - totals.misses - totals.barelies / 4) / totals.maxHits) * 100) * 100) / 100
+end
+
+local function roomModifierPolicy(room)
+  local raw=room and type(room.modifiers)=='table' and room.modifiers or {}
+  local rate=tonumber(raw.rate) or DEFAULT_ROOM_MODIFIERS.rate
+  local rounded=math.floor(rate*10+0.5)/10
+  if rate<0.5 or rate>5 or math.abs(rate-rounded)>0.0001 then
+    rate=DEFAULT_ROOM_MODIFIERS.rate
+  else rate=rounded end
+  local policy={rate=rate}
+  for _,key in ipairs({'vfx','taps','sides','barelies','restartOn'}) do
+    local value=raw[key]
+    policy[key]=MODIFIER_DOMAINS[key][value] and value or DEFAULT_ROOM_MODIFIERS[key]
+  end
+  return policy
+end
+
+function BBT.roomModifierPolicy(room)
+  return roomModifierPolicy(room)
+end
+
+local function writeAccessibilityModifiers(values)
+  local target=BBT.modifierAccessibility
+  if not target or not values then return end
+  target.vfx=values.vfx
+  target.taps=values.taps
+  target.sides=values.sides
+  target.barelies=values.barelies
+end
+
+function BBT.restoreRoomModifiers()
+  if BBT.localModifierPreferences then writeAccessibilityModifiers(BBT.localModifierPreferences) end
+  if sdfunc and BBT.modifierSaveWrapper and sdfunc.save==BBT.modifierSaveWrapper then
+    sdfunc.save=BBT.originalModifierSave
+  end
+  BBT.modifierAccessibility=nil
+  BBT.localModifierPreferences=nil
+  BBT.enforcedRoomModifiers=nil
+  BBT.modifierSaveWrapper=nil
+  BBT.originalModifierSave=nil
+end
+
+function BBT.applyRoomModifiers(room)
+  BBT.restoreRoomModifiers()
+  local accessibility=savedata and savedata.options and savedata.options.accessibility
+  if type(accessibility)~='table' or not sdfunc or type(sdfunc.save)~='function' then
+    return nil,'Beatblock modifier settings are unavailable; the online chart was not started'
+  end
+  local policy=roomModifierPolicy(room)
+  BBT.modifierAccessibility=accessibility
+  BBT.localModifierPreferences={
+    vfx=accessibility.vfx, taps=accessibility.taps,
+    sides=accessibility.sides, barelies=accessibility.barelies,
+  }
+  BBT.enforcedRoomModifiers=policy
+  BBT.originalModifierSave=sdfunc.save
+  -- Beatblock saves while leaving Game and entering Results. Swap the player's
+  -- own preferences back only for that call, then immediately restore the room
+  -- policy; enforced values therefore remain visible but never reach disk.
+  BBT.modifierSaveWrapper=function(...)
+    local args={...}
+    writeAccessibilityModifiers(BBT.localModifierPreferences)
+    local ok,results=xpcall(function()
+      return {BBT.originalModifierSave(unpack(args))}
+    end,debug.traceback)
+    if BBT.enforcedRoomModifiers then writeAccessibilityModifiers(BBT.enforcedRoomModifiers) end
+    if not ok then error(results,0) end
+    return unpack(results)
+  end
+  sdfunc.save=BBT.modifierSaveWrapper
+  writeAccessibilityModifiers(policy)
+  return policy
 end
 
 local function totals()
@@ -507,6 +590,8 @@ function BBT.maybeLaunchScheduledChart()
   if BBT.launching or not BBT.lastLobby or BBT.lastLobby.lifecycle ~= 'countdown' then return false end
   if not BBT.localChart or not BBT.chartVerified or not BBT.scheduledStartTimeMs then return false end
   if estimatedServerTimeMs() < BBT.scheduledStartTimeMs - 3500 then return false end
+  local modifierPolicy,modifierError=BBT.applyRoomModifiers(BBT.lastLobby)
+  if not modifierPolicy then BBT.lastError=modifierError; return false end
   BBT.launching = true
   cLevel = BBT.localChart.levelPath
   returnData = { state = 'Online', vars = {} }
@@ -525,6 +610,10 @@ function BBT.maybeLaunchScheduledChart()
   if GameManager and GameManager.transferStateData and previous then
     GameManager:transferStateData(cs, previous)
   end
+  -- Rate and restart live on the Game state rather than savedata. Assign them
+  -- after native transfer so stale selector values cannot replace room policy.
+  cs.rateMod=modifierPolicy.rate
+  cs.restartOn=modifierPolicy.restartOn
   if previous and previous.leave then previous:leave() end
   cs:init(BBT.localChart.levelPath, BBT.localChart.variantInfo, BBT.localChart.levelData, BBT.localChart.soundData)
   return true

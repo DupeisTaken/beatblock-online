@@ -11,6 +11,7 @@ import {
   LobbySnapshotSchema,
   PlayerSnapshotSchema,
   RulesSchema,
+  RoomModifiersSchema,
   RunScoreDeltaSchema,
   ScoreTotalsSchema,
 } from '../protocol/dist/index.js';
@@ -27,6 +28,7 @@ const schema = {
     ScoreTotals: ScoreTotalsSchema,
     ChartFingerprint: ChartFingerprintSchema,
     Rules: RulesSchema,
+    RoomModifiers: RoomModifiersSchema,
     PlayerSnapshot: PlayerSnapshotSchema,
     LobbySnapshot: LobbySnapshotSchema,
     RunScoreDelta: RunScoreDeltaSchema,

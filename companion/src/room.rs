@@ -1,6 +1,6 @@
 use crate::model::{
-    AdmissionMode, ChartLock, Participant, ParticipantRole, RoomLifecycle, RoomSnapshot,
-    RunValidity, ScoreTotals, SetlistEntry, MAX_PLAYERS, MAX_SPECTATORS,
+    AdmissionMode, ChartLock, Participant, ParticipantRole, RoomLifecycle, RoomModifiers,
+    RoomSnapshot, RunValidity, ScoreTotals, SetlistEntry, MAX_PLAYERS, MAX_SPECTATORS,
 };
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -31,6 +31,7 @@ impl RoomEngine {
                 auto_request_chart_transfers: false,
                 validity_checks_enabled: true,
                 require_same_game_build: true,
+                modifiers: RoomModifiers::default(),
                 participants: Vec::new(),
                 chart: None,
                 setlist: Vec::new(),
@@ -62,6 +63,7 @@ impl RoomEngine {
             auto_request_chart_transfers: false,
             validity_checks_enabled: true,
             require_same_game_build: true,
+            modifiers: RoomModifiers::default(),
             participants: vec![Participant {
                 session_id: host_id,
                 display_name: host_name,
@@ -293,6 +295,21 @@ impl RoomEngine {
             bail!("Beatblock build matching can only change before a race");
         }
         self.snapshot.require_same_game_build = required;
+        self.touch();
+        Ok(())
+    }
+
+    /// Modifier policy is frozen with the rest of the race configuration so a
+    /// player never judges one chart against settings that changed mid-run.
+    pub fn set_modifiers(&mut self, modifiers: RoomModifiers) -> Result<()> {
+        if !matches!(
+            self.snapshot.lifecycle,
+            RoomLifecycle::Forming | RoomLifecycle::ChartLocked | RoomLifecycle::Ready
+        ) {
+            bail!("room modifiers can only change before a race");
+        }
+        modifiers.validate()?;
+        self.snapshot.modifiers = modifiers;
         self.touch();
         Ok(())
     }
@@ -1289,6 +1306,24 @@ mod tests {
         room.snapshot.lifecycle = RoomLifecycle::Forming;
         room.snapshot.allow_chart_transfers = false;
         assert!(room.set_auto_request_chart_transfers(true).is_err());
+    }
+
+    #[test]
+    fn host_modifiers_are_authoritative_and_pre_race_only() {
+        let mut room = RoomEngine::host("Room".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        assert_eq!(room.snapshot.modifiers, RoomModifiers::default());
+
+        let modifiers = RoomModifiers {
+            rate: 1.7,
+            taps: crate::model::TapModifier::Strict,
+            restart_on: crate::model::RestartModifier::Miss,
+            ..RoomModifiers::default()
+        };
+        room.set_modifiers(modifiers.clone()).unwrap();
+        assert_eq!(room.snapshot.modifiers, modifiers);
+
+        room.snapshot.lifecycle = RoomLifecycle::Countdown;
+        assert!(room.set_modifiers(RoomModifiers::default()).is_err());
     }
 
     fn scheduled_room(validity_checks_enabled: bool) -> (RoomEngine, String) {

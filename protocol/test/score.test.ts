@@ -40,6 +40,32 @@ describe('Beatblock score derivation', () => {
       true,
     );
     expect(Value.Check(RoomSnapshotSchema, { ...room, requireSameGameBuild: false })).toBe(true);
+    expect(
+      Value.Check(RoomSnapshotSchema, {
+        ...room,
+        modifiers: {
+          rate: 1.7,
+          vfx: 'decreased',
+          taps: 'strict',
+          sides: 'lenient',
+          barelies: 'strict',
+          restartOn: 'miss',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(RoomSnapshotSchema, {
+        ...room,
+        modifiers: {
+          rate: 1.25,
+          vfx: 'full',
+          taps: 'default',
+          sides: 'default',
+          barelies: 'default',
+          restartOn: 'none',
+        },
+      }),
+    ).toBe(false);
   });
 
   it('accepts Rust-shaped snapshots with absent optional result fields', () => {
@@ -258,7 +284,7 @@ describe('Beatblock score derivation', () => {
   it('validates the runtime client hello ownership key', () => {
     const hello = {
       instanceId: 'game-123',
-      clientVersion: '0.3.0-beta.5',
+      clientVersion: '0.3.1',
       gameVersion: '1.7.1a (Early Access)[d40b7083]',
       gameBuildId: 'd40b7083',
       gameBuildSource: 'displayed_build_hash',

@@ -38,6 +38,13 @@ const FLAG_SYNC_RELEASE: u16 = 1 << 5;
 const FLAG_TAP_PRESSED: u16 = 1 << 6;
 const FLAG_TAP_RELEASED: u16 = 1 << 7;
 
+/// Lua 5.1's `os.getenv` uses the active Windows code page, while LÖVE paths
+/// are UTF-8. Hex keeps user-authored chart paths and variant names ASCII-only
+/// across that boundary; the renderer decodes the original UTF-8 bytes.
+fn utf8_environment_hex(value: &str) -> String {
+    hex::encode(value.as_bytes())
+}
+
 #[derive(Clone)]
 struct BufferedRenderSample {
     sample: RenderSample,
@@ -1150,8 +1157,13 @@ impl RendererManager {
             // reconstructed stream. OBS captures this child by its stable
             // per-slot window title instead of attaching to the host game.
             .env("BBT_RENDERER_AUDIO", "1")
+            // Retain the legacy values so a runtime/mod version skew remains
+            // usable for ASCII charts. Current renderer Lua always prefers the
+            // code-page-safe hex transport below.
             .env("BBT_RENDERER_CHART", chart_path)
             .env("BBT_RENDERER_VARIANT", variant)
+            .env("BBT_RENDERER_CHART_HEX", utf8_environment_hex(chart_path))
+            .env("BBT_RENDERER_VARIANT_HEX", utf8_environment_hex(variant))
             .env("APPDATA", renderer_profile)
             .env("LOVELY_MOD_DIR", renderer_profile.join("Beatblock/Mods"))
             .stdin(Stdio::null())
@@ -1181,6 +1193,8 @@ impl RendererManager {
             .env("BBT_RENDERER_AUDIO", "1")
             .env("BBT_RENDERER_CHART", chart_path)
             .env("BBT_RENDERER_VARIANT", variant)
+            .env("BBT_RENDERER_CHART_HEX", utf8_environment_hex(chart_path))
+            .env("BBT_RENDERER_VARIANT_HEX", utf8_environment_hex(variant))
             .env("APPDATA", renderer_profile)
             .env("LOVELY_MOD_DIR", renderer_profile.join("Beatblock/Mods"))
             .stdin(Stdio::null())
@@ -1853,13 +1867,10 @@ mod tests {
             )
             .unwrap();
         let profile = prepare_renderer_profile(&root).unwrap();
-        let command = manager.renderer_command(
-            &slot,
-            Path::new("Beatblock.exe"),
-            &profile,
-            "Custom Levels/Test/",
-            "Default",
-        );
+        let chart = "Custom Levels/CBT Custom Charts List/24eeev0-￥/";
+        let variant = "超级难度";
+        let command =
+            manager.renderer_command(&slot, Path::new("Beatblock.exe"), &profile, chart, variant);
         let env = |name: &str| {
             command
                 .get_envs()
@@ -1872,6 +1883,16 @@ mod tests {
         assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("A")));
         assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
+        assert_eq!(env("BBT_RENDERER_CHART"), Some(PathBuf::from(chart)));
+        assert_eq!(env("BBT_RENDERER_VARIANT"), Some(PathBuf::from(variant)));
+        assert_eq!(
+            env("BBT_RENDERER_CHART_HEX"),
+            Some(PathBuf::from(utf8_environment_hex(chart)))
+        );
+        assert_eq!(
+            env("BBT_RENDERER_VARIANT_HEX"),
+            Some(PathBuf::from(utf8_environment_hex(variant)))
+        );
         assert_eq!(
             env("BBT_RENDERER_ERROR_PATH"),
             Some(manager.error_path("A"))
@@ -1895,12 +1916,10 @@ mod tests {
         let renderer_state = renderer_profile.join("Beatblock/renderer-state.json");
         std::fs::write(&renderer_state, b"ordinary-renderer-settings").unwrap();
         let profile = prepare_autoplay_profile(&root).unwrap();
-        let command = manager.autoplay_command(
-            Path::new("Beatblock.exe"),
-            &profile,
-            "Custom Levels/Test/",
-            "Default",
-        );
+        let chart = "Custom Levels/CBT Custom Charts List/24eeev0-￥/";
+        let variant = "超级难度";
+        let command =
+            manager.autoplay_command(Path::new("Beatblock.exe"), &profile, chart, variant);
         let env = |name: &str| {
             command
                 .get_envs()
@@ -1911,6 +1930,16 @@ mod tests {
         assert_eq!(env("BBT_RENDERER_STREAM"), Some(PathBuf::from("AUTOPLAY")));
         assert_eq!(env("BBT_RENDERER_AUTOPLAY"), Some(PathBuf::from("1")));
         assert_eq!(env("BBT_RENDERER_AUDIO"), Some(PathBuf::from("1")));
+        assert_eq!(env("BBT_RENDERER_CHART"), Some(PathBuf::from(chart)));
+        assert_eq!(env("BBT_RENDERER_VARIANT"), Some(PathBuf::from(variant)));
+        assert_eq!(
+            env("BBT_RENDERER_CHART_HEX"),
+            Some(PathBuf::from(utf8_environment_hex(chart)))
+        );
+        assert_eq!(
+            env("BBT_RENDERER_VARIANT_HEX"),
+            Some(PathBuf::from(utf8_environment_hex(variant)))
+        );
         assert_eq!(env("APPDATA"), Some(profile.clone()));
         assert_eq!(env("LOVELY_MOD_DIR"), Some(profile.join("Beatblock/Mods")));
         assert_ne!(env("APPDATA"), Some(renderer_profile));

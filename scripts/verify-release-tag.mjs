@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 export function validateReleaseTag({ refType, refName, version }) {
   if (refType !== 'tag') {
-    return { tagged: false, expected: `v${version}` };
+    return { tagged: false, expected: version };
   }
-  const expected = `v${version}`;
+  // Git refs are the machine-readable SemVer. Display surfaces add `v` later.
+  const expected = version;
   if (refName !== expected) {
     throw new Error(`Release tag ${refName} does not match package version ${expected}`);
   }

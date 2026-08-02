@@ -1,6 +1,6 @@
 {
   "name": "@bbt/protocol",
-  "version": "0.3.0-beta.5",
+  "version": "0.3.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

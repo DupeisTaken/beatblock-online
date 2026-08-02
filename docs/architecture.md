@@ -96,6 +96,16 @@ player's accuracy after native simulation. A final keyframe gates the transition
 into Results and supplies its totals/offset, so OBS never publishes a result
 derived only by the hidden replay. Reliable tap edges retain the originating
 player's judgement beat and input offset.
+
+Room snapshots also carry Beatblock's complete per-chart modifier policy.
+Authentication requires both protocol-v3 peers to advertise enforcement support,
+closing the otherwise compatible-old-client downgrade path. Lua applies the
+policy immediately before scheduled Game initialization, after native state
+transfer assigns speed and restart behavior. Accessibility values remain active
+through Results so native judgement and eligibility labels agree. A scoped save
+wrapper exposes the player's original values only while Beatblock writes save
+data, then reapplies the room policy; Online initialization restores the local
+in-memory values and original save function.
 An async readback slot that receives no driver callback is reclaimed after one
 second with ticket validation for late callbacks. OBS releases stale CPU/GPU
 buffers and periodically reopens an idle mapping so atomic renderer-file

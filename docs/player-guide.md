@@ -3,7 +3,7 @@
 This is the public guide for Players, Spectators, and first-time hosts. Follow
 the labels shown inside the installer and Beatblock; no command line is needed.
 
-> **Current beta:** Beatblock Online `v0.3.0-beta.5` is tested with Beatblock
+> **Current release:** Beatblock Online `v0.3.1` is tested with Beatblock
 > `1.7.1a (Early Access)[d40b7083]` on Windows 10 2004+ and Windows 11 x64.
 > Newer Beatblock builds may install but remain unverified. See
 > [Before you start](#before-you-start).
@@ -42,7 +42,7 @@ Beatblock Online has no accounts, matchmaking, public room list, or hosted
 relay. A host must make one UDP port reachable. Players and Spectators do not
 normally need to change their router.
 
-Because this is a beta prerelease:
+Before using the official release:
 
 - Windows may show **Unknown publisher** for the unsigned installer. Download
   only from the project’s [GitHub Releases page](https://github.com/DupeisTaken/beatblock-online/releases).
@@ -72,7 +72,7 @@ Because this is a beta prerelease:
    phase, approve that one prompt and return to the installer.
 7. Wait for the verified success result, then choose **Launch Beatblock**.
 8. In Beatblock, open **Online**. Wait until the top-right status shows
-   `v0.3.0-beta.5 / READY` and the session panel says **READY TO CONNECT**.
+   `v0.3.1 / READY` and the session panel says **READY TO CONNECT**.
 
 When an installer update is offered, **Update Installer** updates the managed
 maintenance copy of the installer. It does not update the Beatblock mod by
@@ -96,8 +96,9 @@ current in-game form accepts an address and UDP port in separate fields.
 
 ## Play a race
 
-1. When the host locks a chart, select the matching official chart or the exact
-   matching custom chart and variant.
+1. When the host locks a chart, select your roster row and use **Select
+   Freeplay** for a built-in chart or **Select Custom Chart** for an installed
+   package, then choose the exact matching chart and variant.
 2. If the host offers a custom chart, review the package before accepting it.
    Script or executable content always gets a separate warning. Official charts
    are never transferred.
@@ -105,7 +106,11 @@ current in-game form accepts an address and UDP port in separate fields.
    your mind before the race, select your own roster row and choose **Unready**.
 4. The host can choose **Start Race** only after all assigned Players are
    verified and ready. Beatblock opens the locked chart after the countdown.
-5. Finish the attempt and return to the Online room for **Current Results**.
+5. Beatblock Online temporarily applies the host's game speed, VFX, Taps,
+   Sides, Barelies, and Restart On choices. Your local preferences are not
+   saved over and return when you reach Online again. Open **Settings >
+   Modifiers** to inspect the policy read-only before starting.
+6. Finish the attempt and return to the Online room for **Current Results**.
    Select a participant and use **Run Details** when a result is **INVALID** or
    **DNF**.
 
@@ -113,6 +118,11 @@ In an online race, normal pause inputs are intentionally unavailable. A
 competitive room can mark a retried or incomplete attempt invalid; a casual
 room permits retries but still marks incomplete attempts and expired
 disconnects as DNF.
+
+Current rooms require modifier-enforcement support during authentication. If
+joining reports that the host or participant must update, install the same
+current Beatblock Online release on every machine; an older protocol-v3 runtime
+is deliberately rejected because it could ignore the host policy.
 
 ## Join as a Spectator
 
