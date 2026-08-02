@@ -135,6 +135,23 @@ local Renderer=(function()
 {renderer}
 end)()
 os.getenv=originalGetenv
+assert(Renderer.decodeHexUtf8('437573746f6d204c6576656c732f323465656576302defbfa52f')
+  == 'Custom Levels/24eeev0-\239\191\165/')
+assert(Renderer.decodeHexUtf8('e8b685e7baa7e99abee5baa6') == '\232\182\133\231\186\167\233\154\190\229\186\166')
+assert(Renderer.decodeHexUtf8('not-hex') == nil)
+assert(Renderer.decodeHexUtf8('abc') == nil)
+os.getenv=function(name)
+  if name=='BBT_RENDERER_CHART_HEX' then
+    return '437573746f6d204c6576656c732f323465656576302defbfa52f'
+  end
+  if name=='BBT_RENDERER_CHART' then return 'lossy-legacy-value' end
+  if name=='BBT_RENDERER_VARIANT' then return 'ASCII fallback' end
+end
+assert(Renderer.readUtf8Environment('BBT_RENDERER_CHART_HEX', 'BBT_RENDERER_CHART')
+  == 'Custom Levels/24eeev0-\239\191\165/')
+assert(Renderer.readUtf8Environment('BBT_RENDERER_VARIANT_HEX', 'BBT_RENDERER_VARIANT')
+  == 'ASCII fallback')
+os.getenv=originalGetenv
 {scenarios}
 "#
     ));

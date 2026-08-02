@@ -133,7 +133,10 @@ Assign and configure every stream before starting the synchronized countdown. Th
 
 Renderer processes receive their stream configuration through environment
 variables, not command-line flags, because Lovely parses the game's command line
-before the mod starts. They use a separate APPDATA profile and set Lovely's
+before the mod starts. Chart paths and variant names use an ASCII hex transport
+and are decoded back to UTF-8 in the child, avoiding the lossy Windows ANSI
+`os.getenv` boundary for names outside the active system code page. They use a
+separate APPDATA profile and set Lovely's
 `LOVELY_MOD_DIR` explicitly to that profile's dedicated BBT renderer adapter.
 The explicit override is required on Windows because Lovely resolves its default
 directory through the roaming known-folder API rather than trusting the
