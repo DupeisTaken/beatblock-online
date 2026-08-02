@@ -62,7 +62,7 @@ struct RenderTap {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RenderScoreState {
+pub struct RenderScoreState {
     pub sequence: u64,
     pub run_time_us: u64,
     pub accuracy: f32,
@@ -537,7 +537,10 @@ impl RendererManager {
         }
     }
 
-    pub(crate) fn push_score_state(&self, participant_id: &str, state: RenderScoreState) {
+    /// Queues authoritative HUD/results totals for the participant's delayed
+    /// renderer timeline. This is public so the physical renderer probe can
+    /// exercise the same terminal Results handoff as the runtime.
+    pub fn push_score_state(&self, participant_id: &str, state: RenderScoreState) {
         if !state.accuracy.is_finite()
             || !(0.0..=100.0).contains(&state.accuracy)
             || !state.average_offset.is_finite()

@@ -6,8 +6,8 @@
 
 use anyhow::{bail, Context, Result};
 use beatblock_online_companion::{
-    model::{RenderSample, RendererMode, RendererRequest},
-    renderer::{prepare_renderer_profile, RendererManager},
+    model::{RenderSample, RendererMode, RendererRequest, ScoreTotals},
+    renderer::{prepare_renderer_profile, RenderScoreState, RendererManager},
     room::unix_ms,
 };
 use std::{
@@ -182,6 +182,43 @@ fn push_playing_sample(
     beat
 }
 
+fn push_results_if_due(
+    manager: &RendererManager,
+    beat: f32,
+    results_at_beat: Option<f32>,
+    results_sent: &mut bool,
+) {
+    if *results_sent || !results_at_beat.is_some_and(|target| beat >= target) {
+        return;
+    }
+    let now_us = unix_ms() * 1_000;
+    // Synthetic but internally consistent totals make the native Results
+    // layout visually auditable without pretending that the probe judged a
+    // real player's score. Publication still uses the production delay path.
+    manager.push_score_state(
+        "physical-probe",
+        RenderScoreState {
+            sequence: 1,
+            run_time_us: now_us,
+            accuracy: 97.75,
+            average_offset: -1.5,
+            totals: ScoreTotals {
+                hits: 512,
+                misses: 8,
+                barelies: 3,
+                combo: 40,
+                max_combo: 180,
+                current_max_hits: 523,
+                max_hits: 523,
+                mine_hits: 2,
+            },
+            results: true,
+        },
+    );
+    manager.write_aligned_inputs(now_us);
+    *results_sent = true;
+}
+
 fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     let pixel_bytes = usize::try_from(u64::from(width) * u64::from(height) * 4)?;
     if rgba.len() != pixel_bytes {
@@ -264,6 +301,10 @@ fn main() -> Result<()> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value <= 60)
         .unwrap_or(0);
+    let results_at_beat = env::var("BBT_PROBE_RESULTS_AT_BEAT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite());
     std::fs::create_dir_all(&root)?;
 
     let manager = RendererManager::new(root.clone())?;
@@ -282,6 +323,11 @@ fn main() -> Result<()> {
     )?;
     let profile = prepare_renderer_profile(&root)?;
     manager.launch_slot("A", &game, &profile, &chart, &variant)?;
+    // Production launches renderers while a chart is being prepared, then
+    // releases their zeroed input pages when the race starts. Mirror that
+    // lifecycle here; otherwise the physical probe remains parked at pre-roll
+    // beat -8 and a black OBS frame can be mistaken for a renderer failure.
+    manager.begin_run();
     // Production publishes this after parsing Event.hitCount. Supplying the
     // chart's real value exercises the same first-note release barrier.
     manager.push_render_anchor("physical-probe", first_note_beat, 0.0);
@@ -293,8 +339,10 @@ fn main() -> Result<()> {
     }
 
     let started = Instant::now();
+    let mut results_sent = false;
     let frame = loop {
         let beat = push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        push_results_if_due(&manager, beat, results_at_beat, &mut results_sent);
         if beat >= capture_beat {
             if let Some(frame) = read_committed_frame(&manager.frame_path("A"))? {
                 break frame;
@@ -364,7 +412,8 @@ fn main() -> Result<()> {
         .unwrap_or_default();
     let hold_started = Instant::now();
     while hold_started.elapsed() < Duration::from_secs(hold_seconds) {
-        push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        let beat = push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        push_results_if_due(&manager, beat, results_at_beat, &mut results_sent);
         thread::sleep(Duration::from_millis(16));
     }
     manager.stop_all();

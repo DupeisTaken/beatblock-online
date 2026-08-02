@@ -171,6 +171,12 @@ $env:BBT_PROBE_CAPTURE_BEAT = '100.5'
 cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 ```
 
+Set `BBT_PROBE_RESULTS_AT_BEAT` to publish synthetic, clearly non-player score
+totals through the production delayed score channel. Combined with
+`BBT_PROBE_HOLD_SECS`, this keeps the renderer alive long enough to verify that
+OBS advances from the chart's terminal animation to the native numeric Results
+screen. This is a state-handoff check, not score-accuracy evidence.
+
 Renderers normalize chart-directory paths, resolve named variants to their
 manifest objects, and satisfy Beatblock's threaded audio-preload gate with an
 empty preload table before entering Game state. Each renderer disables

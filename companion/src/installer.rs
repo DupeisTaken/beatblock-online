@@ -2720,11 +2720,16 @@ mod tests {
 
     #[test]
     fn detector_accepts_isolated_test_game_shape() {
-        let root = std::env::var_os("BBT_GAME_FIXTURE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock")
-            });
+        let explicit_fixture = std::env::var_os("BBT_GAME_FIXTURE").map(PathBuf::from);
+        let root = explicit_fixture.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("bbt-isolated-game-shape-{}", rand::random::<u64>()))
+        });
+        // A plain `cargo test` must not depend on a developer's ignored .test
+        // directory. An explicitly supplied physical fixture is still useful,
+        // while the default path now exercises the same shape in isolation.
+        if explicit_fixture.is_none() {
+            fake_game(&root);
+        }
         assert!(validate_game_directory(&root).is_ok());
         let installer = Installer::with_mods_directory(
             root.join(".bbt-test-data"),
@@ -2733,6 +2738,9 @@ mod tests {
         let inspection = installer.inspect_target(&root);
         assert!(inspection.compatible_layout);
         assert_eq!(inspection.components[0].label, "Compatible");
+        if explicit_fixture.is_none() {
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
