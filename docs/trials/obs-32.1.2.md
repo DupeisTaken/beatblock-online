@@ -1,10 +1,12 @@
 # OBS 32.1.2 trial
 
-**Status: pending.** Source registration and module loading have passed on OBS
-Studio 32.0.4 x64. That compile/load result does not validate the OBS 32.1.2
-color, mixer, process-loopback, desktop-mute, or long-run behavior below. Do not
-mark the physical compatibility gate complete until this checklist is recorded
-against OBS Studio 32.1.2 on supported Windows hardware.
+**Status: blocked.** The integrated issue #28 branch loads and registers both
+source types in OBS Studio 32.1.2 x64, installs the plugin into a selected portable
+OBS copy, and renders all four stable player windows. The 2026-08-03 hardware run
+still found two release blockers: an isolated Beatblock Online Audio source was
+digital silence in the OBS recording, and the second chart never launched the
+local game before the 30-second grace period expired. Keep the pull request draft
+until both failures are fixed and the incomplete quantitative rows below pass.
 
 ## 2026-08-01 implementation rehearsal (partial)
 
@@ -29,6 +31,54 @@ deltas, all A-D and Autoplay routing/restoration cases, 250/500/1500 ms A/V
 measurements, hitsound counting, and the ten-minute four-renderer soak still need
 operator evidence. Until those rows are completed, any pull request should remain
 draft and reference rather than close issue #28.
+
+## 2026-08-03 integrated OBS 32.1.2 hardware validation (blocked)
+
+The test used commit `7620e5aeb1204cc4213a8e81822cb2946900c942` after
+merging current `origin/main`. The release installer targeted only the isolated
+game copy at `E:\beatblock-online\.test\Beatblock` and the portable OBS copy at
+`E:\beatblock-online-issue-28\.trial\obs-32.1.2`. Its SHA-256 was
+`fb96d9717fc0bb2ad8d797a7478c7d9dc9c308f0804a0a626a892d5c57e14c91`.
+The built and installed OBS plugin hashes both matched
+`415963a85277c40819af9b7c3b0e737c7b9c3e266d7dc7a0e1b9de86f4925ee3`.
+
+OBS loaded the module, registered Player Stream and Beatblock Online Audio, and
+found exact stable renderer titles A-D plus Autoplay. A-D and Autoplay appeared as
+separate active mixer sources. The official **What's a Keygen?** Easy chart ran to
+numeric Results while Player Stream A rendered gameplay and Results in OBS. A-D
+reported about 60 fps with zero initial drops; later B-D had 20-26 cumulative
+producer drops across roughly 21,896 frames, remaining under one percent. Stream A
+was reassigned from Full/500 ms to Clean/250 ms and restarted without changing
+B-D. These observations validate discovery, source registration, the successful
+single-chart video path, and the portable-plugin installation fix.
+
+The mixer activity did not validate the recorded signal. After muting OBS Desktop
+Audio, Mic/Aux, Audio B-D, and Autoplay so that only Audio A remained, repeated
+FFmpeg volume detection windows returned `mean_volume: -91.0 dB` and
+`max_volume: -91.0 dB`. The isolated Audio A interval from 00:44:00 through
+00:44:20 in the recording is therefore digital silence even though the source was
+active and the runtime reported the renderer session muted at the desktop. Earlier
+non-silent recording windows included global or sibling audio and cannot count as
+Audio A evidence. Until the native source produces non-silent recorded PCM while
+desktop isolation remains enabled, mixer routing, desktop mute, Autoplay, and
+hitsound acceptance remain blocked.
+
+The second official chart, **Rhythmic Shield** Easy, also failed. After chart
+selection recovered through Refresh Diagnostics, the room entered countdown and
+Playing, but the local game never transitioned to gameplay. The runtime recorded
+the participant as DNF with `Game did not start within the 30-second launch grace
+period`; all four streams ended at sequence zero and `actualFps: 0`. Because the
+second chart had no valid frames, the ten-minute sampler was stopped rather than
+using an invalid run as partial soak evidence.
+
+The 48:20 OBS recording is retained locally as
+`.trial/evidence/2026-08-03 01-22-17.mp4` (2,213,223,244 bytes, SHA-256
+`670710139479c50c03f6e873f9db2ece1b6cd56ce5814829fd5b107ae4e178f7`).
+The final OBS log is `.trial/evidence/obs-32.1.2-v3-full.log`; the final runtime
+exports are under `.trial/evidence/v3-runtime-exports/`; and the failed second-run
+frame snapshot is `.trial/evidence/snapshot-v3/obs-32.1.2-hardware-latest.json`.
+All portable OBS, game, runtime, renderer, Autoplay, muxer, and analysis processes
+started for the run were closed after evidence capture.
 
 ## Passive evidence sampler
 
@@ -74,17 +124,17 @@ OBS's rendered/missed frames, inspect mixer routing, compare pixels, hear audio,
 or decide the restoration cases below. Attach sanitized OBS logs and screenshots
 and complete this matrix before changing the trial status.
 
-| Gate                 | Required result                                                                                               | Status  | Evidence / measurements |
-| -------------------- | ------------------------------------------------------------------------------------------------------------- | ------- | ----------------------- |
-| Build identity       | Installer, built plugin, installed plugin, and checksums agree; report names the tested commit                | PENDING |                         |
-| OBS registration     | OBS 32.1.2 x64 log loads the module and registers both BBT source types                                       | PENDING |                         |
-| Color                | Raw renderer, game window, and OBS palette pixels differ by at most 1 per 8-bit channel                       | PENDING |                         |
-| Mixer routing        | A-D and Autoplay are independent sources and cannot drift to host/sibling processes                           | PENDING |                         |
-| Desktop mute         | Host remains audible; renderer capture remains audible in OBS; original states restore in every teardown case | PENDING |                         |
-| Delay and A/V sync   | 250/500/1500 ms stay within one 60 fps frame plus measured network jitter                                     | PENDING |                         |
-| Hitsounds            | One normal hit per positive opportunity; none for misses, barely, mines, or mine-holds                        | PENDING |                         |
-| Ten-minute soak      | 59.94-60.06 fps, under 1% renderer drops, no stale frame over 1.5 s, drift, duplication, or leak              | PENDING |                         |
-| Reassignment/results | Reassignment, featured switching, two-chart advance, Results, and cleared text exports stay aligned           | PENDING |                         |
+| Gate                 | Required result                                                                                               | Status  | Evidence / measurements                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| Build identity       | Installer, built plugin, installed plugin, and checksums agree; report names the tested commit                | PASS    | Integrated commit and exact matching hashes recorded above.                                                      |
+| OBS registration     | OBS 32.1.2 x64 log loads the module and registers both BBT source types                                       | PASS    | Exact portable OBS 32.1.2 log and visible source menu.                                                           |
+| Color                | Raw renderer, game window, and OBS palette pixels differ by at most 1 per 8-bit channel                       | PENDING | Visual Full/Clean inspection passed; no exact pixel delta.                                                       |
+| Mixer routing        | A-D and Autoplay are independent sources and cannot drift to host/sibling processes                           | FAIL    | Separate active sources appeared, but isolated Audio A recorded at -91 dB digital silence.                       |
+| Desktop mute         | Host remains audible; renderer capture remains audible in OBS; original states restore in every teardown case | FAIL    | Renderer state reported muted, but required OBS capture was silent; full restoration matrix is incomplete.       |
+| Delay and A/V sync   | 250/500/1500 ms stay within one 60 fps frame plus measured network jitter                                     | PENDING | 250/500 ms configuration applied; no frame-accurate measurement and no 1500 ms case.                             |
+| Hitsounds            | One normal hit per positive opportunity; none for misses, barely, mines, or mine-holds                        | BLOCKED | Isolated recorded audio was silent, so counts and exclusions are not measurable.                                 |
+| Ten-minute soak      | 59.94-60.06 fps, under 1% renderer drops, no stale frame over 1.5 s, drift, duplication, or leak              | FAIL    | Successful first chart was shorter than ten minutes; second run had sequence zero and was intentionally stopped. |
+| Reassignment/results | Reassignment, featured switching, two-chart advance, Results, and cleared text exports stay aligned           | FAIL    | First Results/reassignment passed; second chart timed out before local gameplay and produced a DNF.              |
 
 Record Windows build, CPU, GPU/driver, memory, OBS encoder and color settings,
 Beatblock version/build, BBT commit, chart variant, room roles, slot settings,
