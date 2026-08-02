@@ -1187,14 +1187,18 @@ end
 local function continueAdvancedChart(self)
   local requestId=self.advanceRequestId
   if not requestId or BBT.pendingRequestId==requestId then return false end
-  self.advanceRequestId=nil
-  if BBT.lastCompletedRequestId~=requestId then
-    self.advancePreviousHash=nil
-    return false
-  end
   local room=currentRoom()
   local changed=room and room.chart and room.chart.hash~=self.advancePreviousHash
+  local completed=BBT.lastCompletedRequestId==requestId
+  -- Disconnect recovery clears the local pending ID before the replacement
+  -- room snapshot necessarily arrives. Preserve this continuation until either
+  -- the ACK or an authoritative chart change proves the advance completed.
+  if not completed and not changed then return false end
+  self.advanceRequestId=nil
   self.advancePreviousHash=nil
+  -- A reconnect may lose the control ACK after the runtime already advanced
+  -- the set. The changed authoritative room chart is equivalent completion
+  -- evidence; requiring only lastCompletedRequestId leaves verification closed.
   local me=BBT.currentPlayer()
   if not changed or not isHost() or not me or me.role=='spectator' then return false end
   -- Future setlist entries are chosen when the set is built, but the active

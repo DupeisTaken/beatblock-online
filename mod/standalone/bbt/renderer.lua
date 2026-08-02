@@ -364,6 +364,12 @@ function Renderer.start()
   -- preserves that shape and lets Beatblock load the song without attempting
   -- to index a boolean sentinel.
   cs:init(chart, variantInfo, nil, {})
+  -- Game:init resets the window to project.name as its first statement. The
+  -- OBS child discovers by exact title, so the final identity assignment must
+  -- happen after that native reset rather than merely before the transition.
+  if not Renderer.ensureWindowIdentity(true) then
+    return failInitialization('renderer window title was reset during Game initialization')
+  end
   if cs.source and cs.source.setVolume then
     cs.source:setVolume(Renderer.audioEnabled and 1 or 0)
   end

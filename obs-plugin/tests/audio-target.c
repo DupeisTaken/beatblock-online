@@ -9,6 +9,11 @@ int main(void)
 {
     char window[128];
 
+    // OBS 32.1.2 window-helpers.h: class=0, title=1, executable=2.
+    assert(OBS_WINDOW_PRIORITY_CLASS == 0);
+    assert(OBS_WINDOW_PRIORITY_TITLE == 1);
+    assert(OBS_WINDOW_PRIORITY_EXE == 2);
+
     build_audio_window("A", window, sizeof(window));
     assert(strcmp(window, "Beatblock Online Renderer A:SDL_app:Beatblock.exe") == 0);
 
@@ -20,6 +25,22 @@ int main(void)
 
     build_audio_window("?", window, sizeof(window));
     assert(strcmp(window, "Beatblock Online Renderer A:SDL_app:Beatblock.exe") == 0);
+
+    // Connection health must never equate private-child creation with PCM.
+    assert(classify_audio_status(true, false, 1, 1, 0, 0, 0) ==
+        BBT_AUDIO_CONNECTING);
+    assert(classify_audio_status(true, false, AUDIO_NOT_FOUND_NS + 1, 1,
+        0, 0, 0) == BBT_AUDIO_NOT_FOUND);
+    assert(classify_audio_status(true, true, 100, 1, 100, 0, 0) ==
+        BBT_AUDIO_HOOKED_NO_FRAMES);
+    assert(classify_audio_status(true, true, AUDIO_FRAME_STALE_NS + 101, 1,
+        100, 0, 0) == BBT_AUDIO_STALE);
+    assert(classify_audio_status(true, true, 1000, 1, 100, 900, 0) ==
+        BBT_AUDIO_SILENT);
+    assert(classify_audio_status(true, true, 1000, 1, 100, 900, 950) ==
+        BBT_AUDIO_DELIVERING);
+    assert(classify_audio_status(false, false, 1000, 1, 0, 0, 0) ==
+        BBT_AUDIO_UNAVAILABLE);
 
     uint8_t header[HEADER_SIZE] = {0};
     memcpy(header, FRAME_MAGIC, 8);

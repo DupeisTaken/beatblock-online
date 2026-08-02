@@ -305,6 +305,14 @@ if (/executable_sha256|CERTIFIED_GAME_BUILDS/.test(compatibilitySource))
   throw new Error('Compatibility regressed to a per-executable maintenance allowlist');
 if (!core.includes("anchor.sent = BBT.send('render.anchor'"))
   throw new Error('First-note anchors do not retry after bounded IPC backpressure');
+if (
+  !core.includes('function BBT.applyRoomSnapshot(room)') ||
+  !core.includes('if message.payload.room then BBT.applyRoomSnapshot(message.payload.room) end') ||
+  !online.includes('if not completed and not changed then return false end')
+)
+  throw new Error(
+    'Reconnect snapshots cannot safely restore a lost chart verification/advance ACK',
+  );
 if (ipc.includes('"version":2'))
   throw new Error('IPC worker still emits retired protocol-v2 local status envelopes');
 if (ipc.includes('launchCount >= 2'))
@@ -342,6 +350,18 @@ for (const rendererAudioContract of [
   if (!renderer.includes(rendererAudioContract))
     throw new Error(`Renderer background-audio contract is missing ${rendererAudioContract}`);
 }
+// Game:init resets the native window title. OBS exact-title discovery is only
+// reliable when the identity is reasserted after that call, not just at boot.
+const rendererStart = renderer.slice(
+  renderer.indexOf('function Renderer.start('),
+  renderer.indexOf('function Renderer.canonicalAutoplayCollision'),
+);
+const nativeGameInit = rendererStart.indexOf('cs:init(chart, variantInfo, nil, {})');
+if (
+  nativeGameInit < 0 ||
+  rendererStart.indexOf('Renderer.ensureWindowIdentity(true)', nativeGameInit) < 0
+)
+  throw new Error('Renderer does not restore its exact OBS title after native Game:init');
 if (!renderer.includes('not cs.startPending and cs.vfx'))
   throw new Error('Renderer can enter Results before Game threaded initialization is complete');
 for (const lifecycleContract of [
@@ -360,7 +380,11 @@ if (
   throw new Error(
     'OBS source does not confirm read-only global and per-slot snapshots around its frame copy',
   );
-if (obsPlugin.includes('InterlockedCompareExchange64'))
+const obsVideoTick = obsPlugin.slice(
+  obsPlugin.indexOf('static void video_tick'),
+  obsPlugin.indexOf('static uint32_t video_width'),
+);
+if (obsVideoTick.includes('Interlocked'))
   throw new Error('OBS source performs a write primitive against its FILE_MAP_READ frame view');
 for (const videoContract of [
   'obs_source_draw(ctx->texture, 0, 0, ctx->width, ctx->height, false)',
@@ -382,8 +406,14 @@ for (const audioContract of [
   '.id = "beatblock_online_audio"',
   'obs_source_create_private(PROCESS_AUDIO_SOURCE_ID',
   'obs_source_add_active_child(ctx->source, ctx->capture)',
+  '.enum_active_sources = audio_enum_active_sources',
+  'enum_callback(ctx->source, ctx->capture, param)',
   '"reroute_audio"',
-  'obs_source_set_audio_active(ctx->source, true)',
+  'obs_source_add_audio_capture_callback(ctx->capture',
+  'obs_source_remove_audio_capture_callback(ctx->capture',
+  'audio_frames_received, ctx',
+  'classify_audio_status(true, hooked',
+  'next == BBT_AUDIO_DELIVERING || next == BBT_AUDIO_SILENT',
   '"get_hooked"',
   'calldata_bool(&status, "hooked")',
   'obs_source_remove_active_child(ctx->source, ctx->capture)',
@@ -397,6 +427,55 @@ for (const audioContract of [
   if (!obsPlugin.includes(audioContract))
     throw new Error(`OBS independent application-audio contract is missing ${audioContract}`);
 }
+// OBS 32.1.2 defines class=0, title=1, executable=2. A wrong numeric title
+// mapping makes an exact title string silently use the wrong matching field.
+for (const priorityContract of [
+  '#define OBS_WINDOW_PRIORITY_CLASS 0',
+  '#define OBS_WINDOW_PRIORITY_TITLE 1',
+  '#define OBS_WINDOW_PRIORITY_EXE 2',
+]) {
+  if (!obsPlugin.includes(priorityContract))
+    throw new Error(`OBS 32.1.2 window-priority contract is missing ${priorityContract}`);
+}
+const audioTick = obsPlugin.slice(
+  obsPlugin.indexOf('static void audio_tick'),
+  obsPlugin.indexOf('static void *audio_create'),
+);
+if (
+  audioTick.includes('obs_source_update(') ||
+  audioTick.includes('obs_queue_task(') ||
+  obsPlugin.includes('queue_audio_capture_retry') ||
+  obsPlugin.includes('update_audio_capture_task') ||
+  obsPlugin.includes('next_retry_ns')
+)
+  throw new Error('OBS audio health polling can starve the native WASAPI reconnect worker');
+for (const nativeRetryContract of [
+  'WASAPISource::ReconnectThread',
+  'native three-second interval',
+  'obs_add_tick_callback(audio_tick, ctx)',
+  'obs_remove_tick_callback(audio_tick, ctx)',
+]) {
+  if (!obsPlugin.includes(nativeRetryContract))
+    throw new Error(`OBS native reconnect contract is missing ${nativeRetryContract}`);
+}
+if (obsPlugin.includes('.video_tick = audio_tick'))
+  throw new Error('OBS audio health polling still depends on source video activity');
+// The callback owns ctx and may run on OBS's audio thread. Every child setup
+// failure must use the same teardown path that unregisters it before release.
+const audioDestroy = obsPlugin.slice(
+  obsPlugin.indexOf('static void destroy_audio_capture'),
+  obsPlugin.indexOf('static void update_audio_capture(struct'),
+);
+const audioSetup = obsPlugin.slice(
+  obsPlugin.indexOf('static void update_audio_capture(struct'),
+  obsPlugin.indexOf('static void close_frame_mapping'),
+);
+if (
+  !audioDestroy.includes('obs_source_remove_audio_capture_callback') ||
+  !audioSetup.includes('obs_source_add_active_child(ctx->source, ctx->capture)') ||
+  !audioSetup.includes('destroy_audio_capture(ctx);')
+)
+  throw new Error('OBS audio child setup failure can retain its PCM callback');
 if (obsPlugin.includes('obs_data_set_default_bool(settings, "capture_audio", true)'))
   throw new Error('OBS Player Stream still owns the legacy integrated-audio setting');
 if (obsPlugin.includes('DEFAULT_AUDIO_WINDOW') || obsPlugin.includes('"audio_window"'))
@@ -405,7 +484,19 @@ if (obsPlugin.includes('obs_data_get_int(settings, "audio_delay_ms")'))
   throw new Error('OBS audio routing still reads the obsolete host-audio delay setting');
 if (obsPlugin.includes('obs_source_set_sync_offset(ctx->source, sync_ms * 1000000LL)'))
   throw new Error('OBS fine sync incorrectly shifts combined Player Stream video and audio');
-for (const localeContract of ['AudioMigration=', 'AudioSource=', 'AudioSync=', 'AudioHint=']) {
+for (const localeContract of [
+  'AudioMigration=',
+  'AudioSource=',
+  'AudioSync=',
+  'AudioConnecting=',
+  'AudioHookedNoFrames=',
+  'AudioDelivering=',
+  'AudioSilent=',
+  'AudioStale=',
+  'AudioNotFound=',
+  'AudioUnavailable=',
+  'AudioHint=',
+]) {
   if (!obsLocale.includes(localeContract))
     throw new Error(`OBS audio settings locale is missing ${localeContract}`);
 }

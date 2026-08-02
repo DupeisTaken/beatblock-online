@@ -392,6 +392,58 @@ function BBT.currentPlayer()
   return nil
 end
 
+-- A runtime reconnect can deliver the authoritative room before the earlier
+-- chart.verification/control ACK reaches Lua. Recover only when the local
+-- participant is already verified for the same chart shape; this keeps a room
+-- snapshot from blessing unrelated local chart bytes.
+function BBT.applyRoomSnapshot(room)
+  if type(room) ~= 'table' then return false end
+  BBT.lastLobby = room
+  BBT.scheduledStartTimeMs = room.scheduledStartTimeMs
+  local chart,localChart,player=room.chart,BBT.localChart,BBT.currentPlayer()
+  local identityMatches=false
+  if chart and localChart and localChart.official==chart.official then
+    if chart.official then
+      identityMatches=localChart.levelPath==chart.packageName
+    else
+      local packagePath=localChart.packagePath and localChart.packagePath:gsub('[\\/]+$','')
+      local packageName=packagePath and packagePath:match('([^\\/]+)$')
+      identityMatches=packageName==chart.packageName and localChart.songName==chart.songName
+    end
+  end
+  local metadataMatches=identityMatches
+    and localChart.variantName==chart.variant
+    and localChart.expectedMaxHits==chart.expectedMaxHits
+    and (localChart.hash==nil or localChart.hash==chart.hash)
+  if metadataMatches and localChart.hash==nil and player and player.verified==true then
+    localChart.hash=chart.hash
+  end
+  BBT.chartVerified=metadataMatches==true
+    and localChart.hash==chart.hash
+    and player~=nil and player.verified==true
+  if room.participants then
+    for _,participant in ipairs(room.participants) do
+      if participant.displayName==BBT.context.playerName then
+        BBT.lastRank=participant.rank or BBT.lastRank
+      end
+    end
+  end
+  return BBT.chartVerified
+end
+
+-- Every accepted chart selection owns a fresh launch/run lifecycle. Without
+-- this boundary a completed chart can leave launching/wasRunReady set and
+-- suppress the next hidden-renderer cohort and run.started publication.
+function BBT.resetChartLaunchState()
+  BBT.launching=false
+  BBT.wasRunReady=false
+  BBT.wasInGame=false
+  BBT.context.runId=nil
+  BBT.runSequence=0
+  BBT.resultsReportedRunId=nil
+  BBT.renderAnchorState=nil
+end
+
 function BBT.isOrganizer()
   return BBT.lastLobby and BBT.lastLobby.hostSessionId and BBT.currentPlayer()
     and BBT.lastLobby.hostSessionId == BBT.currentPlayer().sessionId
@@ -550,6 +602,7 @@ function BBT.onChartSelected(selector, levelPath, variantName)
   BBT.chartVerified = false
   BBT.selectingOnlineChart = false
   BBT.selectingOfficialChart = false
+  if selectionMode ~= 'setlist' then BBT.resetChartLaunchState() end
   local selectionError
   local preloadReady = chartPreloadReady(BBT.localChart.levelData, BBT.localChart.soundData)
   if officialSelection and preloadReady and BBT.localChart.expectedMaxHits and BBT.localChart.expectedMaxHits > 0 then
@@ -898,7 +951,7 @@ local function handleCommand(raw)
     end
     BBT.scheduledStartTimeMs = message.payload.serverStartTimeMs
   elseif message.type == 'room.snapshot' or message.type == 'lobby.snapshot' then
-    BBT.lastLobby = message.payload
+    BBT.applyRoomSnapshot(message.payload)
     BBT.connected = message.payload.lifecycle ~= 'closed' and message.payload.id ~= 'offline'
     if BBT.connected then
       local player=BBT.currentPlayer()
@@ -909,27 +962,13 @@ local function handleCommand(raw)
     end
     BBT.context.lobbyId = message.payload.id or BBT.context.lobbyId
     BBT.context.lobbyName = message.payload.name or BBT.context.lobbyName
-    BBT.scheduledStartTimeMs = message.payload.scheduledStartTimeMs
-    if message.payload.chart then
-      BBT.chartVerified = BBT.localChart ~= nil
-        and BBT.localChart.hash == message.payload.chart.hash
-        and BBT.localChart.variantName == message.payload.chart.variant
-        and BBT.localChart.expectedMaxHits == message.payload.chart.expectedMaxHits
-    else
-      BBT.chartVerified = false
-    end
-    if message.payload.participants then
-      for _, player in ipairs(message.payload.participants) do
-        if player.displayName == BBT.context.playerName then BBT.lastRank = player.rank or BBT.lastRank end
-      end
-    end
   elseif message.type == 'chart.verification' then
     BBT.chartVerified = message.payload.verified == true
     if BBT.localChart then BBT.localChart.hash = message.payload.hash end
     if not BBT.chartVerified then BBT.lastError = message.payload.reason or 'Chart verification failed' end
   elseif message.type == 'runtime.snapshot' then
     BBT.runtimeSnapshot = message.payload
-    BBT.lastLobby = message.payload.room or BBT.lastLobby
+    if message.payload.room then BBT.applyRoomSnapshot(message.payload.room) end
     BBT.renderers = message.payload.renderers or {}
     BBT.broadcastPlan = message.payload.broadcastPlan or BBT.broadcastPlan
     BBT.commentatorStatuses = message.payload.commentatorStatuses or {}
