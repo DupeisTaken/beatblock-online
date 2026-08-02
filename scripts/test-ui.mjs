@@ -63,8 +63,8 @@ if (audit.split(/\r?\n/).some((line) => /:\d+$/.test(line) && !line.endsWith(':0
   throw new Error(`Layout audit failed:\n${audit}`);
 }
 const captures = (await readdir(output)).filter((file) => file.endsWith('.png')).sort();
-if (captures.length !== 46)
-  throw new Error(`Expected 46 UI scenarios, captured ${captures.length}`);
+if (captures.length !== 47)
+  throw new Error(`Expected 47 UI scenarios, captured ${captures.length}`);
 if (update) await mkdir(baselines, { recursive: true });
 const baselineFiles = (await readdir(baselines)).filter((file) => file.endsWith('.png')).sort();
 if (!update && baselineFiles.join('\n') !== captures.join('\n'))

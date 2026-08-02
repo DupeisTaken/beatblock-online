@@ -99,6 +99,8 @@ current in-game form accepts an address and UDP port in separate fields.
 1. When the host locks a chart, select your roster row and use **Select
    Freeplay** for a built-in chart or **Select Custom Chart** for an installed
    package, then choose the exact matching chart and variant.
+   The session strip's **Find Local** action opens an **Official Chart**/**Custom
+   Chart** source picker when **Request Host** is highlighted.
 2. If the host offers a custom chart, review the package before accepting it.
    Script or executable content always gets a separate warning. Official charts
    are never transferred.
