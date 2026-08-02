@@ -34,6 +34,23 @@ transfer, and starts with transfer requests set to manual. After creation,
 **Settings > Requests** switches between manual and automatic requests.
 Automatic requests do not bypass the receiving Player’s consent.
 
+Open **Settings > Modifiers** after creating the room to inspect or change the
+complete chart policy. The host can set game speed (0.5x-5.0x), VFX
+(Full/Decreased/None), Taps (Default/Lenient/Strict/Auto), Sides
+(Default/Lenient/Auto), Barelies (Default/Lenient/Strict), and Restart On
+(None/Miss/Barely). Changes lock when countdown begins. All Players, including
+the host, run the authoritative choices during Game and Results; their saved
+local preferences are restored when they return to Online. Non-hosts can open
+the same panel read-only.
+
+Modifier enforcement is a room-authentication capability even though the wire
+envelopes remain protocol v3. A current host rejects an older v3 runtime that
+would ignore the policy. If a participant sees an update requirement while
+joining, update Beatblock Online on every machine before recreating the room.
+With **Restart On: Miss/Barely**, competitive Run Checks still treat a restarted
+attempt as invalid; turn Run Checks off only when intentional retries should
+replace earlier attempts.
+
 The host’s own roster inspector provides **Direct Next Race** or
 **Play Next Race** before a later race. Changing participation clears stale
 readiness and requires fresh verification where applicable.

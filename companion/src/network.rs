@@ -146,6 +146,10 @@ impl ChartTransferHeader {
 #[serde(rename_all = "camelCase")]
 struct AuthHello {
     version: u8,
+    /// Protocol v3 predates room modifiers, so the explicit capability closes
+    /// the downgrade path where an older runtime would accept but ignore them.
+    #[serde(default)]
+    room_modifiers_supported: bool,
     display_name: String,
     role: ParticipantRole,
     spake_message: String,
@@ -159,6 +163,8 @@ struct AuthHello {
 #[serde(rename_all = "camelCase")]
 struct AuthChallenge {
     version: u8,
+    #[serde(default)]
+    room_modifiers_supported: bool,
     spake_message: String,
     nonce: String,
     certificate_sha256: String,
@@ -362,7 +368,7 @@ impl NetworkHub {
         }
         tokio::time::timeout(
             JOIN_TIMEOUT,
-            self.join_inner(address, password, display_name, role, game_build),
+            self.join_inner(address, password, display_name, role, game_build, true),
         )
         .await
         .context("timed out while connecting to the room")?
@@ -375,6 +381,7 @@ impl NetworkHub {
         display_name: &str,
         role: ParticipantRole,
         game_build: Option<GameBuildIdentity>,
+        room_modifiers_supported: bool,
     ) -> Result<String> {
         self.shutdown().await;
         let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
@@ -393,6 +400,7 @@ impl NetworkHub {
             &mut send,
             &AuthHello {
                 version: PROTOCOL_VERSION,
+                room_modifiers_supported,
                 display_name: display_name.trim().into(),
                 role,
                 spake_message: BASE64.encode(&client_message),
@@ -404,6 +412,9 @@ impl NetworkHub {
         let challenge: AuthChallenge = read_frame(&mut recv).await?;
         if challenge.version != PROTOCOL_VERSION {
             bail!("host uses incompatible protocol version");
+        }
+        if !challenge.room_modifiers_supported {
+            bail!("host cannot enforce room modifiers; update the host's Beatblock Online runtime");
         }
         let challenged_certificate_sha256 = hex::decode(&challenge.certificate_sha256)
             .context("host certificate digest is invalid")?;
@@ -732,6 +743,11 @@ impl NetworkHub {
             .await?;
             bail!("incompatible participant protocol");
         }
+        if !hello.room_modifiers_supported {
+            bail!(
+                "participant cannot enforce room modifiers; update every Beatblock Online client"
+            );
+        }
         let client_message = BASE64.decode(hello.spake_message)?;
         let (spake, server_message) = Spake2::<Ed25519Group>::start_symmetric(
             &Password::new(password.as_bytes()),
@@ -745,6 +761,7 @@ impl NetworkHub {
             &mut send,
             &AuthChallenge {
                 version: PROTOCOL_VERSION,
+                room_modifiers_supported: true,
                 spake_message: BASE64.encode(&server_message),
                 nonce: BASE64.encode(nonce_bytes),
                 certificate_sha256: hex::encode(certificate_sha256),
@@ -1348,6 +1365,80 @@ mod tests {
 
     fn game_build(version: &str) -> GameBuildIdentity {
         GameBuildIdentity::from_displayed_version(version).unwrap()
+    }
+
+    #[test]
+    fn legacy_protocol_v3_authentication_cannot_silently_skip_modifier_enforcement() {
+        let legacy_hello: AuthHello = serde_json::from_value(serde_json::json!({
+            "version":PROTOCOL_VERSION,
+            "displayName":"Legacy",
+            "role":"player",
+            "spakeMessage":"legacy",
+            "resumeToken":null,
+            "gameBuild":null
+        }))
+        .unwrap();
+        assert!(!legacy_hello.room_modifiers_supported);
+
+        let current: AuthHello = serde_json::from_value(serde_json::json!({
+            "version":PROTOCOL_VERSION,
+            "roomModifiersSupported":true,
+            "displayName":"Current",
+            "role":"player",
+            "spakeMessage":"current",
+            "resumeToken":null,
+            "gameBuild":null
+        }))
+        .unwrap();
+        assert!(current.room_modifiers_supported);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn room_authentication_accepts_current_peers_and_rejects_legacy_v3_peers() {
+        let (host_events, mut host_receiver) = mpsc::channel(16);
+        let host = NetworkHub::new(host_events);
+        let address = host.start_host(0, "correct horse".into()).await.unwrap();
+
+        let (current_events, _receiver) = mpsc::channel(8);
+        let current = NetworkHub::new(current_events);
+        current
+            .join(address, "correct horse", "Current", ParticipantRole::Player)
+            .await
+            .unwrap();
+        assert_eq!(host.peer_count().await, 1);
+
+        let (legacy_events, _receiver) = mpsc::channel(8);
+        let legacy = NetworkHub::new(legacy_events);
+        let legacy_error = legacy
+            .join_inner(
+                address,
+                "correct horse",
+                "Legacy",
+                ParticipantRole::Player,
+                None,
+                false,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!legacy_error.is_empty());
+        let host_diagnostic = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(NetworkEvent::Diagnostic(message)) = host_receiver.recv().await {
+                    if message.contains("cannot enforce room modifiers") {
+                        break message;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("host must report the rejected legacy capability");
+        assert!(host_diagnostic.contains("update every Beatblock Online client"));
+        assert_eq!(host.peer_count().await, 1);
+
+        legacy.shutdown().await;
+        current.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test]

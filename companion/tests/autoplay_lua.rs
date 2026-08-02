@@ -157,6 +157,109 @@ os.getenv=originalGetenv
     ));
 }
 
+#[test]
+fn room_modifiers_override_gameplay_without_persisting_local_preferences() {
+    let core = include_str!("../../mod/shared/bbt/core.lua");
+    let online = include_str!("../../mod/shared/bbt/online_state.lua");
+    let scenarios = r#"
+local localPreferences={vfx='none',taps='auto',sides='auto',barelies='lenient'}
+savedata={options={accessibility=localPreferences}}
+local persisted={}
+local nativeSave=function(marker)
+  persisted={
+    vfx=savedata.options.accessibility.vfx,
+    taps=savedata.options.accessibility.taps,
+    sides=savedata.options.accessibility.sides,
+    barelies=savedata.options.accessibility.barelies,
+  }
+  return 'saved-'..tostring(marker)
+end
+sdfunc={save=nativeSave}
+
+local policy,modifierError=BBT.applyRoomModifiers({modifiers={
+  rate=1.7,vfx='decreased',taps='strict',sides='lenient',barelies='strict',restartOn='miss'
+}})
+assert(policy and not modifierError)
+assert(policy.rate==1.7 and policy.restartOn=='miss')
+assert(savedata.options.accessibility.vfx=='decreased')
+assert(savedata.options.accessibility.taps=='strict')
+assert(savedata.options.accessibility.sides=='lenient')
+assert(savedata.options.accessibility.barelies=='strict')
+
+assert(sdfunc.save('preferences')=='saved-preferences')
+assert(persisted.vfx=='none' and persisted.taps=='auto')
+assert(persisted.sides=='auto' and persisted.barelies=='lenient')
+assert(savedata.options.accessibility.vfx=='decreased')
+assert(savedata.options.accessibility.taps=='strict')
+
+local previousGameState={leave=function() end}
+cs=previousGameState
+bs={load=function(name)
+  assert(name=='Game')
+  return {init=function(self) self.initialized=true end}
+end}
+GameManager={transferStateData=function(_,nextState)
+  nextState.rateMod=4.0
+  nextState.restartOn='barely'
+end}
+BBT.lastLobby={id='room',lifecycle='countdown',modifiers={
+  rate=1.7,vfx='decreased',taps='strict',sides='lenient',barelies='strict',restartOn='miss'
+}}
+BBT.localChart={levelPath='levels/test/',variantInfo={},levelData={},soundData={}}
+BBT.chartVerified=true
+BBT.scheduledStartTimeMs=0
+BBT.launching=false
+assert(BBT.maybeLaunchScheduledChart())
+assert(cs.initialized==true)
+assert(cs.rateMod==1.7 and cs.restartOn=='miss')
+
+    package.preload['bbt.dashboard_model']=function() return {} end
+    package.preload['bbt.dashboard_components']=function()
+      return {new=function() return {} end}
+    end
+    Gamestate={new=function(_,name)
+      local state={name=name}
+      function state:setInit(callback) self.init=callback end
+      function state:setUpdate(callback) self.updateState=callback end
+      function state:setBgDraw(callback) self.bgDrawState=callback end
+      function state:setFgDraw(callback) self.drawState=callback end
+      return state
+    end}
+    love={graphics={setFont=function() end},keyboard={setTextInput=function() end}}
+    fonts={digitalDisco={}}
+    shuv={pal={},resetPal=function() end,showBadColors=true}
+    em={clear=function() end}
+    mouse={disableGameplay=function() end}
+    BBT.lastLobby={id='room',lifecycle='results',participants={}}
+    BBT.startOnlineRuntime=function() end
+    BBT.command=function() return 'snapshot-request' end
+    local online=(function()
+{online}
+    end)()()
+    online:init()
+    assert(sdfunc.save==nativeSave)
+assert(savedata.options.accessibility.vfx=='none')
+assert(savedata.options.accessibility.taps=='auto')
+assert(savedata.options.accessibility.sides=='auto')
+assert(savedata.options.accessibility.barelies=='lenient')
+
+local sanitized=BBT.roomModifierPolicy({modifiers={
+  rate=1.25,vfx='forged',taps='forged',sides='forged',barelies='forged',restartOn='forged'
+}})
+assert(sanitized.rate==1.0 and sanitized.vfx=='full' and sanitized.taps=='default')
+assert(sanitized.sides=='default' and sanitized.barelies=='default' and sanitized.restartOn=='none')
+"#;
+    let scenarios = scenarios.replace("{online}", online);
+    execute(&format!(
+        r#"
+local BBT=(function()
+{core}
+end)()
+{scenarios}
+"#
+    ));
+}
+
 fn execute(source: &str) {
     let library_path = std::env::var_os("BBT_UI_FIXTURE")
         .or_else(|| std::env::var_os("BBT_GAME_FIXTURE"))

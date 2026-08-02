@@ -105,7 +105,11 @@ current in-game form accepts an address and UDP port in separate fields.
    your mind before the race, select your own roster row and choose **Unready**.
 4. The host can choose **Start Race** only after all assigned Players are
    verified and ready. Beatblock opens the locked chart after the countdown.
-5. Finish the attempt and return to the Online room for **Current Results**.
+5. Beatblock Online temporarily applies the host's game speed, VFX, Taps,
+   Sides, Barelies, and Restart On choices. Your local preferences are not
+   saved over and return when you reach Online again. Open **Settings >
+   Modifiers** to inspect the policy read-only before starting.
+6. Finish the attempt and return to the Online room for **Current Results**.
    Select a participant and use **Run Details** when a result is **INVALID** or
    **DNF**.
 
@@ -113,6 +117,11 @@ In an online race, normal pause inputs are intentionally unavailable. A
 competitive room can mark a retried or incomplete attempt invalid; a casual
 room permits retries but still marks incomplete attempts and expired
 disconnects as DNF.
+
+Current rooms require modifier-enforcement support during authentication. If
+joining reports that the host or participant must update, install the same
+current Beatblock Online release on every machine; an older protocol-v3 runtime
+is deliberately rejected because it could ignore the host policy.
 
 ## Join as a Spectator
 

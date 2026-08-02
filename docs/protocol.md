@@ -17,11 +17,17 @@ Reliable messages use:
 
 Every in-game control request receives `control.ack` or `control.error` with its request ID and has a bounded client-side response deadline. Runtime lifecycle events are `runtime.ready`, `runtime.disconnected`, and `runtime.error`. A disconnect rejects the active request before the worker begins its bounded-backoff relaunch loop. Protocol v2 rooms are rejected with an upgrade message; mixed-version rooms are unsupported. The named pipe is `\\.\pipe\beatblock-online-v3`.
 
-Room authentication uses mutual SPAKE proofs over the full client/server exchange. Both proofs include the protocol version, nonce, and the TLS certificate fingerprint observed by the client. The password therefore authenticates the self-signed QUIC channel without transmitting or storing the password as a reusable network credential. The client hello also carries the runtime-normalized identity derived from Beatblock's top-right build token. Hosts reject a different or missing build before roster admission by default; a host may explicitly create or relax a casual mixed-build room.
+Room authentication uses mutual SPAKE proofs over the full client/server exchange. Both proofs include the protocol version, nonce, and the TLS certificate fingerprint observed by the client. The password therefore authenticates the self-signed QUIC channel without transmitting or storing the password as a reusable network credential. The client hello also carries the runtime-normalized identity derived from Beatblock's top-right build token. Hosts reject a different or missing build before roster admission by default; a host may explicitly create or relax a casual mixed-build room. Protocol v3 predates host modifier policy, so both authentication directions also advertise modifier-enforcement support. A current runtime rejects an older v3 peer or host that omits that capability instead of admitting a client that could ignore room rules; update every participant to the same current Online release.
 
 The first IPC message is `client.hello` with a per-game `instanceId`. The runtime accepts reconnects from that instance and rejects other game processes, preventing control replies and room snapshots from crossing between simultaneous Beatblock copies. A two-second `client.ping` / `runtime.heartbeat` exchange drives the in-game liveness indicator.
 
 Control groups cover room admission/roles/Commentator grants/kick, setlist editing, chart-transfer consent/cache, renderer A-D configuration, Commentator mirror enablement, history delete/prune, settings, diagnostics, token rotation, export/log opening, restart, and session shutdown. `runtime.snapshot` publishes complete sanitized room, Broadcast plan, machine-local renderer health, Commentator status, history, settings, and diagnostics state to Lua.
+
+Every current room snapshot carries one host-authored `modifiers` object: `rate`
+(0.5-5.0 in 0.1 steps), `vfx`, `taps`, `sides`, `barelies`, and `restartOn`.
+`room.modifiers_set` accepts the same complete object only before countdown.
+Enums use Beatblock's native values and unknown fields or values are rejected.
+Historical snapshots that omit the object decode to native defaults.
 
 Room snapshots optionally carry `validityChecksEnabled`; omission preserves the
 strict `true` default for older protocol-v3 peers. The host may change it only
