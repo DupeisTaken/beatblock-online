@@ -26,7 +26,10 @@ each Stream A-D video feed. Then add **Beatblock Online Audio** for each
 renderer audio feed you want in the mixer and choose Stream A-D or Autoplay.
 Audio fine sync is independently adjustable from 0-2000 ms and defaults to
 0 ms. The installed DLL and locale live under
-`%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records
+`%ProgramData%\obs-studio\plugins\beatblock-online-obs`. When the selected OBS
+root contains `portable_mode.txt` (or `portable_mode`), the installer instead
+writes the DLL and locale into that isolated OBS tree under `obs-plugins\64bit`
+and `data\obs-plugins\beatblock-online-obs\locale`. The installer records
 and verifies their hashes. The reviewed alpha artifact has been physically
 loaded by OBS Studio 32.0.4 x64.
 
