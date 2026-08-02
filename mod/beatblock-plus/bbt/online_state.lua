@@ -389,9 +389,17 @@ local function participantActionButtons(self,target,x,y,w)
       end,'cyan',not transfer.containsExecutableContent)
       y=y+ACTION_PITCH
     elseif target.role~='spectator' and not target.verified and room.chart then
-      button(self,'participant_locate',x,y,w,24,'SELECT LOCAL CHART',function()
-        if room.chart.official then BBT.openOfficialSelect('verify') else BBT.openChartSelect('verify') end
-      end,'cyan')
+      -- Validation accepts candidates from either native chart source. The
+      -- runtime still compares the authoritative fingerprint, so exposing
+      -- Freeplay here cannot verify the wrong chart by accident.
+      local sourceGap=4
+      local sourceWidth=math.floor((w-sourceGap)/2)
+      button(self,'participant_freeplay',x,y,sourceWidth,24,'FREEPLAY',function()
+        BBT.openOfficialSelect('verify')
+      end,room.chart.official and 'cyan' or 'white')
+      button(self,'participant_locate',x+sourceWidth+sourceGap,y,w-sourceWidth-sourceGap,24,'CUSTOM',function()
+        BBT.openChartSelect('verify')
+      end,room.chart.official and 'white' or 'cyan')
       y=y+ACTION_PITCH
       if not isHost() then
         button(self,'participant_transfer',x,y,w,24,'REQUEST HOST TRANSFER',function()

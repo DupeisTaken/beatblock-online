@@ -1,5 +1,5 @@
 local BBT = {
-  version = '0.3.0',
+  version = '0.3.1',
   protocolVersion = 3,
   testedBeatblockVersion = '1.7.1a',
   sequence = 0,

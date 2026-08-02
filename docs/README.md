@@ -48,8 +48,8 @@ and pending physical beta validation before indexing the specialist pages.
 
 ## Release information
 
-- [Current public release note](releases/v0.3.0.md)
-- [Current technical changelog](changelogs/v0.3.0.md)
+- [Current public release note](releases/v0.3.1.md)
+- [Current technical changelog](changelogs/v0.3.1.md)
 - [Complete release history](releases/index.md)
 - [Beta.5 ship-readiness review](../reports/ship-readiness-review-v0.3.0-beta.5.md)
 

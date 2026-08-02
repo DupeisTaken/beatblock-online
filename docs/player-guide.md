@@ -3,7 +3,7 @@
 This is the public guide for Players, Spectators, and first-time hosts. Follow
 the labels shown inside the installer and Beatblock; no command line is needed.
 
-> **Current release:** Beatblock Online `v0.3.0` is tested with Beatblock
+> **Current release:** Beatblock Online `v0.3.1` is tested with Beatblock
 > `1.7.1a (Early Access)[d40b7083]` on Windows 10 2004+ and Windows 11 x64.
 > Newer Beatblock builds may install but remain unverified. See
 > [Before you start](#before-you-start).
@@ -72,7 +72,7 @@ Before using the official release:
    phase, approve that one prompt and return to the installer.
 7. Wait for the verified success result, then choose **Launch Beatblock**.
 8. In Beatblock, open **Online**. Wait until the top-right status shows
-   `v0.3.0 / READY` and the session panel says **READY TO CONNECT**.
+   `v0.3.1 / READY` and the session panel says **READY TO CONNECT**.
 
 When an installer update is offered, **Update Installer** updates the managed
 maintenance copy of the installer. It does not update the Beatblock mod by
@@ -96,8 +96,9 @@ current in-game form accepts an address and UDP port in separate fields.
 
 ## Play a race
 
-1. When the host locks a chart, select the matching official chart or the exact
-   matching custom chart and variant.
+1. When the host locks a chart, select your roster row and use **Select
+   Freeplay** for a built-in chart or **Select Custom Chart** for an installed
+   package, then choose the exact matching chart and variant.
 2. If the host offers a custom chart, review the package before accepting it.
    Script or executable content always gets a separate warning. Official charts
    are never transferred.

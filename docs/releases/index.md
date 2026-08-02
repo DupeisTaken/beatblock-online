@@ -8,6 +8,7 @@ migration details, validation evidence, and known limitations.
 
 | Release          | Public notes                                                                      | Technical changelog                                  |
 | ---------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `v0.3.1`         | [Freeplay and custom chart validation](./v0.3.1.md)                               | [Technical details](../changelogs/v0.3.1.md)         |
 | `v0.3.0`         | [First official protocol-v3 release](./v0.3.0.md)                                 | [Technical details](../changelogs/v0.3.0.md)         |
 | `v0.3.0-beta.5`  | [Installer lifecycle, OBS audio, and dashboard workflows](./v0.3.0-beta.5.md)     | [Technical details](../changelogs/v0.3.0-beta.5.md)  |
 | `v0.3.0-beta.4`  | [Compatibility, transfer, dashboard, and broadcast audio](./v0.3.0-beta.4.md)     | [Technical details](../changelogs/v0.3.0-beta.4.md)  |

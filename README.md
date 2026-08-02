@@ -5,7 +5,7 @@ password-protected room, invite Players and Spectators, run single charts or an
 ordered set, and review synchronized results without leaving Beatblock.
 
 > **Current release:**
-> [`v0.3.0`](docs/releases/v0.3.0.md), tested with Beatblock
+> [`v0.3.1`](docs/releases/v0.3.1.md), tested with Beatblock
 > `1.7.1a (Early Access)[d40b7083]`. Newer Beatblock builds may install, but
 > remain unverified until tested. The installer is currently unsigned, so
 > Windows may show **Unknown publisher**.
