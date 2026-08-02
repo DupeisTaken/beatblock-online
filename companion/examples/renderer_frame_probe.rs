@@ -6,8 +6,8 @@
 
 use anyhow::{bail, Context, Result};
 use beatblock_online_companion::{
-    model::{RenderSample, RendererMode, RendererRequest},
-    renderer::{prepare_renderer_profile, RendererManager},
+    model::{RenderSample, RendererMode, RendererRequest, ScoreTotals},
+    renderer::{prepare_renderer_profile, RenderScoreState, RendererManager},
     room::unix_ms,
 };
 use std::{
@@ -15,12 +15,16 @@ use std::{
     env,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
+    mem::size_of,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
 
-const HEADER_SIZE: usize = 64;
+const HEADER_SIZE: usize = 80;
+const FRAME_VERSION: u32 = 4;
+const FRAME_SLOT_SEQUENCE_OFFSET: usize = 56;
+const MAX_FRAME_COUNT: u32 = 3;
 type CommittedFrame = (u64, u32, u32, Vec<u8>);
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
@@ -37,6 +41,19 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(value.try_into()?))
 }
 
+fn frame_slot_sequence_offset(sequence: u64, frame_count: u32) -> Result<usize> {
+    if sequence == 0 || !(1..=MAX_FRAME_COUNT).contains(&frame_count) {
+        bail!("renderer frame does not identify a committed slot");
+    }
+    Ok(FRAME_SLOT_SEQUENCE_OFFSET
+        + usize::try_from(sequence % u64::from(frame_count))? * size_of::<u64>())
+}
+
+fn header_has_committed_frame(header: &[u8], frame_count: u32, sequence: u64) -> Result<bool> {
+    Ok(read_u64(header, 32)? == sequence
+        && read_u64(header, frame_slot_sequence_offset(sequence, frame_count)?)? == sequence)
+}
+
 fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -49,7 +66,10 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     }
     let mut header = [0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
-    if &header[..8] != b"BBTFRAME" || read_u32(&header, 8)? != 3 || read_u32(&header, 28)? != 1 {
+    if &header[..8] != b"BBTFRAME"
+        || read_u32(&header, 8)? != FRAME_VERSION
+        || read_u32(&header, 28)? != 1
+    {
         bail!("renderer frame has an unsupported header");
     }
     let width = read_u32(&header, 12)?;
@@ -71,6 +91,10 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     {
         bail!("renderer frame metadata is invalid");
     }
+    let slot_sequence_offset = frame_slot_sequence_offset(sequence, frame_count)?;
+    if !header_has_committed_frame(&header, frame_count, sequence)? {
+        return Ok(None);
+    }
     let offset = (HEADER_SIZE as u64)
         .checked_add(
             (sequence % u64::from(frame_count))
@@ -88,15 +112,48 @@ fn read_committed_frame(path: &Path) -> Result<Option<CommittedFrame>> {
     let mut pixels = vec![0u8; usize::try_from(frame_size)?];
     file.seek(SeekFrom::Start(offset))?;
     file.read_exact(&mut pixels)?;
-    // Mirror the OBS reader's commit check: discard a slot that changed while
-    // its pixels were copied rather than diagnosing a torn producer frame.
+    // Mirror the OBS reader's v4 commit check. The per-slot marker detects an
+    // N+3 overwrite of the same modulo slot even while the global sequence is
+    // still N; both generations must remain stable around the pixel copy.
+    file.seek(SeekFrom::Start(slot_sequence_offset as u64))?;
+    let mut slot_confirmation = [0u8; 8];
+    file.read_exact(&mut slot_confirmation)?;
     file.seek(SeekFrom::Start(32))?;
     let mut confirmation = [0u8; 8];
     file.read_exact(&mut confirmation)?;
-    if u64::from_le_bytes(confirmation) != sequence {
+    if u64::from_le_bytes(slot_confirmation) != sequence
+        || u64::from_le_bytes(confirmation) != sequence
+    {
         return Ok(None);
     }
     Ok(Some((sequence, width, height, pixels)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_commit_rejects_in_progress_and_modulo_reuse_generations() {
+        let mut header = [0u8; HEADER_SIZE];
+        let frame_count = 3;
+        let sequence = 1;
+        let offset = frame_slot_sequence_offset(sequence, frame_count).unwrap();
+
+        header[32..40].copy_from_slice(&sequence.to_le_bytes());
+        header[offset..offset + 8].copy_from_slice(&sequence.to_le_bytes());
+        assert!(header_has_committed_frame(&header, frame_count, sequence).unwrap());
+
+        header[offset..offset + 8].copy_from_slice(&0u64.to_le_bytes());
+        assert!(!header_has_committed_frame(&header, frame_count, sequence).unwrap());
+
+        let reused = sequence + u64::from(frame_count);
+        header[offset..offset + 8].copy_from_slice(&reused.to_le_bytes());
+        assert!(!header_has_committed_frame(&header, frame_count, sequence).unwrap());
+        assert!(!header_has_committed_frame(&header, frame_count, reused).unwrap());
+        header[32..40].copy_from_slice(&reused.to_le_bytes());
+        assert!(header_has_committed_frame(&header, frame_count, reused).unwrap());
+    }
 }
 
 fn push_playing_sample(
@@ -123,6 +180,43 @@ fn push_playing_sample(
     );
     manager.write_aligned_inputs(now_us);
     beat
+}
+
+fn push_results_if_due(
+    manager: &RendererManager,
+    beat: f32,
+    results_at_beat: Option<f32>,
+    results_sent: &mut bool,
+) {
+    if *results_sent || !results_at_beat.is_some_and(|target| beat >= target) {
+        return;
+    }
+    let now_us = unix_ms() * 1_000;
+    // Synthetic but internally consistent totals make the native Results
+    // layout visually auditable without pretending that the probe judged a
+    // real player's score. Publication still uses the production delay path.
+    manager.push_score_state(
+        "physical-probe",
+        RenderScoreState {
+            sequence: 1,
+            run_time_us: now_us,
+            accuracy: 97.75,
+            average_offset: -1.5,
+            totals: ScoreTotals {
+                hits: 512,
+                misses: 8,
+                barelies: 3,
+                combo: 40,
+                max_combo: 180,
+                current_max_hits: 523,
+                max_hits: 523,
+                mine_hits: 2,
+            },
+            results: true,
+        },
+    );
+    manager.write_aligned_inputs(now_us);
+    *results_sent = true;
 }
 
 fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
@@ -207,6 +301,10 @@ fn main() -> Result<()> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value <= 60)
         .unwrap_or(0);
+    let results_at_beat = env::var("BBT_PROBE_RESULTS_AT_BEAT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite());
     std::fs::create_dir_all(&root)?;
 
     let manager = RendererManager::new(root.clone())?;
@@ -225,6 +323,11 @@ fn main() -> Result<()> {
     )?;
     let profile = prepare_renderer_profile(&root)?;
     manager.launch_slot("A", &game, &profile, &chart, &variant)?;
+    // Production launches renderers while a chart is being prepared, then
+    // releases their zeroed input pages when the race starts. Mirror that
+    // lifecycle here; otherwise the physical probe remains parked at pre-roll
+    // beat -8 and a black OBS frame can be mistaken for a renderer failure.
+    manager.begin_run();
     // Production publishes this after parsing Event.hitCount. Supplying the
     // chart's real value exercises the same first-note release barrier.
     manager.push_render_anchor("physical-probe", first_note_beat, 0.0);
@@ -236,8 +339,10 @@ fn main() -> Result<()> {
     }
 
     let started = Instant::now();
+    let mut results_sent = false;
     let frame = loop {
         let beat = push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        push_results_if_due(&manager, beat, results_at_beat, &mut results_sent);
         if beat >= capture_beat {
             if let Some(frame) = read_committed_frame(&manager.frame_path("A"))? {
                 break frame;
@@ -307,7 +412,8 @@ fn main() -> Result<()> {
         .unwrap_or_default();
     let hold_started = Instant::now();
     while hold_started.elapsed() < Duration::from_secs(hold_seconds) {
-        push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        let beat = push_playing_sample(&manager, &started, start_beat, beats_per_second);
+        push_results_if_due(&manager, beat, results_at_beat, &mut results_sent);
         thread::sleep(Duration::from_millis(16));
     }
     manager.stop_all();

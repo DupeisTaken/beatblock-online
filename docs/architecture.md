@@ -76,8 +76,11 @@ separate from presentation work.
 Renderer input alignment parks when no stream is active and otherwise follows
 the fastest configured 30/60 Hz stream. Game clients send 60 Hz render input
 during gameplay and five Hz while held on an Online screen. Renderer processes
-use a fixed three-frame memory-mapped ring, two asynchronous GPU readback
-canvases, and sequence-last publication so OBS never consumes a partial frame.
+use a fixed three-frame memory-mapped ring and two asynchronous GPU readback
+canvases. Frame-header v4 invalidates a per-slot generation before reuse, then
+commits that generation and the global sequence after the pixels; OBS checks
+both values around its copy so even modulo-slot reuse cannot expose a partial
+frame.
 Each isolated native game completes threaded preload, then freezes its Game
 callback, global `flux` eases, and EntityManager at one boundary until source
 input is available. Cached samples subsequently warm the authored pre-roll

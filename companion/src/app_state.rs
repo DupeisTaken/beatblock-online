@@ -251,6 +251,31 @@ mod tests {
         std::env::temp_dir().join(format!("bbt-app-{label}-{}", rand::random::<u64>()))
     }
 
+    fn chart_lock(digit: char, name: &str) -> ChartLock {
+        ChartLock {
+            hash: digit.to_string().repeat(64),
+            package_name: name.into(),
+            song_name: name.into(),
+            variant: "Hard".into(),
+            expected_max_hits: 100,
+            official: false,
+            transfer_mode: ChartTransferMode::VerifyOnly,
+        }
+    }
+
+    fn active_renderer_request(participant_id: String) -> RendererRequest {
+        RendererRequest {
+            participant_id: Some(participant_id),
+            participant_name: Some("Host".into()),
+            mode: Some(crate::model::RendererMode::Full),
+            width: Some(320),
+            height: Some(180),
+            fps: Some(60),
+            delay_ms: Some(500),
+            featured: Some(true),
+        }
+    }
+
     #[tokio::test]
     async fn local_hello_uses_the_displayed_upstream_build_hash() {
         let root = temporary("game-attestation");
@@ -320,6 +345,86 @@ mod tests {
         assert_eq!(validated_room_name("  Finals  ").unwrap(), "Finals");
         assert!(validated_room_name("").is_err());
         assert!(validated_room_name(&"界".repeat(81)).is_err());
+    }
+
+    #[tokio::test]
+    async fn replacing_the_same_chart_after_results_relaunches_active_renderers() {
+        let root = temporary("same-chart-relaunch");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let room = RoomEngine::host(
+            "Same chart".into(),
+            "Host".into(),
+            AdmissionMode::PasswordOnly,
+        );
+        let host = room.snapshot.host_session_id.clone();
+        *state.room.write().await = room;
+        *state.local_session_id.write().await = Some(host.clone());
+        state.is_host.store(true, Ordering::Release);
+
+        let chart = chart_lock('a', "Repeat");
+        *state.selected_chart_path.write().await = Some("Custom Levels/Repeat/".into());
+        state.lock_chart(chart.clone(), false).await.unwrap();
+        state
+            .renderer
+            .configure("A", active_renderer_request(host))
+            .unwrap();
+        state
+            .renderer
+            .set_error("A", "sentinel: renderer was not relaunched");
+        state.room.write().await.snapshot.lifecycle = crate::model::RoomLifecycle::Results;
+
+        state.lock_chart(chart, false).await.unwrap();
+
+        assert_eq!(
+            state.room.read().await.snapshot.lifecycle,
+            crate::model::RoomLifecycle::ChartLocked
+        );
+        assert!(state
+            .renderer
+            .slot("A")
+            .unwrap()
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Beatblock installation path is unavailable")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn appending_a_chart_does_not_relaunch_the_unchanged_active_renderer() {
+        let root = temporary("setlist-append-no-relaunch");
+        let (state, _) =
+            AppState::new(root.clone(), "token".into(), CompanionConfig::default()).unwrap();
+        let room = RoomEngine::host("Setlist".into(), "Host".into(), AdmissionMode::PasswordOnly);
+        let host = room.snapshot.host_session_id.clone();
+        *state.room.write().await = room;
+        *state.local_session_id.write().await = Some(host.clone());
+        state.is_host.store(true, Ordering::Release);
+
+        let first = chart_lock('a', "First");
+        *state.selected_chart_path.write().await = Some("Custom Levels/First/".into());
+        state.lock_chart(first.clone(), true).await.unwrap();
+        state
+            .renderer
+            .configure("A", active_renderer_request(host))
+            .unwrap();
+        state.renderer.set_error("A", "sentinel: keep active child");
+        state.room.write().await.snapshot.lifecycle = crate::model::RoomLifecycle::Results;
+        *state.selected_chart_path.write().await = Some("Custom Levels/Second/".into());
+
+        state
+            .lock_chart(chart_lock('b', "Second"), true)
+            .await
+            .unwrap();
+
+        let snapshot = state.room.read().await.snapshot.clone();
+        assert_eq!(snapshot.chart.as_ref().unwrap().hash, first.hash);
+        assert_eq!(snapshot.setlist.len(), 2);
+        assert_eq!(
+            state.renderer.slot("A").unwrap().last_error.as_deref(),
+            Some("sentinel: keep active child")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2551,7 +2656,12 @@ impl AppState {
             None
         };
         self.broadcast_room().await?;
-        if active_hash != previous_hash {
+        // A direct selection always starts a fresh chart lifecycle, even when
+        // the host picks the same package and variant after Results. Its
+        // renderer children must therefore restart to clear their completed
+        // game state. Appending to a setlist is different: it must leave the
+        // currently active chart and its children untouched.
+        if !append_to_setlist || active_hash != previous_hash {
             self.relaunch_active_renderers().await;
         }
         Ok(())

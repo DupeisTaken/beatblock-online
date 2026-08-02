@@ -26,7 +26,10 @@ each Stream A-D video feed. Then add **Beatblock Online Audio** for each
 renderer audio feed you want in the mixer and choose Stream A-D or Autoplay.
 Audio fine sync is independently adjustable from 0-2000 ms and defaults to
 0 ms. The installed DLL and locale live under
-`%ProgramData%\obs-studio\plugins\beatblock-online-obs`; the installer records
+`%ProgramData%\obs-studio\plugins\beatblock-online-obs`. When the selected OBS
+root contains `portable_mode.txt` (or `portable_mode`), the installer instead
+writes the DLL and locale into that isolated OBS tree under `obs-plugins\64bit`
+and `data\obs-plugins\beatblock-online-obs\locale`. The installer records
 and verifies their hashes. The reviewed alpha artifact has been physically
 loaded by OBS Studio 32.0.4 x64.
 
@@ -35,13 +38,17 @@ loaded by OBS Studio 32.0.4 x64.
 > Online Audio sources to the scene and route those sources in the OBS mixer.
 
 The player source keeps a read-only mapping of the corresponding triple-buffered
-RGBA frame ring. Header version 3 declares the payload as RGBA8 display/sRGB
+RGBA frame ring. Header version 4 declares the payload as RGBA8 display/sRGB
 bytes; readers reject an unknown encoding instead of displaying incorrect
 colors. OBS uploads that single texture through its supported sRGB source draw
 path, preserving the display-encoded bytes emitted by LÖVE. A versioned aligned
-sequence commits each completed frame, and OBS verifies that sequence after
-copying so a concurrent publish cannot produce a torn frame. The consumer must
-use aligned read-only snapshots for this check: Windows interlocked
+global sequence commits each completed frame. Each modulo slot also has its own
+aligned generation: the producer clears it before overwriting the slot and
+commits it after the pixels. OBS verifies both generations before and after the
+copy, including when frame N+3 reuses frame N's slot, so a concurrent publish
+cannot produce a torn frame. Older frame-header versions are deliberately
+rejected until producer and plugin are updated together. The consumer must use
+aligned read-only snapshots for these checks: Windows interlocked
 compare/exchange operations are writes and will crash against a `FILE_MAP_READ`
 view. Assigning a participant to that stable slot happens inside Beatblock under
 **Broadcast**. A source can therefore appear in OBS while showing no frame if
@@ -170,6 +177,12 @@ $env:BBT_PROBE_CAPTURE_BEAT = '100.5'
 cargo run --manifest-path companion/Cargo.toml --example renderer_frame_probe
 ```
 
+Set `BBT_PROBE_RESULTS_AT_BEAT` to publish synthetic, clearly non-player score
+totals through the production delayed score channel. Combined with
+`BBT_PROBE_HOLD_SECS`, this keeps the renderer alive long enough to verify that
+OBS advances from the chart's terminal animation to the native numeric Results
+screen. This is a state-handoff check, not score-accuracy evidence.
+
 Renderers normalize chart-directory paths, resolve named variants to their
 manifest objects, and satisfy Beatblock's threaded audio-preload gate with an
 empty preload table before entering Game state. Each renderer disables
@@ -214,7 +227,7 @@ Before assigning slots, keep the host game and OBS below 80% CPU and GPU utiliza
 
 1. Open the installer Components tab. **OBS plugin — Installed** must say **Installed and hash verified**.
 2. Restart OBS completely after installation.
-3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS player stream source registered` and `beatblock-online-obs.dll`.
+3. Open OBS **Help → Log Files → View Current Log** and search for `[Beatblock Online] OBS player stream and audio sources registered` and `beatblock-online-obs.dll`.
 4. If the source is present but remains black while the runtime reports published frames, close OBS and use **Repair Required Components**. This replaces an older plugin DLL before OBS can load it again.
 5. If the row is Missing or Broken, close OBS and use **Repair Required Components**. The installer preserves unrelated OBS plugins and scenes.
 6. For portable/custom OBS, verify the editable OBS field resolves to a folder containing `bin\64bit\obs64.exe`. An invalid explicit choice is reported and never falls back silently to another OBS copy.

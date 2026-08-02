@@ -219,6 +219,11 @@ pub struct Installer {
     // candidate so an invalid manual choice cannot silently fall back to a
     // different installation while the user believes the chosen one is used.
     obs_directory_override: RwLock<Option<PathBuf>>,
+    // Fixture-backed installer tests must never depend on an unrelated OBS
+    // process running on the developer's workstation. Production builds do
+    // not contain this override, so the real process lock remains mandatory.
+    #[cfg(test)]
+    obs_running_override: Option<bool>,
 }
 
 impl Installer {
@@ -227,6 +232,8 @@ impl Installer {
             data_dir,
             mods_directory_override: None,
             obs_directory_override: RwLock::new(None),
+            #[cfg(test)]
+            obs_running_override: None,
         }
     }
 
@@ -236,7 +243,16 @@ impl Installer {
             data_dir,
             mods_directory_override: Some(mods_directory),
             obs_directory_override: RwLock::new(None),
+            obs_running_override: Some(false),
         }
+    }
+
+    fn detected_obs_running(&self) -> Result<bool> {
+        #[cfg(test)]
+        if let Some(running) = self.obs_running_override {
+            return Ok(running);
+        }
+        obs_is_running()
     }
 
     /// Selects an OBS root (or a folder/executable beneath that root). The
@@ -1332,7 +1348,7 @@ impl Installer {
             bail!("this installer build does not contain the OBS plugin payload");
         }
         validate_obs_payload(OBS_PLUGIN_PAYLOAD)?;
-        if obs_is_running().context(
+        if self.detected_obs_running().context(
             "could not inspect running OBS Studio processes before installing its source",
         )? {
             bail!("OBS Studio is running. Close OBS before installing or updating the optional OBS source, then retry; administrator access cannot replace a loaded plugin DLL");
@@ -1344,9 +1360,9 @@ impl Installer {
         self.stage_obs_plugin_into(obs, &program_data)
     }
 
-    /// Installs OBS files transactionally into a supplied ProgramData root.
-    /// The public path supplies the real Windows directory; tests use a
-    /// disposable root while exercising the identical payload and marker code.
+    /// Installs OBS files transactionally into either the selected portable
+    /// tree or a supplied ProgramData root. Tests use disposable roots while
+    /// exercising the identical layout selection, payload, and marker code.
     #[cfg(test)]
     fn install_obs_plugin_into(&self, obs: PathBuf, program_data: &Path) -> Result<PathBuf> {
         Ok(self.stage_obs_plugin_into(obs, program_data)?.commit())
@@ -1357,9 +1373,10 @@ impl Installer {
         obs: PathBuf,
         program_data: &Path,
     ) -> Result<ObsInstallTransaction> {
-        // ProgramData is OBS' recommended Windows plugin layout. It avoids the
-        // legacy Program Files path that OBS has announced it will retire.
-        let (plugin, locale) = obs_program_data_paths(program_data);
+        // Installed OBS copies use the recommended ProgramData plugin layout.
+        // Portable mode deliberately isolates itself from ProgramData, so its
+        // marker must route both payloads into OBS' local plugin directories.
+        let (plugin, locale) = obs_install_paths(&obs, program_data);
         let locale_payload = include_bytes!("../../obs-plugin/data/locale/en-US.ini");
         let marker = self.data_dir.join("obs-install.json");
         let record = ObsInstallManifest {
@@ -1412,7 +1429,7 @@ impl Installer {
     /// Reports whether OBS currently owns its plugin DLLs so the installer UI
     /// can defer only that optional component instead of blocking core setup.
     pub fn obs_running(&self) -> Result<bool> {
-        obs_is_running()
+        self.detected_obs_running()
     }
 
     /// Reports whether any Beatblock process can still own the managed game
@@ -1565,7 +1582,8 @@ impl Installer {
             );
         }
         if self.obs_plugin_managed()
-            && obs_is_running()
+            && self
+                .detected_obs_running()
                 .context("could not inspect running OBS Studio processes before uninstalling")?
         {
             bail!(
@@ -2484,6 +2502,29 @@ fn obs_program_data_paths(program_data: &Path) -> (PathBuf, PathBuf) {
     )
 }
 
+fn obs_portable_paths(obs_directory: &Path) -> (PathBuf, PathBuf) {
+    (
+        obs_directory.join("obs-plugins/64bit/beatblock-online-obs.dll"),
+        obs_directory.join("data/obs-plugins/beatblock-online-obs/locale/en-US.ini"),
+    )
+}
+
+fn obs_directory_is_portable(obs_directory: &Path) -> bool {
+    // OBS accepts both spellings; the official Windows ZIP workflow commonly
+    // uses `portable_mode.txt`. Avoid treating every custom path as portable,
+    // because a normally configured unpacked copy still loads ProgramData.
+    obs_directory.join("portable_mode.txt").is_file()
+        || obs_directory.join("portable_mode").is_file()
+}
+
+fn obs_install_paths(obs_directory: &Path, program_data: &Path) -> (PathBuf, PathBuf) {
+    if obs_directory_is_portable(obs_directory) {
+        obs_portable_paths(obs_directory)
+    } else {
+        obs_program_data_paths(program_data)
+    }
+}
+
 fn configured_program_data() -> PathBuf {
     std::env::var_os("ProgramData")
         .map(PathBuf::from)
@@ -2492,6 +2533,19 @@ fn configured_program_data() -> PathBuf {
 
 fn obs_record_paths_are_managed(record: &ObsInstallManifest) -> bool {
     let (plugin, locale) = obs_program_data_paths(&configured_program_data());
+    if paths_equal(&record.plugin, &plugin) && paths_equal(&record.locale, &locale) {
+        return true;
+    }
+    // Portable cleanup is allowed only while the recorded root still validates
+    // as the same portable OBS installation. This prevents a forged elevated
+    // marker from turning uninstall into an arbitrary two-file deletion.
+    let Some(obs_directory) = normalize_obs_directory(&record.obs_directory) else {
+        return false;
+    };
+    if !obs_directory_is_portable(&obs_directory) {
+        return false;
+    }
+    let (plugin, locale) = obs_portable_paths(&obs_directory);
     paths_equal(&record.plugin, &plugin) && paths_equal(&record.locale, &locale)
 }
 
@@ -2703,11 +2757,16 @@ mod tests {
 
     #[test]
     fn detector_accepts_isolated_test_game_shape() {
-        let root = std::env::var_os("BBT_GAME_FIXTURE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.test/Beatblock")
-            });
+        let explicit_fixture = std::env::var_os("BBT_GAME_FIXTURE").map(PathBuf::from);
+        let root = explicit_fixture.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("bbt-isolated-game-shape-{}", rand::random::<u64>()))
+        });
+        // A plain `cargo test` must not depend on a developer's ignored .test
+        // directory. An explicitly supplied physical fixture is still useful,
+        // while the default path now exercises the same shape in isolation.
+        if explicit_fixture.is_none() {
+            fake_game(&root);
+        }
         assert!(validate_game_directory(&root).is_ok());
         let installer = Installer::with_mods_directory(
             root.join(".bbt-test-data"),
@@ -2716,6 +2775,9 @@ mod tests {
         let inspection = installer.inspect_target(&root);
         assert!(inspection.compatible_layout);
         assert_eq!(inspection.components[0].label, "Compatible");
+        if explicit_fixture.is_none() {
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -3542,6 +3604,37 @@ mod tests {
                 r"C:\ProgramData\obs-studio\plugins\beatblock-online-obs\data\locale\en-US.ini"
             )
         );
+    }
+
+    #[test]
+    fn portable_obs_uses_selected_local_plugin_layout() {
+        let root =
+            std::env::temp_dir().join(format!("bbt-portable-plugin-{}", rand::random::<u64>()));
+        let data = root.join("data");
+        let obs = root.join("Portable OBS");
+        let executable = obs.join("bin/64bit/obs64.exe");
+        let program_data = root.join("ProgramData");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(executable, b"portable OBS fixture").unwrap();
+        std::fs::write(obs.join("portable_mode.txt"), b"").unwrap();
+        let installer = Installer::with_mods_directory(data.clone(), root.join("mods"));
+
+        let installed = installer
+            .install_obs_plugin_into(obs.clone(), &program_data)
+            .unwrap();
+        let (plugin, locale) = obs_portable_paths(&obs);
+        assert_eq!(installed, plugin);
+        assert!(file_matches(&plugin, OBS_PLUGIN_PAYLOAD));
+        assert!(file_matches(
+            &locale,
+            include_bytes!("../../obs-plugin/data/locale/en-US.ini")
+        ));
+        assert!(!obs_program_data_paths(&program_data).0.exists());
+        let record: ObsInstallManifest =
+            serde_json::from_slice(&std::fs::read(data.join("obs-install.json")).unwrap()).unwrap();
+        assert!(obs_record_paths_are_managed(&record));
+        assert!(installer.obs_plugin_ready());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

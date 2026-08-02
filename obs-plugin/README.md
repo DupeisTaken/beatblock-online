@@ -18,8 +18,12 @@ For the pinned Windows release artifact, run `pnpm build:obs`. The repository sc
 
 Video frame ingestion reads the hidden runtime's versioned frame rings under
 `%LOCALAPPDATA%\BeatblockOnline\BeatblockOnline\data\render-streams`. Frame
-header v3 declares RGBA8 display/sRGB payloads; the source rejects unknown
-encodings and uses OBS's supported single-texture sRGB draw path.
+header v4 declares RGBA8 display/sRGB payloads and carries an aligned generation
+for every modulo slot. The producer invalidates a slot before reuse and commits
+its generation only after the pixels, while the read-only OBS consumer verifies
+both the slot and global generations around its copy. Older or unknown frame
+contracts are rejected instead of being interpreted. OBS then uses its supported
+single-texture sRGB draw path.
 
 Each audio source owns an OBS `wasapi_process_output_capture` child and uses the
 supported `reroute_audio` procedure to feed its own mixer channel. It derives an

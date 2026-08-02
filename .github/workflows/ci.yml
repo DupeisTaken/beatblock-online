@@ -49,7 +49,7 @@ jobs:
         working-directory: companion
       - run: powershell -NoProfile -File scripts/test-release-utils.ps1
       - run: cargo fmt --manifest-path companion/Cargo.toml --check
-      # These five gates require either the user's isolated game fixture or the
+      # These six gates require either the user's isolated game fixture or the
       # verified binary payloads built by the Release workflow. Every source-only
       # test remains blocking here.
       - run: >-
@@ -58,6 +58,7 @@ jobs:
           --skip embedded_obs_source_is_a_real_module_with_required_exports
           --skip full_standalone_install_repair_restore_and_uninstall_round_trip
           --skip move_installation_and_adapter_detection_are_exclusive
+          --skip portable_obs_uses_selected_local_plugin_layout
           --skip verified_obs_component_does_not_report_a_stale_failure
       - run: cargo test --manifest-path companion/Cargo.toml --test game_commands
       - run: cargo test --manifest-path companion/Cargo.toml --test stress --release

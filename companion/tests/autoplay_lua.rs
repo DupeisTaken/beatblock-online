@@ -135,6 +135,22 @@ local Renderer=(function()
 {renderer}
 end)()
 os.getenv=originalGetenv
+local mockTime=0
+local mockTitle='Beatblock'
+love={{
+  timer={{getTime=function() return mockTime end}},
+  window={{
+    getTitle=function() return mockTitle end,
+    setTitle=function(value) mockTitle=value end,
+  }},
+}}
+assert(Renderer.ensureWindowIdentity(true))
+assert(mockTitle=='Beatblock Online Autoplay')
+-- A later native reset must be corrected after the bounded poll interval.
+mockTitle='Beatblock'
+mockTime=2
+assert(Renderer.ensureWindowIdentity(false))
+assert(mockTitle=='Beatblock Online Autoplay')
 assert(Renderer.decodeHexUtf8('437573746f6d204c6576656c732f323465656576302defbfa52f')
   == 'Custom Levels/24eeev0-\239\191\165/')
 assert(Renderer.decodeHexUtf8('e8b685e7baa7e99abee5baa6') == '\232\182\133\231\186\167\233\154\190\229\186\166')
@@ -248,6 +264,116 @@ local sanitized=BBT.roomModifierPolicy({modifiers={
 }})
 assert(sanitized.rate==1.0 and sanitized.vfx=='full' and sanitized.taps=='default')
 assert(sanitized.sides=='default' and sanitized.barelies=='default' and sanitized.restartOn=='none')
+"#;
+    let scenarios = scenarios.replace("{online}", online);
+    execute(&format!(
+        r#"
+local BBT=(function()
+{core}
+end)()
+{scenarios}
+"#
+    ));
+}
+
+#[test]
+fn reconnect_snapshot_recovers_second_chart_launch_and_lost_advance_ack() {
+    let core = include_str!("../../mod/shared/bbt/core.lua");
+    let online = include_str!("../../mod/shared/bbt/online_state.lua");
+    let scenarios = r#"
+BBT.context.sessionId='host-session'
+BBT.context.playerName='Host'
+BBT.localChart={
+  levelPath='levels/Songwheel/Rhythmic Shield/', variantName='Default',
+  songName='Rhythmic Shield',expectedMaxHits=321,
+  levelData={}, soundData={}, official=true,
+}
+BBT.launching=true
+BBT.wasRunReady=true
+BBT.context.runId='completed-run'
+BBT.resetChartLaunchState()
+assert(BBT.launching==false and BBT.wasRunReady==false)
+assert(BBT.context.runId==nil and BBT.runSequence==0)
+
+local recoveredRoom={
+  id='room',name='QA',hostSessionId='host-session',lifecycle='countdown',
+  scheduledStartTimeMs=0,
+  chart={hash='second-hash',packageName='levels/Songwheel/Rhythmic Shield/',
+    variant='Default',expectedMaxHits=321,official=true},
+  participants={{sessionId='host-session',displayName='Host',role='host',verified=true}},
+}
+local unrelated={
+  id='room',name='QA',hostSessionId='host-session',lifecycle='countdown',
+  scheduledStartTimeMs=0,
+  chart={hash='wrong-hash',packageName='levels/Songwheel/Other/',
+    variant='Default',expectedMaxHits=321,official=true},
+  participants=recoveredRoom.participants,
+}
+assert(not BBT.applyRoomSnapshot(unrelated),'snapshot blessed a different chart identity')
+assert(BBT.localChart.hash==nil and BBT.chartVerified==false)
+assert(BBT.applyRoomSnapshot(recoveredRoom))
+assert(BBT.scheduledStartTimeMs==0 and BBT.chartVerified==true)
+assert(BBT.localChart.hash=='second-hash')
+
+local previous={leave=function() end}
+cs=previous
+local launchedState=nil
+bs={load=function(name)
+  assert(name=='Game')
+  return {init=function(self) self.initialized=true; launchedState=self end}
+end}
+GameManager={transferStateData=function() end}
+savedata={options={accessibility={}}}
+sdfunc={save=function() end}
+assert(BBT.maybeLaunchScheduledChart(),'recovered second chart did not enter Game: '..
+  tostring(BBT.launching)..'/'..tostring(BBT.lastLobby and BBT.lastLobby.lifecycle)..'/'..
+  tostring(BBT.chartVerified)..'/'..tostring(BBT.scheduledStartTimeMs))
+assert(launchedState==cs and cs.initialized==true,'second chart Game:init was not reached')
+
+package.preload['bbt.dashboard_model']=function() return {} end
+package.preload['bbt.dashboard_components']=function()
+  return {new=function() return {} end}
+end
+Gamestate={new=function(_,name)
+  local state={name=name}
+  function state:setInit(callback) self.init=callback end
+  function state:setUpdate(callback) self.updateState=callback end
+  function state:setBgDraw(callback) self.bgDrawState=callback end
+  function state:setFgDraw(callback) self.drawState=callback end
+  return state
+end}
+love={graphics={setFont=function() end},keyboard={setTextInput=function() end}}
+fonts={digitalDisco={}}
+shuv={pal={},resetPal=function() end,showBadColors=true}
+em={clear=function() end}
+mouse={disableGameplay=function() end}
+BBT.startOnlineRuntime=function() end
+BBT.command=function() return 'snapshot-request' end
+BBT.maybeLaunchScheduledChart=function() return false end
+local reopened=nil
+BBT.openOfficialSelect=function(mode) reopened=mode end
+local online=(function()
+{online}
+end)()()
+online:init({workspace='setlist'})
+online.advanceRequestId='advance-request'
+online.advancePreviousHash='first-hash'
+BBT.pendingRequestId=nil
+BBT.lastCompletedRequestId=nil
+BBT.lastLobby={
+  id='room',hostSessionId='host-session',lifecycle='chart_locked',
+  chart={hash='first-hash'},participants=recoveredRoom.participants,
+}
+online:updateState(0)
+assert(reopened==nil,'selector reopened before an ACK or authoritative chart change')
+assert(online.advanceRequestId=='advance-request','lost ACK continuation was discarded early')
+BBT.lastLobby={
+  id='room',hostSessionId='host-session',lifecycle='chart_locked',
+  chart=recoveredRoom.chart,participants=recoveredRoom.participants,
+}
+online:updateState(0)
+assert(reopened=='verify','lost advance ACK did not reopen official verification')
+assert(online.advanceRequestId==nil and online.advancePreviousHash==nil)
 "#;
     let scenarios = scenarios.replace("{online}", online);
     execute(&format!(

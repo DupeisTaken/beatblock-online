@@ -16,6 +16,7 @@ const RESTORE_RETRIES: usize = 20;
 
 trait SessionControl: Clone {
     fn process_id(&self) -> u32;
+    fn session_id(&self) -> &str;
     fn muted(&self) -> Result<bool>;
     fn set_muted(&self, muted: bool) -> Result<()>;
 }
@@ -26,8 +27,13 @@ struct HeldSession<S> {
     original_muted: bool,
 }
 
+struct HeldIsolation<S> {
+    process_id: u32,
+    sessions: HashMap<String, HeldSession<S>>,
+}
+
 struct IsolationEngine<S: SessionControl> {
-    held: HashMap<String, Vec<HeldSession<S>>>,
+    held: HashMap<String, HeldIsolation<S>>,
 }
 
 impl<S: SessionControl> Default for IsolationEngine<S> {
@@ -40,32 +46,65 @@ impl<S: SessionControl> Default for IsolationEngine<S> {
 
 impl<S: SessionControl> IsolationEngine<S> {
     fn isolate_exact(&mut self, key: &str, process_id: u32, sessions: Vec<S>) -> Result<bool> {
-        if self.held.contains_key(key) {
-            return Ok(true);
+        // A slot name is stable across renderer generations, but its PID is
+        // not. Never let a lease retained after a failed restoration make the
+        // next process appear isolated: the old generation must restore before
+        // this key can acquire sessions owned by a different PID.
+        if self
+            .held
+            .get(key)
+            .is_some_and(|held| held.process_id != process_id)
+        {
+            self.restore(key)?;
         }
-        let matches = sessions
-            .into_iter()
-            .filter(|session| session.process_id() == process_id)
-            .map(|session| {
-                let original_muted = session.muted()?;
-                Ok(HeldSession {
+
+        let mut seen = self
+            .held
+            .get(key)
+            .map(|held| {
+                held.sessions
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut matches = Vec::new();
+        for session in sessions {
+            if session.process_id() != process_id || !seen.insert(session.session_id().to_owned()) {
+                continue;
+            }
+            let original_muted = session.muted()?;
+            matches.push((
+                session.session_id().to_owned(),
+                HeldSession {
                     session,
                     original_muted,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        if matches.is_empty() {
-            return Ok(false);
+                },
+            ));
         }
-        for (changed, held) in matches.iter().enumerate() {
+        if matches.is_empty() {
+            return Ok(self
+                .held
+                .get(key)
+                .is_some_and(|held| held.process_id == process_id && !held.sessions.is_empty()));
+        }
+        for (changed, (_, held)) in matches.iter().enumerate() {
             if let Err(error) = held.session.set_muted(true) {
-                for rollback in matches[..changed].iter().rev() {
+                for (_, rollback) in matches[..changed].iter().rev() {
                     let _ = rollback.session.set_muted(rollback.original_muted);
                 }
                 return Err(error);
             }
         }
-        self.held.insert(key.to_owned(), matches);
+        let held = self
+            .held
+            .entry(key.to_owned())
+            .or_insert_with(|| HeldIsolation {
+                process_id,
+                sessions: HashMap::new(),
+            });
+        debug_assert_eq!(held.process_id, process_id);
+        held.sessions.extend(matches);
         Ok(true)
     }
 
@@ -74,7 +113,7 @@ impl<S: SessionControl> IsolationEngine<S> {
             return Ok(false);
         };
         let mut first_error = None;
-        for session in held {
+        for session in held.sessions.values() {
             if let Err(error) = session.session.set_muted(session.original_muted) {
                 first_error.get_or_insert(error);
             }
@@ -88,6 +127,12 @@ impl<S: SessionControl> IsolationEngine<S> {
 
     fn keys(&self) -> Vec<String> {
         self.held.keys().cloned().collect()
+    }
+
+    fn holds_exact(&self, key: &str, process_id: u32) -> bool {
+        self.held
+            .get(key)
+            .is_some_and(|held| held.process_id == process_id && !held.sessions.is_empty())
     }
 }
 
@@ -123,6 +168,9 @@ enum WorkerCommand {
 
 #[derive(Clone)]
 struct PendingIsolation {
+    // The request remains in this map after its first successful acquisition.
+    // Before acquisition it is a fast discovery request; afterward it is an
+    // active lease refreshed at the steady cadence until Restore removes it.
     process_id: u32,
     started: Instant,
     next_attempt: Instant,
@@ -147,7 +195,12 @@ where
             .and_then(|sessions| engine.isolate_exact(&key, request.process_id, sessions));
         match result {
             Ok(true) => {
-                pending.remove(&key);
+                // Successful discovery becomes an active lease. Keep polling
+                // it at the steady cadence so sessions created later on a new
+                // endpoint are muted and remembered for restoration too.
+                if let Some(request) = pending.get_mut(&key) {
+                    request.next_attempt = now + DISCOVERY_STEADY_RETRY;
+                }
                 updates.push((
                     key,
                     AudioIsolationState {
@@ -183,11 +236,13 @@ where
                 }
             }
             Err(error) => {
+                let held_current_sessions = engine.holds_exact(&key, request.process_id);
                 let initial_window_elapsed =
                     now.saturating_duration_since(request.started) >= DISCOVERY_TIMEOUT;
+                let warning = initial_window_elapsed || held_current_sessions;
                 if let Some(request) = pending.get_mut(&key) {
                     request.next_attempt = now
-                        + if initial_window_elapsed {
+                        + if warning {
                             DISCOVERY_STEADY_RETRY
                         } else {
                             DISCOVERY_RETRY
@@ -196,13 +251,17 @@ where
                 updates.push((
                     key,
                     AudioIsolationState {
-                        status: if initial_window_elapsed {
+                        status: if warning {
                             "warning".into()
                         } else {
                             "pending".into()
                         },
-                        muted: false,
-                        error: Some(if initial_window_elapsed {
+                        muted: held_current_sessions,
+                        error: Some(if held_current_sessions {
+                            format!(
+                                "renderer audio isolation refresh failed; existing exact-process sessions remain muted, but newly created sessions may be audible until discovery recovers: {error}"
+                            )
+                        } else if initial_window_elapsed {
                             format!(
                                 "renderer audio isolation failed; desktop playback is unchanged and exact-process discovery will continue: {error}"
                             )
@@ -393,6 +452,7 @@ impl Drop for AudioIsolationWorker {
 #[derive(Clone)]
 struct WindowsSession {
     process_id: u32,
+    session_id: String,
     volume: windows::Win32::Media::Audio::ISimpleAudioVolume,
 }
 
@@ -400,6 +460,9 @@ struct WindowsSession {
 impl SessionControl for WindowsSession {
     fn process_id(&self) -> u32 {
         self.process_id
+    }
+    fn session_id(&self) -> &str {
+        &self.session_id
     }
     fn muted(&self) -> Result<bool> {
         Ok(unsafe { self.volume.GetMute() }?.as_bool())
@@ -436,8 +499,18 @@ fn enumerate_windows_sessions() -> Result<Vec<WindowsSession>> {
             let control = unsafe { sessions.GetSession(session_index) }?;
             let control2: IAudioSessionControl2 = control.cast()?;
             let process_id = unsafe { control2.GetProcessId() }?;
+            let identifier = unsafe { control2.GetSessionInstanceIdentifier() }?;
+            let session_id = unsafe { identifier.to_string() };
+            unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(identifier.0.cast()));
+            }
+            let session_id = session_id?;
             let volume: ISimpleAudioVolume = control.cast()?;
-            result.push(WindowsSession { process_id, volume });
+            result.push(WindowsSession {
+                process_id,
+                session_id,
+                volume,
+            });
         }
     }
     Ok(result)
@@ -594,9 +667,13 @@ fn spawn_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    static NEXT_FAKE_SESSION_ID: AtomicUsize = AtomicUsize::new(1);
 
     #[derive(Clone)]
     struct FakeSession {
+        session_id: String,
         process_id: u32,
         muted: Arc<Mutex<bool>>,
         fail_writes: Arc<Mutex<usize>>,
@@ -604,7 +681,13 @@ mod tests {
 
     impl FakeSession {
         fn new(process_id: u32, muted: bool) -> Self {
+            let ordinal = NEXT_FAKE_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+            Self::identified(format!("pid-{process_id}-{ordinal}"), process_id, muted)
+        }
+
+        fn identified(session_id: impl Into<String>, process_id: u32, muted: bool) -> Self {
             Self {
+                session_id: session_id.into(),
                 process_id,
                 muted: Arc::new(Mutex::new(muted)),
                 fail_writes: Arc::new(Mutex::new(0)),
@@ -615,6 +698,9 @@ mod tests {
     impl SessionControl for FakeSession {
         fn process_id(&self) -> u32 {
             self.process_id
+        }
+        fn session_id(&self) -> &str {
+            &self.session_id
         }
         fn muted(&self) -> Result<bool> {
             Ok(*self.muted.lock().unwrap())
@@ -717,9 +803,97 @@ mod tests {
                 Ok(vec![host.clone(), child.clone()])
             });
         assert_eq!(updates[0].1.status, "muted");
-        assert!(!pending.contains_key("A"));
+        assert!(pending.contains_key("A"));
         assert!(!host.muted().unwrap());
         assert!(child.muted().unwrap());
+    }
+
+    #[test]
+    fn active_isolation_discovers_late_sessions_and_restores_every_original_state() {
+        let host = FakeSession::identified("host", 100, false);
+        let first = FakeSession::identified("first", 200, false);
+        let late = FakeSession::identified("late", 200, false);
+        let started = Instant::now();
+        let mut pending = HashMap::from([(
+            "A".into(),
+            PendingIsolation {
+                process_id: 200,
+                started,
+                next_attempt: started,
+            },
+        )]);
+        let mut engine = IsolationEngine::default();
+
+        let updates = poll_pending_isolations(&mut engine, &mut pending, started, || {
+            Ok(vec![host.clone(), first.clone()])
+        });
+        assert_eq!(updates[0].1.status, "muted");
+        assert!(pending.contains_key("A"), "active leases must keep polling");
+        assert!(!host.muted().unwrap());
+        assert!(first.muted().unwrap());
+
+        let refresh_error_at = started + DISCOVERY_STEADY_RETRY;
+        let updates = poll_pending_isolations(&mut engine, &mut pending, refresh_error_at, || {
+            anyhow::bail!("injected enumeration failure")
+        });
+        assert_eq!(updates[0].1.status, "warning");
+        assert!(updates[0].1.muted, "the existing lease remains effective");
+        assert!(first.muted().unwrap());
+
+        let updates = poll_pending_isolations(
+            &mut engine,
+            &mut pending,
+            refresh_error_at + DISCOVERY_STEADY_RETRY,
+            || Ok(vec![host.clone(), first.clone(), late.clone()]),
+        );
+        assert_eq!(updates[0].1.status, "muted");
+        assert!(!host.muted().unwrap());
+        assert!(late.muted().unwrap());
+
+        assert!(engine.restore("A").unwrap());
+        assert!(!host.muted().unwrap());
+        assert!(
+            !first.muted().unwrap(),
+            "re-enumeration must not replace the first original state"
+        );
+        assert!(
+            !late.muted().unwrap(),
+            "late session must regain its original state"
+        );
+    }
+
+    #[test]
+    fn failed_old_pid_restoration_never_marks_or_mutes_a_reassigned_pid() {
+        let old = FakeSession::identified("old", 200, false);
+        let replacement = FakeSession::identified("replacement", 300, false);
+        let mut engine = IsolationEngine::default();
+        assert!(engine.isolate_exact("A", 200, vec![old.clone()]).unwrap());
+        *old.fail_writes.lock().unwrap() = RESTORE_RETRIES + 5;
+
+        assert!(restore_with_retries(&mut engine, "A").is_err());
+        assert!(old.muted().unwrap());
+        assert!(engine
+            .isolate_exact("A", 300, vec![replacement.clone()])
+            .is_err());
+        assert!(old.muted().unwrap());
+        assert!(!replacement.muted().unwrap());
+
+        let started = Instant::now() - DISCOVERY_TIMEOUT;
+        let mut pending = HashMap::from([(
+            "A".into(),
+            PendingIsolation {
+                process_id: 300,
+                started,
+                next_attempt: started,
+            },
+        )]);
+        let updates = poll_pending_isolations(&mut engine, &mut pending, Instant::now(), || {
+            Ok(vec![replacement.clone()])
+        });
+        assert_eq!(updates[0].1.status, "warning");
+        assert!(!updates[0].1.muted, "old PID ownership must not transfer");
+        assert!(pending.contains_key("A"));
+        assert!(!replacement.muted().unwrap());
     }
 
     /// When the worker thread could not be started, every operation must

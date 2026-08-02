@@ -10,12 +10,13 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{File, OpenOptions},
     io::Read,
+    mem::size_of,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
 };
 
-const FRAME_HEADER: usize = 64;
+const FRAME_HEADER: usize = 80;
 const FRAME_COUNT: usize = 3;
 const MAX_FRAME_SIZE: usize = 1920 * 1080 * 4;
 // Ten minutes of compact 60 Hz state is under 1.5 MiB per participant and lets
@@ -24,8 +25,9 @@ const MAX_RENDER_SAMPLES: usize = 60 * 60 * 10;
 const MAX_RENDER_TAPS: usize = 4_096;
 const MAX_RENDER_SCORES: usize = 4_096;
 const SCORE_STATE_SIZE: usize = 48;
-const FRAME_VERSION: u32 = 3;
+const FRAME_VERSION: u32 = 4;
 const FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB: u32 = 1;
+const FRAME_SLOT_SEQUENCE_OFFSET: usize = 56;
 const AUTOPLAY_SLOT: &str = "AUTOPLAY";
 
 const FLAG_PLAYING: u16 = 1;
@@ -67,7 +69,7 @@ struct RenderTap {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RenderScoreState {
+pub struct RenderScoreState {
     pub sequence: u64,
     pub run_time_us: u64,
     pub accuracy: f32,
@@ -542,7 +544,10 @@ impl RendererManager {
         }
     }
 
-    pub(crate) fn push_score_state(&self, participant_id: &str, state: RenderScoreState) {
+    /// Queues authoritative HUD/results totals for the participant's delayed
+    /// renderer timeline. This is public so the physical renderer probe can
+    /// exercise the same terminal Results handoff as the runtime.
+    pub fn push_score_state(&self, participant_id: &str, state: RenderScoreState) {
         if !state.accuracy.is_finite()
             || !(0.0..=100.0).contains(&state.accuracy)
             || !state.average_offset.is_finite()
@@ -973,10 +978,19 @@ impl RendererManager {
             if let (Some(score_map), Some(score)) = (
                 score_maps.get_mut(&slot.id),
                 scores.get(participant).and_then(|states| {
-                    states
-                        .iter()
-                        .rev()
-                        .find(|state| state.run_time_us <= sample.run_time_us)
+                    // Live score must not advance beyond the motion frame that
+                    // OBS can actually see. Terminal Results is the one valid
+                    // exception: Beatblock emits it after gameplay stops
+                    // publishing motion, so release it on the delayed source
+                    // clock once that final timestamp is due.
+                    states.iter().rev().find(|state| {
+                        // Ordered room-start control can overtake a coalesced
+                        // keyframe from the previous run. The first-note anchor
+                        // shares this source clock and forms the run boundary.
+                        state.run_time_us >= anchor_time_us
+                            && (state.run_time_us <= sample.run_time_us
+                                || (state.results && state.run_time_us <= target_source_us))
+                    })
                 }),
             ) {
                 if score_cursors.get(&slot.id).copied() != Some(score.sequence) {
@@ -1547,6 +1561,15 @@ impl RendererManager {
             .open(&path)?;
         file.set_len(total_size as u64)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
+        // Invalidate every commit before changing dimensions or frame size. OBS
+        // may retain this mapping across a slot reconfiguration; leaving the old
+        // generation visible during the header rewrite could make old pixels
+        // appear valid under new metadata.
+        map[32..40].copy_from_slice(&0u64.to_le_bytes());
+        for index in 0..FRAME_COUNT {
+            let offset = FRAME_SLOT_SEQUENCE_OFFSET + index * size_of::<u64>();
+            map[offset..offset + size_of::<u64>()].copy_from_slice(&0u64.to_le_bytes());
+        }
         map[..8].copy_from_slice(b"BBTFRAME");
         map[8..12].copy_from_slice(&FRAME_VERSION.to_le_bytes());
         map[12..16].copy_from_slice(&slot.width.to_le_bytes());
@@ -1554,7 +1577,6 @@ impl RendererManager {
         map[20..24].copy_from_slice(&(stride as u32).to_le_bytes());
         map[24..28].copy_from_slice(&(FRAME_COUNT as u32).to_le_bytes());
         map[28..32].copy_from_slice(&FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB.to_le_bytes());
-        map[32..40].copy_from_slice(&0u64.to_le_bytes());
         map[40..48].copy_from_slice(&(frame_size as u64).to_le_bytes());
         map[48..56].copy_from_slice(&0u64.to_le_bytes());
         map.flush()?;
@@ -1672,6 +1694,13 @@ mod tests {
             u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
             FRAME_PIXEL_FORMAT_RGBA8_DISPLAY_SRGB
         );
+        for index in 0..FRAME_COUNT {
+            let offset = FRAME_SLOT_SEQUENCE_OFFSET + index * size_of::<u64>();
+            assert_eq!(
+                u64::from_le_bytes(bytes[offset..offset + size_of::<u64>()].try_into().unwrap()),
+                0
+            );
+        }
         assert_eq!(bytes.len(), FRAME_HEADER + MAX_FRAME_SIZE * FRAME_COUNT);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2137,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn source_scores_and_results_follow_the_same_delayed_sample_as_video() {
+    fn source_scores_and_terminal_results_follow_delayed_timeline_after_motion_stops() {
         let root = std::env::temp_dir().join(format!(
             "bbt-renderer-source-score-{}",
             rand::random::<u64>()
@@ -2202,7 +2231,32 @@ mod tests {
             "player-1",
             RenderScoreState {
                 sequence: 42,
-                run_time_us: 1_030_000,
+                // A reliable live keyframe can arrive while the coalesced
+                // motion stream remains held on an older sample. It must not
+                // make the HUD run ahead of the visible paddle and blocks.
+                run_time_us: 1_040_000,
+                accuracy: 98.0,
+                average_offset: -11.0,
+                totals: ScoreTotals {
+                    hits: 90,
+                    misses: 1,
+                    barelies: 1,
+                    combo: 30,
+                    max_combo: 60,
+                    current_max_hits: 92,
+                    max_hits: 100,
+                    mine_hits: 2,
+                },
+                results: false,
+            },
+        );
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 43,
+                // Native Results is emitted after gameplay motion has already
+                // stopped at 1_033_334 us.
+                run_time_us: 1_050_000,
                 accuracy: 97.75,
                 average_offset: -10.25,
                 totals: ScoreTotals {
@@ -2233,6 +2287,22 @@ mod tests {
         assert_eq!(u32::from_le_bytes(live[36..40].try_into().unwrap()), 82);
 
         manager.write_aligned_inputs(2_533_334);
+        let held_live = std::fs::read(manager.score_path("A")).unwrap();
+        assert_eq!(u32::from_le_bytes(held_live[4..8].try_into().unwrap()), 0);
+
+        manager.write_aligned_inputs(2_540_000);
+        let stalled_live = std::fs::read(manager.score_path("A")).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(stalled_live[4..8].try_into().unwrap()),
+            0
+        );
+        assert_eq!(
+            f32::from_le_bytes(stalled_live[8..12].try_into().unwrap()),
+            98.75,
+            "live score must remain aligned to the held motion sample"
+        );
+
+        manager.write_aligned_inputs(2_550_000);
         let results = std::fs::read(manager.score_path("A")).unwrap();
         assert_eq!(u32::from_le_bytes(results[4..8].try_into().unwrap()), 1);
         assert_eq!(
@@ -2244,6 +2314,92 @@ mod tests {
             -10.25
         );
         assert_eq!(u32::from_le_bytes(results[40..44].try_into().unwrap()), 100);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn late_previous_run_results_cannot_cross_the_new_first_note_boundary() {
+        let root = std::env::temp_dir().join(format!(
+            "bbt-renderer-late-previous-score-{}",
+            rand::random::<u64>()
+        ));
+        let manager = RendererManager::new(root.clone()).unwrap();
+        manager
+            .configure(
+                "A",
+                RendererRequest {
+                    participant_id: Some("player-1".into()),
+                    participant_name: Some("Player 1".into()),
+                    mode: Some(RendererMode::Full),
+                    width: Some(320),
+                    height: Some(180),
+                    fps: Some(60),
+                    delay_ms: Some(250),
+                    featured: None,
+                },
+            )
+            .unwrap();
+
+        manager.begin_run();
+        // The IPC worker drains ordered control before coalesced presentation
+        // state, so the old terminal keyframe can arrive after begin_run.
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 41,
+                run_time_us: 1_050_000,
+                accuracy: 96.0,
+                average_offset: 8.0,
+                totals: ScoreTotals {
+                    max_hits: 100,
+                    current_max_hits: 100,
+                    ..ScoreTotals::default()
+                },
+                results: true,
+            },
+        );
+        manager.push_render_anchor("player-1", 10.0, 0.0);
+        manager.push_sample_at(
+            "player-1",
+            RenderSample {
+                session_id: 2,
+                sequence: 1,
+                run_time_us: 2_000_000,
+                beat: 10.0,
+                paddle_angle: 90.0,
+                tap_mask: 0,
+                flags: FLAG_PLAYING,
+            },
+            3_000_000,
+        );
+
+        manager.write_aligned_inputs(3_250_000);
+        assert!(
+            std::fs::read(manager.score_path("A"))
+                .unwrap()
+                .iter()
+                .all(|byte| *byte == 0),
+            "a late keyframe older than this run's source anchor must stay retired"
+        );
+
+        manager.push_score_state(
+            "player-1",
+            RenderScoreState {
+                sequence: 42,
+                run_time_us: 2_000_000,
+                accuracy: 100.0,
+                average_offset: 0.0,
+                totals: ScoreTotals::default(),
+                results: false,
+            },
+        );
+        manager.write_aligned_inputs(3_266_667);
+        let current = std::fs::read(manager.score_path("A")).unwrap();
+        assert_eq!(u32::from_le_bytes(current[4..8].try_into().unwrap()), 0);
+        assert_eq!(
+            f32::from_le_bytes(current[8..12].try_into().unwrap()),
+            100.0
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
