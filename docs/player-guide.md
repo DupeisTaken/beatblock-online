@@ -3,7 +3,7 @@
 This is the public guide for Players, Spectators, and first-time hosts. Follow
 the labels shown inside the installer and Beatblock; no command line is needed.
 
-> **Current beta:** Beatblock Online `v0.3.0-beta.5` is tested with Beatblock
+> **Current release:** Beatblock Online `v0.3.0` is tested with Beatblock
 > `1.7.1a (Early Access)[d40b7083]` on Windows 10 2004+ and Windows 11 x64.
 > Newer Beatblock builds may install but remain unverified. See
 > [Before you start](#before-you-start).
@@ -42,7 +42,7 @@ Beatblock Online has no accounts, matchmaking, public room list, or hosted
 relay. A host must make one UDP port reachable. Players and Spectators do not
 normally need to change their router.
 
-Because this is a beta prerelease:
+Before using the official release:
 
 - Windows may show **Unknown publisher** for the unsigned installer. Download
   only from the project’s [GitHub Releases page](https://github.com/DupeisTaken/beatblock-online/releases).
@@ -72,7 +72,7 @@ Because this is a beta prerelease:
    phase, approve that one prompt and return to the installer.
 7. Wait for the verified success result, then choose **Launch Beatblock**.
 8. In Beatblock, open **Online**. Wait until the top-right status shows
-   `v0.3.0-beta.5 / READY` and the session panel says **READY TO CONNECT**.
+   `v0.3.0 / READY` and the session panel says **READY TO CONNECT**.
 
 When an installer update is offered, **Update Installer** updates the managed
 maintenance copy of the installer. It does not update the Beatblock mod by
