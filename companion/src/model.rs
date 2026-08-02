@@ -776,8 +776,10 @@ mod tests {
 
     #[test]
     fn room_modifier_values_follow_the_native_domains() {
-        let mut modifiers = RoomModifiers::default();
-        modifiers.rate = 2.3;
+        let mut modifiers = RoomModifiers {
+            rate: 2.3,
+            ..Default::default()
+        };
         assert!(modifiers.validate().is_ok());
 
         modifiers.rate = 2.35;
