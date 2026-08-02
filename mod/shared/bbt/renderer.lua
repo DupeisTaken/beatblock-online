@@ -2,6 +2,18 @@ local autoplay = os.getenv('BBT_RENDERER_AUTOPLAY') == '1'
 local rendererSlot = tostring(os.getenv('BBT_RENDERER_STREAM') or 'A'):upper()
 if not autoplay and not rendererSlot:match('^[A-D]$') then rendererSlot = 'A' end
 
+-- Lua 5.1 reads Windows environment values through the active ANSI code page,
+-- but LÖVE filesystem paths are UTF-8. The runtime sends path/variant bytes as
+-- ASCII hex so names outside that code page survive the child-process handoff.
+local function decodeHexUtf8(value)
+  if type(value) ~= 'string' or value == '' or #value % 2 ~= 0
+    or value:find('[^%x]') then return nil end
+  local decoded = value:gsub('%x%x', function(byte)
+    return string.char(tonumber(byte, 16))
+  end)
+  return decoded
+end
+
 local Renderer = {
   active = os.getenv('BBT_RENDERER_FRAME_PATH') ~= nil or autoplay,
   autoplay = autoplay,
@@ -28,6 +40,13 @@ local Renderer = {
   pendingAudioSync = false, lastAudioCorrectionAt = -math.huge,
   lastAppliedPaddleSequence = nil, paddleCumulativeAngle = nil,
 }
+Renderer.decodeHexUtf8 = decodeHexUtf8
+
+function Renderer.readUtf8Environment(encodedName, legacyName)
+  -- The raw fallback supports launching a new mod with an older runtime. It is
+  -- safe for the ASCII chart identifiers used before the encoded contract.
+  return decodeHexUtf8(os.getenv(encodedName)) or os.getenv(legacyName)
+end
 Renderer.statePath = os.getenv('BBT_RENDERER_STATE_PATH')
   or (Renderer.framePath or ''):gsub('%.bbtframe$', '.bbtstate')
 Renderer.scorePath = os.getenv('BBT_RENDERER_SCORE_PATH')
@@ -245,7 +264,8 @@ end
 
 function Renderer.start()
   if not Renderer.active then return end
-  local chart, variant = os.getenv('BBT_RENDERER_CHART'), os.getenv('BBT_RENDERER_VARIANT')
+  local chart = Renderer.readUtf8Environment('BBT_RENDERER_CHART_HEX', 'BBT_RENDERER_CHART')
+  local variant = Renderer.readUtf8Environment('BBT_RENDERER_VARIANT_HEX', 'BBT_RENDERER_VARIANT')
   if not chart or chart == '' then return end
   if not string.match(chart, '[/\\]$') then chart = chart .. '/' end
   local variantInfo = nil
