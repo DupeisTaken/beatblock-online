@@ -281,6 +281,7 @@ async fn host_room(
             host_participating: request.host_participating.unwrap_or(true),
             validity_checks_enabled: request.validity_checks_enabled.unwrap_or(true),
             require_same_game_build: request.require_same_game_build.unwrap_or(true),
+            modifiers: request.modifiers.unwrap_or_default(),
         })
         .await
     {

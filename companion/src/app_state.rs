@@ -43,6 +43,7 @@ pub struct HostRoomOptions {
     pub host_participating: bool,
     pub validity_checks_enabled: bool,
     pub require_same_game_build: bool,
+    pub modifiers: crate::model::RoomModifiers,
 }
 
 fn validated_room_name(name: &str) -> Result<String> {
@@ -98,6 +99,7 @@ fn initial_host_room(
     host_participating: bool,
     validity_checks_enabled: bool,
     require_same_game_build: bool,
+    modifiers: crate::model::RoomModifiers,
 ) -> Result<RoomEngine> {
     let mut room = RoomEngine::host(room_name, host_name, admission_mode);
     if !host_participating {
@@ -105,6 +107,7 @@ fn initial_host_room(
     }
     room.set_validity_checks(validity_checks_enabled)?;
     room.set_same_game_build_required(require_same_game_build)?;
+    room.set_modifiers(modifiers)?;
     Ok(room)
 }
 
@@ -328,6 +331,7 @@ mod tests {
             false,
             false,
             true,
+            crate::model::RoomModifiers::default(),
         )
         .unwrap();
         let host = room
@@ -348,6 +352,7 @@ mod tests {
             true,
             true,
             false,
+            crate::model::RoomModifiers::default(),
         )
         .unwrap();
         assert_eq!(playing.snapshot.participants[0].role, ParticipantRole::Host);
@@ -1461,6 +1466,7 @@ impl AppState {
         }
         if message.kind == "room.snapshot" || message.kind == "lobby.snapshot" {
             let snapshot: RoomSnapshot = serde_json::from_value(message.payload.clone())?;
+            snapshot.modifiers.validate()?;
             *self.lobby.write().await = serde_json::to_value(&snapshot)?;
             self.room.write().await.snapshot = snapshot.clone();
             self.exports.publish_room(
@@ -2171,6 +2177,7 @@ impl AppState {
             host_participating,
             validity_checks_enabled,
             require_same_game_build,
+            modifiers,
         } = options;
         let room_name = validated_room_name(&room_name)?;
         self.cancel_reconnect();
@@ -2186,6 +2193,7 @@ impl AppState {
             host_participating,
             validity_checks_enabled,
             require_same_game_build,
+            modifiers,
         )?;
         let session_id = room.snapshot.host_session_id.clone();
         let game_build = if require_same_game_build {
@@ -2427,6 +2435,12 @@ impl AppState {
             .await
             .set_same_game_build_required(false)?;
         self.network.relax_host_game_build_policy().await;
+        self.broadcast_room().await
+    }
+
+    pub async fn set_room_modifiers(&self, modifiers: crate::model::RoomModifiers) -> Result<()> {
+        self.require_host()?;
+        self.room.write().await.set_modifiers(modifiers)?;
         self.broadcast_room().await
     }
 

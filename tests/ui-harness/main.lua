@@ -99,6 +99,7 @@ participants[#participants+1]=player('caster-1','Caster Desk','spectator',true,f
 local roomFixture={
   id='visual-room',name='Saturday Showcase',hostSessionId='host-1',lifecycle='ready',
   admissionMode='host_approval',allowChartTransfers=true,validityChecksEnabled=true,requireSameGameBuild=true,participants=participants,chart=chart,
+  modifiers={rate=1.0,vfx='full',taps='default',sides='default',barelies='default',restartOn='none'},
   forceStart=false,currentSetlistIndex=0,createdAtMs=1,updatedAtMs=1,
   setlist=setlistOf(3),
 }
@@ -142,6 +143,7 @@ function BBT.isOrganizer()
   return me and BBT.lastLobby and me.sessionId==BBT.lastLobby.hostSessionId
 end
 function BBT.startOnlineRuntime() end
+function BBT.restoreRoomModifiers() end
 BBT.commandLog={}
 function BBT.command(kind,payload)
   BBT.commandLog[#BBT.commandLog+1]={kind=kind,payload=payload}
@@ -192,6 +194,7 @@ local function reset()
   BBT.settings.hudEnabled=true; BBT.settings.rendererDesktopMute=true
   roomFixture.allowChartTransfers=true; roomFixture.autoRequestChartTransfers=false
   roomFixture.validityChecksEnabled=true; roomFixture.requireSameGameBuild=true
+  roomFixture.modifiers={rate=1.0,vfx='full',taps='default',sides='default',barelies='default',restartOn='none'}
   roomFixture.chart=chart; roomFixture.setlist=setlistOf(3); roomFixture.currentSetlistIndex=0
   for _,participant in ipairs(participants) do
     participant.validity=participant.admitted and 'valid' or 'pending'
@@ -269,6 +272,14 @@ local scenarios={
   end},
   {'history',function() reset(); online.workspace='history' end},
   {'settings',function() reset(); online.workspace='settings' end},
+  {'settings-modifiers',function()
+    reset(); online.workspace='settings'; online:openModifiers()
+    online.modal.values={rate=1.7,vfx='decreased',taps='strict',sides='lenient',barelies='strict',restartOn='miss'}
+  end},
+  {'settings-modifiers-readonly',function()
+    reset(); online.workspace='settings'; BBT.context.sessionId='player-2'; online:openModifiers()
+    online.modal.values={rate=1.7,vfx='decreased',taps='strict',sides='lenient',barelies='strict',restartOn='miss'}
+  end},
   {'settings-casual',function() reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false end},
   {'settings-automatic',function()
     reset(); online.workspace='settings'; roomFixture.autoRequestChartTransfers=true
@@ -405,7 +416,7 @@ function love.load()
   assert(settingsText['BUILD [d40b7083]'],'Compatibility must show the running game build token')
   for _,label in ipairs({
     'HUD: ON','RUN CHECKS: ON','BUILD: SAME','REQUESTS: MANUAL',
-    'DESKTOP MUTE: ON','CLEAR TRANSFER CACHE',
+    'MODIFIERS: DEFAULT','DESKTOP MUTE: ON','CLEAR TRANSFER CACHE',
   }) do
     assert(settingsText[label],'Settings must expose the complete state/action label '..label)
   end
@@ -424,6 +435,21 @@ function love.load()
   assert(BBT.commandLog[1].kind=='room.chart_transfer_policy_set'
     and BBT.commandLog[1].payload.autoRequest==true,
     'Settings Requests state control must enable automatic requests explicitly')
+
+  reset(); online.workspace='settings'
+  activate('settings_modifiers')
+  assert(online.modal and online.modal.kind=='modifiers','Room modifiers must open a dedicated policy editor')
+  activate('modifier_rate_up')
+  activate('modifier_taps_strict')
+  activate('modifier_sides_lenient')
+  activate('modifier_barelies_strict')
+  activate('modifier_restartOn_miss')
+  activate('modifiers_apply')
+  assert(BBT.commandLog[1].kind=='room.modifiers_set','Modifier editor must use the dedicated room command')
+  assert(BBT.commandLog[1].payload.modifiers.rate==1.1
+    and BBT.commandLog[1].payload.modifiers.taps=='strict'
+    and BBT.commandLog[1].payload.modifiers.restartOn=='miss',
+    'Modifier editor must submit the complete native policy')
 
   reset(); online.workspace='settings'
   activate('settings_clear_cache')
@@ -459,7 +485,7 @@ function love.load()
   for _,id in ipairs({'settings_validity','settings_build_policy','settings_transfer_policy'}) do
     assert(not optionalControl(id),'Host room policy must lock during play: '..id)
   end
-  for _,id in ipairs({'settings_hud','settings_renderer_mute','settings_clear_cache'}) do
+  for _,id in ipairs({'settings_hud','settings_modifiers','settings_renderer_mute','settings_clear_cache'}) do
     assert(optionalControl(id),'Local Settings action must remain available during play: '..id)
   end
 
@@ -467,6 +493,10 @@ function love.load()
   for _,id in ipairs({'settings_validity','settings_build_policy','settings_transfer_policy'}) do
     assert(not optionalControl(id),'Non-host room policy must remain read-only: '..id)
   end
+  activate('settings_modifiers')
+  assert(online.modal and online.modal.kind=='modifiers' and not online.modal.editable,
+    'Non-hosts must be able to inspect but not edit the host modifier policy')
+  assert(not optionalControl('modifiers_apply'),'Read-only modifier policy must not expose Apply')
 
   reset(); online.workspace='settings'; roomFixture.validityChecksEnabled=false
   roomFixture.requireSameGameBuild=false; roomFixture.autoRequestChartTransfers=true

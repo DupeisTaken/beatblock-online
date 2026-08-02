@@ -2,6 +2,87 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VfxModifier {
+    Full,
+    Decreased,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TapModifier {
+    Default,
+    Lenient,
+    Strict,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SideModifier {
+    Default,
+    Lenient,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BarelyModifier {
+    Default,
+    Lenient,
+    Strict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartModifier {
+    None,
+    Miss,
+    Barely,
+}
+
+/// Beatblock's complete per-chart modifier surface. Keeping the native value
+/// domains on the authoritative room model prevents clients from inventing an
+/// unsupported mode or an off-step playback rate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoomModifiers {
+    pub rate: f32,
+    pub vfx: VfxModifier,
+    pub taps: TapModifier,
+    pub sides: SideModifier,
+    pub barelies: BarelyModifier,
+    pub restart_on: RestartModifier,
+}
+
+impl Default for RoomModifiers {
+    fn default() -> Self {
+        Self {
+            rate: 1.0,
+            vfx: VfxModifier::Full,
+            taps: TapModifier::Default,
+            sides: SideModifier::Default,
+            barelies: BarelyModifier::Default,
+            restart_on: RestartModifier::None,
+        }
+    }
+}
+
+impl RoomModifiers {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.rate.is_finite() || !(0.5..=5.0).contains(&self.rate) {
+            anyhow::bail!("modifier rate must be between 0.5 and 5.0");
+        }
+        let tenths = self.rate * 10.0;
+        if (tenths - tenths.round()).abs() > 0.0001 {
+            anyhow::bail!("modifier rate must use 0.1 increments");
+        }
+        Ok(())
+    }
+}
 pub const DEFAULT_HOST_PORT: u16 = 32145;
 pub const MAX_PLAYERS: usize = 16;
 pub const MAX_SPECTATORS: usize = 32;
@@ -316,6 +397,10 @@ pub struct RoomSnapshot {
     /// casual or compatibility-testing rooms.
     #[serde(default = "default_true")]
     pub require_same_game_build: bool,
+    /// Host-authored Beatblock chart options. Omission retains native defaults
+    /// when decoding historical protocol-v3 snapshots.
+    #[serde(default)]
+    pub modifiers: RoomModifiers,
     pub participants: Vec<Participant>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<ChartLock>,
@@ -580,6 +665,7 @@ pub struct HostRoomRequest {
     pub host_participating: Option<bool>,
     pub validity_checks_enabled: Option<bool>,
     pub require_same_game_build: Option<bool>,
+    pub modifiers: Option<RoomModifiers>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -672,6 +758,7 @@ mod tests {
             auto_request_chart_transfers: false,
             validity_checks_enabled: true,
             require_same_game_build: true,
+            modifiers: RoomModifiers::default(),
             participants: vec![participant],
             chart: None,
             setlist: vec![],
@@ -685,5 +772,35 @@ mod tests {
         for field in ["chart", "currentSetlistIndex", "scheduledStartTimeMs"] {
             assert!(room_json.get(field).is_none(), "{field} must be omitted");
         }
+    }
+
+    #[test]
+    fn room_modifier_values_follow_the_native_domains() {
+        let mut modifiers = RoomModifiers::default();
+        modifiers.rate = 2.3;
+        assert!(modifiers.validate().is_ok());
+
+        modifiers.rate = 2.35;
+        assert!(modifiers
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("0.1"));
+        modifiers.rate = 5.1;
+        assert!(modifiers
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("between"));
+
+        assert!(serde_json::from_value::<RoomModifiers>(json!({
+            "rate":1.0,
+            "vfx":"full",
+            "taps":"forged",
+            "sides":"default",
+            "barelies":"default",
+            "restartOn":"none"
+        }))
+        .is_err());
     }
 }

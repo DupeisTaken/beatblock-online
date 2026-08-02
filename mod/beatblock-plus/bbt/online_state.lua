@@ -31,6 +31,16 @@ local ROSTER_PAGE_SIZE = 6
 -- Inspector action stack pitch: a 24px control plus a 2px gap. Four stacked
 -- actions plus five detail rows still end on the panel floor at 16pt.
 local ACTION_PITCH = 26
+local DEFAULT_MODIFIERS={
+  rate=1.0,vfx='full',taps='default',sides='default',barelies='default',restartOn='none',
+}
+local MODIFIER_CHOICES={
+  vfx={{'full','FULL'},{'decreased','DECREASED'},{'none','NONE'}},
+  taps={{'default','DEFAULT'},{'lenient','LENIENT'},{'strict','STRICT'},{'auto','AUTO'}},
+  sides={{'default','DEFAULT'},{'lenient','LENIENT'},{'auto','AUTO'}},
+  barelies={{'default','DEFAULT'},{'lenient','LENIENT'},{'strict','STRICT'}},
+  restartOn={{'none','NONE'},{'miss','MISS'},{'barely','BARELY'}},
+}
 
 local function pressed(name)
   if not maininput or not maininput.pressed then return false end
@@ -160,6 +170,39 @@ local function closeModal(self)
   self.modal=nil
   self.focusId=returnFocus or 'session_primary'
   if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
+end
+
+local function modifierPolicy(room)
+  local source=BBT.roomModifierPolicy and BBT.roomModifierPolicy(room)
+    or (room and room.modifiers) or DEFAULT_MODIFIERS
+  return {
+    rate=tonumber(source.rate) or 1.0,
+    vfx=source.vfx or 'full',taps=source.taps or 'default',
+    sides=source.sides or 'default',barelies=source.barelies or 'default',
+    restartOn=source.restartOn or 'none',
+  }
+end
+
+local function modifiersEditable(room)
+  return isHost() and room and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready')
+end
+
+local function openModifiers(self)
+  local room=currentRoom()
+  if not room then return end
+  self.modal={
+    kind='modifiers',title='HOST-ENFORCED MODIFIERS',values=modifierPolicy(room),
+    editable=modifiersEditable(room),returnFocus=self.focusId,
+  }
+  self.focusId=self.modal.editable and 'modifier_rate_down' or 'modal_cancel'
+end
+
+local function submitModifiers(self)
+  local modal=self.modal
+  if not modal or modal.kind~='modifiers' or not modal.editable then return end
+  local requestId=BBT.command('room.modifiers_set',{modifiers=modal.values})
+  if requestId then closeModal(self)
+  else modal.error=bounded(BBT.lastError or 'MODIFIER POLICY COULD NOT BE SAVED',48) end
 end
 
 local function launchSingleChartSelector(official)
@@ -824,7 +867,7 @@ local function drawSettings(self)
   local checksEnabled=not room or room.validityChecksEnabled~=false
   local sameBuildRequired=not room or room.requireSameGameBuild~=false
   local autoRequests=room and room.autoRequestChartTransfers==true
-  local checksEditable=isHost() and room and (room.lifecycle=='forming' or room.lifecycle=='chart_locked' or room.lifecycle=='ready')
+  local checksEditable=modifiersEditable(room)
   local transferEditable=checksEditable and room.allowChartTransfers~=false
   ui:text('DESKTOP AUDIO',24,104,145,'left','muted')
   ui:text(
@@ -860,7 +903,14 @@ local function drawSettings(self)
     autoRequests and 'REQUESTS: AUTO' or 'REQUESTS: MANUAL',function()
     BBT.command('room.chart_transfer_policy_set',{autoRequest=not autoRequests})
   end,autoRequests and 'green' or 'cyan',transferEditable)
-  button(self,'settings_renderer_mute',24,216,336,25,
+  local configured=modifierPolicy(room)
+  local modifiersDefault=configured.rate==1 and configured.vfx=='full' and configured.taps=='default'
+    and configured.sides=='default' and configured.barelies=='default' and configured.restartOn=='none'
+  button(self,'settings_modifiers',24,216,164,25,
+    modifiersDefault and 'MODIFIERS: DEFAULT' or 'MODIFIERS: CUSTOM',function()
+    openModifiers(self)
+  end,modifiersDefault and 'cyan' or 'yellow',room~=nil)
+  button(self,'settings_renderer_mute',196,216,164,25,
     settings.rendererDesktopMute==false and 'DESKTOP MUTE: OFF' or 'DESKTOP MUTE: ON',function()
     BBT.command('settings.update',{rendererDesktopMute=settings.rendererDesktopMute==false})
   end,settings.rendererDesktopMute==false and 'green' or 'yellow')
@@ -1005,6 +1055,57 @@ local function drawModal(self)
     button(self,'form_submit',261,actionY,98,27,modal.mode=='host' and 'CREATE' or 'JOIN',function() submitForm(self) end,'green')
     button(self,'form_cancel',366,actionY,98,27,'CANCEL',function() closeModal(self) end,'white')
     if modal.error then ui:text(modal.error,136,isHostForm and 322 or 282,328,'center','red') end
+  elseif modal.kind=='modifiers' then
+    ui:panel(62,7,476,346,modal.title)
+    ui:wrapped(
+      'This room policy replaces local chart options for Game and Results. Saved preferences are restored afterward.',
+      82,38,436,2,'muted'
+    )
+    local function drawChoices(key,label,y)
+      ui:text(label,82,y+2,94,'left','muted')
+      local choices=MODIFIER_CHOICES[key]
+      local gap=4
+      local width=math.floor((334-gap*(#choices-1))/#choices)
+      local x=184
+      for _,choice in ipairs(choices) do
+        local id='modifier_'..key..'_'..choice[1]
+        if modal.editable then
+          chip(self,id,x,y,width,choice[2],modal.values[key]==choice[1],function()
+            modal.values[key]=choice[1]; modal.error=nil
+          end,'cyan')
+        else
+          ui:chip(id,x,y,width,choice[2],modal.values[key]==choice[1],'cyan',false)
+        end
+        x=x+width+gap
+      end
+    end
+    ui:text('GAME SPEED',82,80,94,'left','muted')
+    if modal.editable then
+      button(self,'modifier_rate_down',184,76,52,25,'-',function()
+        modal.values.rate=math.max(0.5,math.floor((modal.values.rate-0.1)*10+0.5)/10)
+        modal.error=nil
+      end,'cyan')
+      ui:text(string.format('%.1fX',modal.values.rate),242,80,218,'center','white')
+      button(self,'modifier_rate_up',466,76,52,25,'+',function()
+        modal.values.rate=math.min(5,math.floor((modal.values.rate+0.1)*10+0.5)/10)
+        modal.error=nil
+      end,'cyan')
+    else
+      ui:text(string.format('%.1fX',modal.values.rate),184,80,334,'center','cyan')
+    end
+    drawChoices('vfx','VFX',110)
+    drawChoices('taps','TAPS',144)
+    drawChoices('sides','SIDES',178)
+    drawChoices('barelies','BARELIES',212)
+    drawChoices('restartOn','RESTART ON',246)
+    local note=modal.error or (modal.editable and 'EDITABLE UNTIL COUNTDOWN' or 'HOST POLICY / READ ONLY')
+    ui:text(note,82,280,436,'center',modal.error and 'red' or 'muted')
+    if modal.editable then
+      button(self,'modifiers_apply',294,310,108,27,'APPLY',function() submitModifiers(self) end,'green')
+      button(self,'modal_cancel',410,310,108,27,'CANCEL',function() closeModal(self) end,'white')
+    else
+      button(self,'modal_cancel',410,310,108,27,'CLOSE',function() closeModal(self) end,'white')
+    end
   elseif modal.kind=='chart_source' then
     local room=currentRoom()
     local hasOrderedSet=room and #(room.setlist or {})>0
@@ -1163,8 +1264,13 @@ return function()
   function st:submitForm() submitForm(self) end
   function st:openSingleChartSource() openSingleChartSource(self) end
   function st:chooseSingleChartSource(official) chooseSingleChartSource(self,official) end
+  function st:openModifiers() openModifiers(self) end
+  function st:submitModifiers() submitModifiers(self) end
   st:setInit(function(self,options)
     options=options or {}
+    -- Game/Results retain the enforced view long enough for native judgement
+    -- and result labeling; returning to Online restores the player's own save.
+    if BBT.restoreRoomModifiers then BBT.restoreRoomModifiers() end
     applyBeatblockPalette(false)
     applyBeatblockMenuFont()
     local initialWorkspace=options.workspace

@@ -108,6 +108,35 @@ export const RulesSchema = Type.Object(
 );
 export type Rules = Static<typeof RulesSchema>;
 
+// These are Beatblock's native per-chart domains. Hosts publish one complete
+// policy so clients never merge it with easier local accessibility choices.
+const RoomModifierRateSchema = Type.Union(
+  Array.from({ length: 46 }, (_, index) => Type.Literal((index + 5) / 10)),
+);
+export const RoomModifiersSchema = Type.Object(
+  {
+    // Literal tenths avoid binary floating-point `multipleOf: 0.1` validators
+    // rejecting valid values such as 1.7.
+    rate: RoomModifierRateSchema,
+    vfx: Type.Union([Type.Literal('full'), Type.Literal('decreased'), Type.Literal('none')]),
+    taps: Type.Union([
+      Type.Literal('default'),
+      Type.Literal('lenient'),
+      Type.Literal('strict'),
+      Type.Literal('auto'),
+    ]),
+    sides: Type.Union([Type.Literal('default'), Type.Literal('lenient'), Type.Literal('auto')]),
+    barelies: Type.Union([
+      Type.Literal('default'),
+      Type.Literal('lenient'),
+      Type.Literal('strict'),
+    ]),
+    restartOn: Type.Union([Type.Literal('none'), Type.Literal('miss'), Type.Literal('barely')]),
+  },
+  { additionalProperties: false },
+);
+export type RoomModifiers = Static<typeof RoomModifiersSchema>;
+
 export const RoomSnapshotSchema = Type.Object({
   id: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1, maxLength: 80 }),
@@ -124,6 +153,9 @@ export const RoomSnapshotSchema = Type.Object({
   // Optional preserves protocol-v3 decoding. Hosts default omission to exact
   // Beatblock build matching and may relax it only before a race.
   requireSameGameBuild: Type.Optional(Type.Boolean({ default: true })),
+  // Optional for historical protocol-v3 snapshots; current peers advertise
+  // enforcement support during authenticated room setup.
+  modifiers: Type.Optional(RoomModifiersSchema),
   chart: Type.Optional(ChartLockSchema),
   // MAX_PLAYERS already includes the room host.
   participants: Type.Array(ParticipantSchema, { maxItems: MAX_PLAYERS + MAX_SPECTATORS }),

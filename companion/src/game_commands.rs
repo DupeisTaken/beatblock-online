@@ -1,7 +1,9 @@
 use crate::{
     app_state::{AppState, HostRoomOptions},
     chart_hash::canonical_chart_hash_cached,
-    model::{ChartLock, ChartTransferMode, Envelope, ParticipantRole, RendererRequest},
+    model::{
+        ChartLock, ChartTransferMode, Envelope, ParticipantRole, RendererRequest, RoomModifiers,
+    },
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -88,6 +90,15 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .get("requireSameGameBuild")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            let modifiers = message
+                .payload
+                .get("modifiers")
+                .cloned()
+                .map(serde_json::from_value::<RoomModifiers>)
+                .transpose()
+                .context("room.host_request contains invalid modifiers")?
+                .unwrap_or_default();
+            modifiers.validate()?;
             if auto_request_chart_transfers && !allow_chart_transfers {
                 anyhow::bail!("automatic chart requests require chart transfers to be enabled");
             }
@@ -117,6 +128,7 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                     host_participating,
                     validity_checks_enabled,
                     require_same_game_build,
+                    modifiers,
                 }),
             )
             .await
@@ -235,6 +247,17 @@ async fn execute(state: &AppState, message: &Envelope) -> Result<()> {
                 .and_then(Value::as_bool)
                 .context("room.game_build_policy_set requires a boolean required field")?;
             state.set_same_game_build_required(required).await
+        }
+        "room.modifiers_set" => {
+            let modifiers = message
+                .payload
+                .get("modifiers")
+                .cloned()
+                .context("room.modifiers_set requires a modifiers object")?;
+            let modifiers: RoomModifiers =
+                serde_json::from_value(modifiers).context("room.modifiers_set is invalid")?;
+            modifiers.validate()?;
+            state.set_room_modifiers(modifiers).await
         }
         "room.chart_transfer_policy_set" => {
             let enabled = message
@@ -420,6 +443,7 @@ pub(crate) fn is_control_command(kind: &str) -> bool {
             | "room.host_play_set"
             | "room.validity_checks_set"
             | "room.game_build_policy_set"
+            | "room.modifiers_set"
             | "room.chart_transfer_policy_set"
             | "room.commentator_set"
             | "room.kick"
